@@ -1,6 +1,6 @@
 ;;; ============================================================================
 ;;; MCTABLE.LSP - Comando de Tabla de Coordenadas UTM, Rumbos y Distancias
-;;; Versión Corregida (Error de Argumentos en Capas Solucionado)
+;;; Versión Corregida con Formato Homogéneo de Rumbos (00° 00' 00")
 ;;; ============================================================================
 
 ;; ============================================================
@@ -63,7 +63,16 @@
            (expt (- (cadr p2) (cadr p1)) 2)))
 )
 
-(defun MCTABLE:get-bearing (p1 p2 / ang az deg min sec quad pref suff rem)
+;; NUEVA FUNCIÓN DE RUMBOS: Formato homogéneo con ceros a la izquierda y orden correcto (' ")
+(defun MCTABLE:get-bearing (p1 p2 / ang az deg min sec quad pref suff rem pad2)
+  ;; Subfunción local para añadir un cero a la izquierda si el número es < 10
+  (defun pad2 (num)
+    (if (< num 10)
+      (strcat "0" (itoa num))
+      (itoa num)
+    )
+  )
+
   (setq ang (angle p1 p2)) 
   (setq az (- 90.0 (/ (* ang 180.0) pi)))
   (while (< az 0.0) (setq az (+ az 360.0)))
@@ -88,7 +97,8 @@
   (if (= sec 60) (setq sec 0 min (1+ min)))
   (if (= min 60) (setq min 0 deg (1+ deg)))
   
-  (strcat pref " " (itoa deg) "%%d " (itoa min) "' " (itoa sec) "\" " suff)
+  ;; Retorna el formato estandarizado: ej. N 05° 09' 02" E
+  (strcat pref " " (pad2 deg) "%%d " (pad2 min) "' " (pad2 sec) "\" " suff)
 )
 
 (defun MCTABLE:clean-vertices (lst / clean-lst pt last-pt)
@@ -509,7 +519,7 @@
         '(0  . "LAYER")
         '(100 . "AcDbSymbolTableRecord")
         '(100 . "AcDbLayerTableRecord")
-        (cons 2  lyr-etiq) ; <--- CORREGIDO: Se removió el argumento de más
+        (cons 2  lyr-etiq)
         '(70 . 0)
         '(62 . 3)
         '(6  . "Continuous")
