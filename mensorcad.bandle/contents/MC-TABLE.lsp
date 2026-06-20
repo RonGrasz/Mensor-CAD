@@ -189,7 +189,6 @@
         doc   (vla-get-ActiveDocument (vlax-get-acad-object))
         space (vla-get-ModelSpace doc)
         cell-align 5 ; acAlignmentMiddleCenter
-        ;; [FIX] Aumentamos ligeramente la altura base a 2.2 para evitar conflictos con los márgenes internos
         row-height (* (getvar "TEXTSIZE") 2.2) 
   )
 
@@ -197,7 +196,6 @@
     (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* (getvar "TEXTSIZE") 8.0))
   )
 
-  ;; [FIX] Suprimimos la regeneración temporal de la tabla para acelerar el proceso
   (vla-put-RegenerateTableSuppressed tbl-obj :vlax-true)
 
   (setq actual-rows   (vl-catch-all-apply 'vla-get-Rows (list tbl-obj))
@@ -224,7 +222,6 @@
   ;; Datos
   (setq row-idx 2)
   (foreach v vlist
-    ;; [FIX] Eliminado el redondeo manual, usamos directamente rtos que es más seguro y nativo
     (setq xval (car v)
           yval (cadr v))
           
@@ -250,14 +247,18 @@
   (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 1 (* (getvar "TEXTSIZE") 16.0)))
   (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 2 (* (getvar "TEXTSIZE") 16.0)))
 
-  ;; [FIX] BUCLE PARA FORZAR LA ALTURA CONSTANTE DE TODAS LAS FILAS
+  ;; [FIX/MOD] BUCLE MODIFICADO PARA COMPORTAMIENTO DE ALTURAS JERÁRQUICAS
   (setq i 0)
   (while (< i rows)
-    (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i row-height))
+    (if (= i 0)
+      ;; Fila 0 (Título): Se le asigna un 50% más de altura para resaltarlo
+      (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i (* row-height 1.5)))
+      ;; Filas 1 en adelante (Encabezados y Datos): Altura estándar constante
+      (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i row-height))
+    )
     (setq i (1+ i))
   )
 
-  ;; [FIX] Reactivamos la regeneración de la tabla y la actualizamos
   (vla-put-RegenerateTableSuppressed tbl-obj :vlax-false)
   (vla-Update tbl-obj)
   
@@ -433,8 +434,6 @@
         '(6  . "Continuous")
       )
     )
-    ;; [FIX] tblsearch NO devuelve el ename. Para usar entmod en un layer existente, 
-    ;; necesitamos usar tblobjname para obtener la entidad del registro.
     (if (/= (cdr (assoc 62 lyr-data)) 3)
       (progn
         (setq lyr-ent (tblobjname "LAYER" lyr-etiq)
