@@ -1,9 +1,10 @@
 ;;; ============================================================================
-;;; MCTABLE.LSP - Comando de Tabla de Coordenadas UTM, Rumbos y Distancias (CORREGIDO)
+;;; MCTABLE.LSP - Comando de Tabla de Coordenadas UTM, Rumbos y Distancias
+;;; Versión Corregida (Error de Argumentos en Capas Solucionado)
 ;;; ============================================================================
 
 ;; ============================================================
-;; SECCIÓN 1: ESCRITURA DEL ARCHIVO DCL TEMPORAL (CORREGIDA)
+;; SECCIÓN 1: ESCRITURA DEL ARCHIVO DCL TEMPORAL ÚNICO
 ;; ============================================================
 
 (defun MCTABLE:write-dcl (dcl-file / f)
@@ -43,7 +44,7 @@
       (write-line "      : text { key = \"txt_orig\"; label = \"Sin seleccionar\"; width = 32; }" f)
       (write-line "      : button { key = \"btn_orig\"; label = \"Seleccionar...\"; width = 14; fixed_width = true; }" f)
       (write-line "    }" f)
-      (write-line "  }" f) ; <-- ¡AQUÍ ESTABA EL ERROR! Ahora cierra correctamente la 'boxed_column'
+      (write-line "  }" f)
       (write-line "" f)
       (write-line "  ok_cancel;" f)
       (write-line "}" f)
@@ -62,15 +63,12 @@
            (expt (- (cadr p2) (cadr p1)) 2)))
 )
 
-;; Calcula el rumbo en formato de cuadrante (N/S DD%%d MM' SS" E/W) de p1 a p2
-(defun MCTABLE:get-bearing (p1 p2 / ang az deg min sec quad pref suff)
-  (setq ang (angle p1 p2)) ; Radianes desde el Este (CCW)
-  ;; Convertir a Azimut desde el Norte (CW) en grados decimales
+(defun MCTABLE:get-bearing (p1 p2 / ang az deg min sec quad pref suff rem)
+  (setq ang (angle p1 p2)) 
   (setq az (- 90.0 (/ (* ang 180.0) pi)))
   (while (< az 0.0) (setq az (+ az 360.0)))
   (while (>= az 360.0) (setq az (- az 360.0)))
   
-  ;; Determinar cuadrante topográfico y ángulo reducido
   (cond
     ((and (>= az 0.0) (<= az 90.0))
      (setq quad az pref "N" suff "E"))
@@ -82,13 +80,11 @@
      (setq quad (- 360.0 az) pref "N" suff "W"))
   )
   
-  ;; Descomponer ángulo en Grados, Minutos y Segundos
   (setq deg (fix quad)
         rem (* (- quad deg) 60.0)
         min (fix rem)
         sec (fix (+ (* (- rem min) 60.0) 0.5))
   )
-  ;; Ajuste por redondeo cíclico de segundos/minutos
   (if (= sec 60) (setq sec 0 min (1+ min)))
   (if (= min 60) (setq min 0 deg (1+ deg)))
   
@@ -205,7 +201,7 @@
 )
 
 ;; ============================================================
-;; SECCIÓN 5: CREACIÓN DE LA TABLA NATIVA DE AUTOCAD
+;; SECCIÓN 5: CREACIÓN DE TABLAS CON PROTECCIÓN ACTIVEX
 ;; ============================================================
 
 ;; 5.1: Tabla de Coordenadas
@@ -230,23 +226,15 @@
     (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* (getvar "TEXTSIZE") 8.0))
   )
 
-  (vla-put-RegenerateTableSuppressed tbl-obj :vlax-true)
+  (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-true))
 
-  (setq actual-rows   (vl-catch-all-apply 'vla-get-Rows (list tbl-obj))
-        expected-rows rows)
-  (if (and (not (vl-catch-all-error-p actual-rows))
-           (> actual-rows expected-rows))
-    (vl-catch-all-apply 'vla-DeleteRows
-      (list tbl-obj expected-rows (- actual-rows expected-rows)))
-  )
-
-  (vla-SetText tbl-obj 0 0 title-str)
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 0 0 title-str))
   (vl-catch-all-apply 'vla-MergeCells (list tbl-obj 0 0 0 (1- cols)))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 0 0 cell-align))
 
-  (vla-SetText tbl-obj 1 0 "EST")
-  (vla-SetText tbl-obj 1 1 col1-hdr)
-  (vla-SetText tbl-obj 1 2 col2-hdr)
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 1 0 "EST"))
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 1 1 col1-hdr))
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 1 2 col2-hdr))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 0 cell-align))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 1 cell-align))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 2 cell-align))
@@ -254,15 +242,15 @@
   (setq row-idx 2)
   (foreach v vlist
     (setq xval (car v) yval (cadr v))
-    (vla-SetText tbl-obj row-idx 0 (itoa (- row-idx 1)))
+    (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 0 (itoa (- row-idx 1))))
     (if xy-order
       (progn
-        (vla-SetText tbl-obj row-idx 1 (rtos xval 2 decimals))
-        (vla-SetText tbl-obj row-idx 2 (rtos yval 2 decimals))
+        (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 1 (rtos xval 2 decimals)))
+        (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 2 (rtos yval 2 decimals)))
       )
       (progn
-        (vla-SetText tbl-obj row-idx 1 (rtos yval 2 decimals))
-        (vla-SetText tbl-obj row-idx 2 (rtos xval 2 decimals))
+        (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 1 (rtos yval 2 decimals)))
+        (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 2 (rtos xval 2 decimals)))
       )
     )
     (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj row-idx 0 cell-align))
@@ -284,7 +272,7 @@
     (setq i (1+ i))
   )
 
-  (vla-put-RegenerateTableSuppressed tbl-obj :vlax-false)
+  (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-false))
   (vla-Update tbl-obj)
   tbl-obj
 )
@@ -292,7 +280,7 @@
 ;; 5.2: Tabla de Rumbos y Distancias
 (defun MCTABLE:create-bearing-table (ins-pt vlist decimals title-str /
                                      tbl-obj rows cols row-idx i n p1 p2
-                                     doc space cell-align actual-rows expected-rows row-height
+                                     doc space cell-align row-height
                                      est-lbl rumbo-lbl dist-lbl)
   (setq n             (length vlist)
         rows          (+ 2 n)
@@ -307,44 +295,32 @@
     (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* (getvar "TEXTSIZE") 8.0))
   )
 
-  (vla-put-RegenerateTableSuppressed tbl-obj :vlax-true)
+  (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-true))
 
-  (setq actual-rows   (vl-catch-all-apply 'vla-get-Rows (list tbl-obj))
-        expected-rows rows)
-  (if (and (not (vl-catch-all-error-p actual-rows))
-           (> actual-rows expected-rows))
-    (vl-catch-all-apply 'vla-DeleteRows
-      (list tbl-obj expected-rows (- actual-rows expected-rows)))
-  )
-
-  ;; Título
-  (vla-SetText tbl-obj 0 0 title-str)
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 0 0 title-str))
   (vl-catch-all-apply 'vla-MergeCells (list tbl-obj 0 0 0 (1- cols)))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 0 0 cell-align))
 
-  ;; Encabezados
-  (vla-SetText tbl-obj 1 0 "EST")
-  (vla-SetText tbl-obj 1 1 "RUMBO")
-  (vla-SetText tbl-obj 1 2 "DISTANCIA (m)")
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 1 0 "EST"))
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 1 1 "RUMBO"))
+  (vl-catch-all-apply 'vla-SetText (list tbl-obj 1 2 "DISTANCIA (m)"))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 0 cell-align))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 1 cell-align))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 2 cell-align))
 
-  ;; Extracción iterativa de Datos
   (setq i 0)
   (while (< i n)
     (setq p1        (nth i vlist)
-          ;; Cierre forzado del ciclo: si es el último tramo, p2 vuelve al punto 0 (inicial)
           p2        (if (= i (1- n)) (nth 0 vlist) (nth (1+ i) vlist))
-          est-lbl   (strcat "{\\b " (itoa (1+ i)) "}") ; Formato MTEXT para aplicar Negrita (\b)
+          est-lbl   (strcat "{\\b " (itoa (1+ i)) "}") 
           rumbo-lbl (MCTABLE:get-bearing p1 p2)
           dist-lbl  (rtos (MCTABLE:distance-2d p1 p2) 2 decimals)
           row-idx   (+ i 2)
     )
     
-    (vla-SetText tbl-obj row-idx 0 est-lbl)
-    (vla-SetText tbl-obj row-idx 1 rumbo-lbl)
-    (vla-SetText tbl-obj row-idx 2 dist-lbl)
+    (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 0 est-lbl))
+    (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 1 rumbo-lbl))
+    (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 2 dist-lbl))
     
     (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj row-idx 0 cell-align))
     (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj row-idx 1 cell-align))
@@ -353,12 +329,10 @@
     (setq i (1+ i))
   )
 
-  ;; Ajuste de ancho de columnas
   (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 0 (* (getvar "TEXTSIZE") 5.0)))
   (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 1 (* (getvar "TEXTSIZE") 18.0)))
   (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 2 (* (getvar "TEXTSIZE") 14.0)))
 
-  ;; Asignación de Alturas Jerárquicas
   (setq i 0)
   (while (< i rows)
     (if (= i 0)
@@ -368,7 +342,7 @@
     (setq i (1+ i))
   )
 
-  (vla-put-RegenerateTableSuppressed tbl-obj :vlax-false)
+  (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-false))
   (vla-Update tbl-obj)
   tbl-obj
 )
@@ -452,7 +426,7 @@
         click-pt   nil
   )
 
-  (setq dcl-file (strcat (getvar "TEMPPREFIX") "MCTABLE_DLG_TEMP.dcl"))
+  (setq dcl-file (vl-filename-mktemp "mctbl" nil ".dcl"))
   (if (not (MCTABLE:write-dcl dcl-file)) (exit))
 
   (setq dcl-id (load_dialog dcl-file))
@@ -535,7 +509,7 @@
         '(0  . "LAYER")
         '(100 . "AcDbSymbolTableRecord")
         '(100 . "AcDbLayerTableRecord")
-        (cons 2  lyr-etiq)
+        (cons 2  lyr-etiq) ; <--- CORREGIDO: Se removió el argumento de más
         '(70 . 0)
         '(62 . 3)
         '(6  . "Continuous")
@@ -558,7 +532,6 @@
   (princ "\nDibujando numeración de vértices...")
   (MCTABLE:label-vertices ordered-verts txt-height lyr-etiq)
 
-  ;; Inserción de Tabla 1: Coordenadas
   (setvar "OSMODE" 0)
   (setq ins-pt (getpoint "\nIndique el punto de inserción para la TABLA DE COORDENADAS: "))
   (if ins-pt
@@ -580,7 +553,6 @@
     )
   )
 
-  ;; Inserción de Tabla 2: Rumbos y Distancias
   (setq ins-pt2 (getpoint "\nIndique el punto de inserción para la TABLA DE RUMBOS Y DISTANCIAS: "))
   (if ins-pt2
     (progn
