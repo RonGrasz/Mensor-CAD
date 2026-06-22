@@ -1,75 +1,79 @@
-# Arquitectura
+# Mensor CAD
 
-## La estructura ideal para tu repositorio
+Plugins LISP para AutoCAD orientados a trabajos topográficos y catastrales. Tres comandos independientes con interfaz gráfica (DCL).
 
-Para que el repositorio sea atractivo, ordenado y fácil de migrar a futuro (a C# o C++), te recomiendo organizar los archivos separando la **interfaz** de la **lógica**. Aquí tienes una propuesta de estructura limpia:
+## Requisitos
 
-```text
-📦 mi-repositorio-cad
- ┣ 📂 lisp                 # Todos tus scripts .lsp sueltos
- ┃ ┣ 📜 limpieza-planos.lsp
- ┃ ┣ 📜 exportar-puntos.lsp
- ┃ ┗ 📜 utils-geometria.lsp
- ┣ 📂 cuix                 # Archivos de personalización
- ┃ ┣ 📜 mis-herramientas.cuix
- ┃ ┗ 📂 iconos             # Imágenes (.png) de 16x16 y 32x32 para los botones
- ┣ 📜 acaddoc.lsp          # El cargador automático (crucial)
- ┣ 📜 LICENSE              # Licencia (ej. MIT para que sea libre)
- ┗ 📜 README.md            # Las instrucciones de instalación
+- AutoCAD 64-bit (2010 o superior)
+- Soporte ActiveX/VLA habilitado (carga automática con `vl-load-com`)
 
-```
+## Instalación
 
----
-
-## 🔧 El truco del archivo `acaddoc.lsp` (La clave de la automatización)
-
-Para que la comunidad no tenga que cargar los LISP uno por uno usando el comando `APPLOAD`, incluye un archivo llamado `acaddoc.lsp` en la raíz de la carpeta.
-
-AutoCAD busca este archivo automáticamente en sus rutas de soporte cada vez que se abre un dibujo. Dentro de él, puedes programar la carga automática de tus scripts y del menú CUIX usando las funciones VLA que ya conoces:
+Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las rutas de búsqueda de AutoCAD y colocar lo siguiente en tu `acaddoc.lsp`:
 
 ```lisp
-;; acaddoc.lsp
 (vl-load-com)
-
-;; 1. Cargar los scripts LISP de forma automática
-(load "limpieza-planos.lsp" "\nError al cargar limpieza-planos")
-(load "exportar-puntos.lsp" "\nError al cargar exportar-puntos")
-
-;; 2. Cargar el menú CUIX automáticamente si no está cargado
-(defun c:CargarMiMenu ()
-  (if (not (menugroup "MI_MENU_COMUNIDAD"))
-    (vl-cmdf "_.menuload" "mis-herramientas.cuix")
-  )
-  (princ "\n[Menu de la Comunidad Cargado Correctamente]")
-  (princ)
-)
-(c:CargarMiMenu)
-
+(load "MC-AREA.lsp"   "\nError al cargar MC-AREA")
+(load "MC-TABLE.lsp"  "\nError al cargar MC-TABLE")
+(load "MC-VECTOR.lsp" "\nError al cargar MC-VECTOR")
 ```
 
----
+## Comandos
 
-## 🗺️ La ruta de migración: De LISP a .NET (C#)
-
-Si la comunidad se inspira y el repositorio crece, la transición de LISP a C# usando tu estructura de CUIX es sumamente sencilla gracias a cómo maneja AutoCAD las macros de los botones.
-
-Cuando creas un botón en el editor `CUI](comando `CUI`), la macro asociada simplemente escribe un comando en la barra de texto de AutoCAD:
-
-```text
-Macro del botón actual (LISP):   ^C^C_MI_COMANDO_LISP
+### MCAREA — Cálculo de Áreas Catastrales
 
 ```
+MCAREA
+```
 
-Si el día de mañana alguien reescribe esa función en **C#**, la macro del botón **no tiene que cambiar**. El botón seguirá llamando a `^C^C_MI_COMANDO_LISP`. Lo único que cambiará es el trasfondo: en lugar de cargar un archivo `.lsp`, el usuario cargará un archivo `.dll` usando `NETLOAD`.
+Calcula el área de una polilínea cerrada e inserta el valor en el centroide del polígono. Soporta dos métodos de cálculo:
 
-Esto significa que **toda la interfaz CUIX que diseñes hoy seguirá siendo 100% útil en el futuro**, sin importar si el motor del comando es LISP, C# o C++.
+| Método | Descripción |
+|--------|-------------|
+| Estándar | Coordenadas originales sin modificar |
+| MIMP / Mensuras RD | Redondeo de coordenadas a 2 decimales antes del cálculo (según normativa dominicana) |
 
----
+Permite seleccionar la polilínea directamente o detectar el contorno con `-BOUNDARY` haciendo clic en un punto interior.
 
-## 🚀 Consejos para lanzar el repositorio
+**Opciones de formato:** precisión decimal (0–4), altura de texto configurable, sufijo `m²` opcional.
 
-1. **Usa una licencia clara:** Te recomiendo la **Licencia MIT**. Es súper permisiva, le dice a la gente "puedes usar esto para lo que quieras, incluso comercialmente, solo mantén mi nombre en los créditos", lo cual fomenta que la gente pierda el miedo a colaborar.
-2. **Haz un buen README:** Pon capturas de pantalla o GIFs animados mostrando qué hace cada script. Los ingenieros y diseñadores compran mucho por los ojos; si ven un GIF de una polilínea automatizándose, querrán descargar el repositorio de inmediato.
-3. **Crea "Issues" (Tareas pendientes):** En GitHub, deja una lista de ideas de scripts que te gustaría tener pero no has tenido tiempo de programar. Eso le da a los programadores novatos un punto de partida para ayudarte.
+### MCTABLE — Tablas de Coordenadas UTM, Rumbos y Distancias
 
-¿Tienes pensado ya cuál va a ser ese primer script "estrella" con el que vas a inaugurar el repositorio?
+```
+MCTABLE
+```
+
+Genera dos tablas a partir de una polilínea cerrada:
+
+1. **Tabla de coordenadas georreferenciadas** — ESTE (X) y NORTE (Y) por vértice, con posibilidad de invertir el orden de columnas.
+2. **Cuadro de rumbos y distancias** — rumbo en formato `N DD° MM' SS" E` y distancia en metros por tramo.
+
+Numera automáticamente los vértices en el dibujo y permite elegir el vértice de origen, la dirección de recorrido (horaria/antihoraria) y la precisión decimal.
+
+### MCVECTOR — Anotador de Rumbos y Distancias
+
+```
+MCVECTOR
+```
+
+Anota el rumbo y la distancia de cada segmento de una polilínea directamente sobre el dibujo. El texto se coloca a ambos lados de cada segmento, rotado para mantener legibilidad.
+
+Soporta dos modos:
+
+| Modo | Funcionamiento |
+|------|----------------|
+| Polígono | Selecciona una polilínea y un vértice de inicio; anota todos los segmentos automáticamente |
+| Manual | Indica pares de puntos uno a uno hasta cancelar con ESC |
+
+Permite elegir sentido de recorrido (directo/inverso) y precisión decimal de la distancia (0–8).
+
+## Estructura del repositorio
+
+```
+lisp/           # Scripts .lsp (el producto)
+cuix/icons/     # Iconos para botones CUIX (pendiente)
+```
+
+## Licencia
+
+MIT
