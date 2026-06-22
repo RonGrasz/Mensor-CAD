@@ -463,7 +463,7 @@
 
   (setq dlg-result 0)
   (while (= (setq dlg-result (start_dialog)) 2)
-    (setvar "OSMODE" 512)
+    (setvar "OSMODE" 1)
     (setq click-pt (getpoint "\nHaga clic cerca del vértice que desea como Origen (Punto 1): "))
 
     (if (not (new_dialog "mctable_dlg" dcl-id))

@@ -496,7 +496,7 @@
 
   (setq *mcv-modo-poligono nil *mcv-sentido-h nil *mcv-decimales-str nil)
 
-  (setvar "OSMODE" 0)
+  (setvar "OSMODE" 1)
 
   (princ (strcat
     "\n[MCVECTOR] Modo: "    (if modo-poligono "Poligono" "Manual")
