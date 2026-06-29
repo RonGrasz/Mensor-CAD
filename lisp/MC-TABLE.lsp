@@ -39,6 +39,16 @@
       (write-line "  }" f)
       (write-line "" f)
       (write-line "  : boxed_column {" f)
+      (write-line "    label = \"Apariencia de Vértices\";" f)
+      (write-line "    : row {" f)
+      (write-line "      : text { label = \"Prefijo:\"; }" f)
+      (write-line "      : edit_box { key = \"txt_prefijo_tag\"; value = \"E\"; width = 6; edit_width = 4; }" f)
+      (write-line "      : text { label = \"Radio:\"; }" f)
+      (write-line "      : edit_box { key = \"txt_radio_vertice\"; value = \"1.0\"; width = 8; edit_width = 6; }" f)
+      (write-line "    }" f)
+      (write-line "  }" f)
+      (write-line "" f)
+      (write-line "  : boxed_column {" f)
       (write-line "    label = \"Vértice inicial (E-1)\";" f)
       (write-line "    : row {" f)
       (write-line "      : text { key = \"txt_orig\"; label = \"Sin seleccionar\"; width = 32; }" f)
@@ -189,25 +199,44 @@
 ;; SECCIÓN 4: COLOCACIÓN DE ETIQUETAS DE VÉRTICES
 ;; ============================================================
 
-(defun MCTABLE:label-vertices (vlist txt-height layer-name / i pt lbl offset)
-  (setq i      1
-        offset (* txt-height 1.2))
+(defun MCTABLE:label-vertices (vlist txt-height layer-name prefijo radio /
+                                 i n pt pt-next ang perp-ang tag-lbl ins-pt-text)
+  (setq i 1
+        n (length vlist))
   (foreach pt vlist
-    (setq lbl (itoa i))
+    (setq pt-next     (if (= i n) (nth 0 vlist) (nth i vlist))
+          ang         (angle pt pt-next)
+          perp-ang    (+ ang (/ pi 2.0))
+          tag-lbl     (strcat prefijo "-" (itoa i))
+          ins-pt-text (polar pt perp-ang (+ radio (* txt-height 0.2)))
+    )
+    ;; Circulo exacto en el vertice
+    (entmake
+      (list
+        '(0 . "CIRCLE")
+        (cons 8  layer-name)
+        (cons 10 pt)
+        (cons 40 radio)
+      )
+    )
+    ;; Tag de texto alineado paralelo al segmento siguiente
     (entmake
       (list
         '(0 . "TEXT")
         (cons 8  layer-name)
-        (cons 10 (list (+ (car pt) offset) (+ (cadr pt) offset) 0.0))
+        (cons 10 ins-pt-text)
+        (cons 11 ins-pt-text)
         (cons 40 txt-height)
-        (cons 1  lbl)
-        '(7  . "Standard")
-        '(72 . 0)
+        (cons 1  tag-lbl)
+        '(7 . "Standard")
+        (cons 50 ang)
+        '(72 . 1)
+        '(73 . 1)
       )
     )
     (setq i (1+ i))
   )
-  (princ (strcat "\n  " (itoa (1- i)) " etiquetas de vértices colocadas."))
+  (princ (strcat "\n  " (itoa (1- i)) " vértices etiquetados (círculo + tag rotado)."))
 )
 
 ;; ============================================================
@@ -367,6 +396,7 @@
   opt-cw opt-yx decimals origin-idx ordered-verts
   ins-pt ins-pt2 txt-height lyr-etiq click-pt dlg-result start-pt
   lyr-data lyr-ent lyr-ed
+  tag-prefix circle-rad
 )
 
   (defun *error* (msg)
@@ -434,6 +464,8 @@
         decimals   2
         origin-idx 0
         click-pt   nil
+        tag-prefix "E"
+        circle-rad 1.0
   )
 
   (setq dcl-file (vl-filename-mktemp "mctbl" nil ".dcl"))
@@ -448,6 +480,8 @@
 
   (set_tile "rb_ccw"  "1")
   (set_tile "eb_dec"  "2")
+  (set_tile "txt_prefijo_tag"   "E")
+  (set_tile "txt_radio_vertice" "1.0")
   (set_tile "txt_orig"
     (strcat "Vértice 1: (" (rtos (car (car vertices)) 2 2) ", " (rtos (cadr (car vertices)) 2 2) ")")
   )
@@ -457,8 +491,10 @@
   (action_tile "rb_xy"    "(setq opt-yx nil)")
   (action_tile "rb_yx"    "(setq opt-yx T)")
   (action_tile "eb_dec"   "(setq decimals (atoi (get_tile \"eb_dec\")))(if (or (< decimals 0)(> decimals 8))(progn (set_tile \"eb_dec\" \"2\")(setq decimals 2)))")
+  (action_tile "txt_prefijo_tag"   "(setq tag-prefix (get_tile \"txt_prefijo_tag\"))")
+  (action_tile "txt_radio_vertice" "(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(progn (set_tile \"txt_radio_vertice\" \"1.0\")(setq circle-rad 1.0)))")
   (action_tile "btn_orig" "(done_dialog 2)")
-  (action_tile "accept"   "(setq decimals (atoi (get_tile \"eb_dec\")))(done_dialog 1)")
+  (action_tile "accept"   "(setq decimals (atoi (get_tile \"eb_dec\")))(setq tag-prefix (get_tile \"txt_prefijo_tag\"))(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(setq circle-rad 1.0))(done_dialog 1)")
   (action_tile "cancel"   "(done_dialog 0)")
 
   (setq dlg-result 0)
@@ -472,6 +508,8 @@
         (if opt-cw (set_tile "rb_cw" "1") (set_tile "rb_ccw" "1"))
         (if opt-yx (set_tile "rb_yx" "1") (set_tile "rb_xy" "1"))
         (set_tile "eb_dec" (itoa decimals))
+        (set_tile "txt_prefijo_tag"   tag-prefix)
+        (set_tile "txt_radio_vertice" (rtos circle-rad 2 2))
         (if click-pt
           (progn
             (setq origin-idx (MCTABLE:closest-vertex (list (car click-pt) (cadr click-pt)) vertices))
@@ -486,8 +524,10 @@
         (action_tile "rb_xy"    "(setq opt-yx nil)")
         (action_tile "rb_yx"    "(setq opt-yx T)")
         (action_tile "eb_dec"   "(setq decimals (atoi (get_tile \"eb_dec\")))(if (or (< decimals 0)(> decimals 8))(progn (set_tile \"eb_dec\" \"2\")(setq decimals 2)))")
+        (action_tile "txt_prefijo_tag"   "(setq tag-prefix (get_tile \"txt_prefijo_tag\"))")
+        (action_tile "txt_radio_vertice" "(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(progn (set_tile \"txt_radio_vertice\" \"1.0\")(setq circle-rad 1.0)))")
         (action_tile "btn_orig" "(done_dialog 2)")
-        (action_tile "accept"   "(setq decimals (atoi (get_tile \"eb_dec\")))(done_dialog 1)")
+        (action_tile "accept"   "(setq decimals (atoi (get_tile \"eb_dec\")))(setq tag-prefix (get_tile \"txt_prefijo_tag\"))(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(setq circle-rad 1.0))(done_dialog 1)")
         (action_tile "cancel"   "(done_dialog 0)")
       )
     )
@@ -540,7 +580,7 @@
 
   (setq txt-height (max (getvar "TEXTSIZE") 0.20))
   (princ "\nDibujando numeración de vértices...")
-  (MCTABLE:label-vertices ordered-verts txt-height lyr-etiq)
+  (MCTABLE:label-vertices ordered-verts txt-height lyr-etiq tag-prefix circle-rad)
 
   (setvar "OSMODE" 0)
   (setq ins-pt (getpoint "\nIndique el punto de inserción para la TABLA DE COORDENADAS: "))
