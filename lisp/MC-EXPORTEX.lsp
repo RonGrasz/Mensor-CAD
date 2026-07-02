@@ -53,7 +53,7 @@
   ;; 3. VALORES INICIALES DE CONTROLES DCL
   ;; ----------------------------------------------------------
   (setq modo      "poly"   
-        direccion "ccw"    
+        direccion "cw"    
         decimales "2"      
         formato   "txt"    
         sel-poly  nil
@@ -162,8 +162,8 @@
       "  : boxed_column {"
       "    key  = \"box_dir\";"
       "    label = \"Dirección del Polígono\";"
-      "    : radio_button { key = \"rb_ccw\"; label = \"Antihoraria (CCW)\"; value = \"1\"; }"
-      "    : radio_button { key = \"rb_cw\";  label = \"Horaria (CW)\"; }"
+      "    : radio_button { key = \"rb_ccw\"; label = \"Antihoraria (CCW)\"; }"
+      "    : radio_button { key = \"rb_cw\";  label = \"Horaria (CW)\"; value = \"1\"; }"
       "  }"
       "  : boxed_row {"
       "    label = \"Precisión Decimal\";"
@@ -475,7 +475,7 @@
 )
 
 ;;; ============================================================
-;;; ECT:GUARDAR-ARCHIVO EN TXT O CSV
+;;; ECT:GUARDAR-ARCHIVO EN TXT O CSV (FORMATO PARA EL MÓDULO DE INGRESO DE MENSURAS PARA PARCELAS v4.0.1.)
 ;;; ============================================================
 (defun ECT:guardar-archivo (lineas fmt / ext titulo filename f)
   (setq ext   fmt
