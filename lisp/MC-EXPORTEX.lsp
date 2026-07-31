@@ -408,11 +408,12 @@
 ;;; ============================================================
 ;;; ECT:FORMATEAR-VERTICES
 ;;; ============================================================
-(defun ECT:formatear-vertices (pts prec fmt / lineas n v xs ys cabecera)
+(defun ECT:formatear-vertices (pts prec fmt / lineas n v xs ys)
   (setq lineas   '()
-        n        1
-        cabecera (if (= fmt "txt") "\tx\ty" "Punto,X,Y"))
-  (setq lineas (list cabecera))
+        n        1)
+  (if (= fmt "txt")
+    (setq lineas (list "\tx\ty"))
+  )
 
   (foreach v pts
     (setq xs (rtos (car  v) 2 prec)
@@ -422,7 +423,7 @@
         (list
           (if (= fmt "txt")
             (strcat (itoa n) "\t" xs "\t" ys)
-            (strcat (itoa n) "," xs "," ys)
+            (strcat (itoa n) "," ys "," xs)
           )
         )
       )
@@ -435,7 +436,7 @@
 ;;; ============================================================
 ;;; ECT:PROCESAR-TEXTOS
 ;;; ============================================================
-(defun ECT:procesar-textos (ss fmt prec / n total idx ent edatos pt pts lineas cabecera xs ys)
+(defun ECT:procesar-textos (ss fmt prec / n total idx ent edatos pt pts lineas xs ys)
   (setq total (sslength ss)
         idx 0
         pts '())
@@ -452,9 +453,10 @@
   (setq pts (vl-sort pts '(lambda (a b) (> (cadr a) (cadr b)))))
 
   (setq lineas '()
-        cabecera (if (= fmt "txt") "\tx\ty" "Punto,X,Y")
-        lineas (list cabecera)
         n 1)
+  (if (= fmt "txt")
+    (setq lineas (list "\tx\ty"))
+  )
 
   (foreach v pts
     (setq xs (rtos (car v) 2 prec)
@@ -464,7 +466,7 @@
         (list
           (if (= fmt "txt")
             (strcat (itoa n) "\t" xs "\t" ys)
-            (strcat (itoa n) "," xs "," ys)
+            (strcat (itoa n) "," ys "," xs)
           )
         )
       )
