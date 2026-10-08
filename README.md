@@ -1,6 +1,6 @@
 # Mensor CAD
 
-Plugins LISP para AutoCAD orientados a trabajos topográficos y catastrales. Tres comandos independientes con interfaz gráfica (DCL).
+Plugins LISP para AutoCAD orientados a trabajos topográficos y catastrales. Comandos independientes, la mayoría con interfaz gráfica (DCL).
 
 ## Requisitos
 
@@ -16,6 +16,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-AREA.lsp"   "\nError al cargar MC-AREA")
 (load "MC-TABLE.lsp"  "\nError al cargar MC-TABLE")
 (load "MC-VECTOR.lsp" "\nError al cargar MC-VECTOR")
+(load "MC-COORD.lsp"  "\nError al cargar MC-COORD")
 ```
 
 ## Comandos
@@ -66,6 +67,20 @@ Soporta dos modos:
 | Manual | Indica pares de puntos uno a uno hasta cancelar con ESC |
 
 Permite elegir sentido de recorrido (directo/inverso) y precisión decimal de la distancia (0–8).
+
+### MCCOORD — Tabla de Coordenadas Vinculada a un Punto
+
+```
+MCCOORD
+```
+
+Solicita un punto, nodo o vértice y un punto de inserción; crea una **TABLE nativa de 3×3** con el título `COORDENADAS UTM 19 NORTE`, los encabezados `ESTE`/`NORTE`/`ALTURA` y los valores X/Y/Z con tres decimales. Además traza una **LINE** desde el punto original hasta la tabla y la mantiene anclada: al mover la tabla con `MOVE` o pinzamientos, la línea se reajusta al terminar el comando.
+
+- Las coordenadas se toman en WCS; el punto original se guarda como instantánea en XDATA (`1010`), por lo que no se recalcula si la geometría de origen cambia después.
+- **No hay conversión geodésica**: el dibujo ya debe estar en el CRS previsto (por defecto se rotula UTM zona 19 Norte).
+- La línea se actualiza al finalizar/cancelar el comando, no durante el arrastre en vivo.
+- Copias, rotaciones y escalados de la tabla no se reasocian de forma garantizada; el caso soportado es el desplazamiento (`MOVE`).
+- Requiere **AutoCAD de 64 bits con ActiveX/VLA** y cargar el script en cada dibujo (p. ej. desde `acaddoc.lsp`) para reconectar los reactores; al recargar el script o abrir el dibujo, los extremos de la LINE se reconstruyen desde los metadatos XDATA.
 
 ## Estructura del repositorio
 
