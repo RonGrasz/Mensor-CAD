@@ -1,7 +1,7 @@
 ;;; ============================================================
 ;;; MCEXPORTEX.lsp
 ;;; Herramienta híbrida de extracción de coordenadas desde
-;;; polígonos (LWPOLYLINE) o textos (TEXT / MTEXT) en AutoCAD.
+;;; polígonos (LWPOLYLINE) o textos (TEXT / MTEXT) en AutoCAD y Civil 3D.
 ;;;
 ;;; Comando: MCEXPORTEX
 ;;; ============================================================
