@@ -18,6 +18,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-VECTOR.lsp" "\nError al cargar MC-VECTOR")
 (load "MC-COORD.lsp"  "\nError al cargar MC-COORD")
 (load "MC-VERTEX.lsp" "\nError al cargar MC-VERTEX")
+(load "MC-SUBDIV.lsp" "\nError al cargar MC-SUBDIV")
 ```
 
 ## Comandos
@@ -141,6 +142,81 @@ Dibuja un **CIRCLE** centrado en la coordenada exacta de cada vértice de una fu
 - [ ] **Arcos (bulge)**: comprobar que la comprobación por cuerdas no deja una etiqueta dentro de un arco cóncavo.
 - [ ] ESC en cada etapa (diálogo, selección, origen, contorno, anotación) sin dejar temporales ni variables alteradas.
 - [ ] Revisar que `OSMODE`, `CMDECHO` y `DIMZIN` vuelven a su valor previo.
+
+### MCSUBDIV — Subdivisión por superficie
+
+```
+MCSUBDIV
+```
+
+**Feature aceptada tras pruebas manuales positivas en AutoCAD, incluidos el anclaje, el contorno de polígonos cerrados manualmente y los polígonos cerrados con `C`.** Divide una **LWPOLYLINE simple, horizontal y de tramos rectos** por superficie, mediante cortes paralelos o cortes anclados en abanico. La polilínea fuente permanece intacta. El comando es independiente: no requiere cargar otros scripts.
+
+#### Uso
+
+1. Cargar `lisp/MC-SUBDIV.lsp` con `APPLOAD` y ejecutar `MCSUBDIV`.
+2. Seleccionar una polilínea cerrada o abierta. Si no tiene `C`, se trabaja con una copia cerrada uniendo último y primer vértice. Si sus extremos coinciden dentro de la tolerancia geométrica, el extremo final duplicado se retira **solo de la copia**. El cierre debe producir un contorno simple válido.
+3. Elegir el método en el diálogo:
+
+   | Método | Resultado |
+   |--------|-----------|
+   | Partes iguales | N parcelas de área total / N; N−1 posiciones de corte |
+   | Área + resto | Una parcela objetivo y otra con el resto |
+   | Porcentaje + resto | Una parcela con el porcentaje del área original y otra con el resto |
+
+4. Pulsar **Definir dirección...**. Elegir dos puntos para dibujar la guía, o hacer clic cerca de dos **vértices reales distintos** de la fuente. La selección por vértices toma el vértice de la fuente más cercano a cada clic.
+5. Elegir **Tipo de corte**:
+   - **Paralelo (trasladar):** conserva el comportamiento anterior. Opcionalmente activar **Rotar la guía**, indicar un ángulo relativo en grados (positivo antihorario, negativo horario) y seleccionar un pivote. La guía se rota antes del ajuste por superficie; el corte final no está obligado a pasar por ese pivote.
+   - **Anclado (girar / abanico):** elegir **Primer punto** o **Segundo punto** de la guía como ancla. Ese punto debe coincidir con un vértice real del contorno; resulta práctico definir la guía mediante dos vértices. El comando determina el ángulo necesario, manteniendo fijo ese vértice. La rotación manual queda deshabilitada en este modo, pero conserva sus valores al volver al paralelo.
+6. Para área o porcentaje, elegir el lado objetivo. Ajustar tolerancia, altura y decimales, y pulsar **Subdividir**. En partes iguales ancladas, las N−1 cuerdas comparten el ancla: las áreas son iguales, no necesariamente los ángulos.
+
+El diálogo se suspende durante las selecciones y se reabre conservando los campos, incluidos los textos todavía inválidos y las opciones de anclaje. En el modo paralelo, la guía solo determina la dirección: su longitud y posición inicial no limitan la subdivisión. En el anclado, la guía identifica el vértice fijo y el ángulo final lo determina la superficie. Las cotas Z se proyectan al plano horizontal de la fuente; los clics se convierten de UCS a WCS.
+
+#### Orientación y precisión
+
+- **Norte = +Y y Este = +X de WCS**, sin transformación geodésica ni conversión de unidades; el dibujo se interpreta en metros. Un UCS rotado no cambia los lados cardinales.
+- El lado elegido recibe la parcela objetivo (**Lote 1**). En paralelo, las diagonales eligen el semiplano compatible, no un cuadrante; una orientación paralela a la guía se rechaza. En anclado, se busca una cuerda cuyo lado local del lote objetivo sea compatible con esa dirección WCS; la guía inicial no limita el ángulo. En un cóncavo que envuelve el ancla esto es una preferencia de lado del corte, no una garantía de que todos los puntos estén en un cuadrante.
+- En partes iguales paralelas, invertir la guía invierte la numeración, no las superficies. En abanico se recorre la frontera desde el ancla en sentido antihorario; si no se encuentra una secuencia válida se intenta el horario.
+- Los cortes se resuelven por **áreas acumuladas**, no por separaciones ni ángulos iguales. La tolerancia de área es positiva y empieza en `0.01 m²`. El modo paralelo usa bisección con tolerancia/4 y un máximo de 80 iteraciones por corte. En anclado, el área acumulada es afín a lo largo de cada arista: se calcula el punto de llegada y, con él, la dirección de la cuerda. No se supone que el área sea monótona respecto del ángulo en todo un cóncavo.
+- Cada parcela y la suma total deben cumplir la tolerancia de área. El objetivo y el resto, o cada parte igual, deben superar esa tolerancia. Para superficies menores hay que reducirla.
+- La tolerancia geométrica interna es independiente: `max(1e-8 m, extensión XY × 1e-10)`. Los cálculos usan un origen local cercano a la fuente para evitar pérdida de precisión en coordenadas UTM.
+- Los decimales de la etiqueta (0–4) **no intervienen en los cortes**. Se aceptan números con punto decimal y signo; se rechazan texto sobrante (`1abc`), comas y exponentes. Partes exige un entero ≥2; porcentaje exige `0 < valor < 100`; área exige `0 < valor < área total`.
+
+#### Salida y restricciones
+
+La salida contiene **LWPOLYLINE cerradas, LINE divisorias y MTEXT** con número de lote y área en `m²`, en la capa actual y con el estilo de texto actual. No se crean capas ni estilos. Las LINE paralelas se limitan a los tramos interiores; las ancladas van del vértice fijo al punto calculado sobre la frontera. Los contornos incluyen sus fronteras compartidas.
+
+Si la fuente es abierta, también se publica el **contorno cerrado de trabajo**, conservando la original con su bandera abierta y sus coordenadas. Se publica únicamente después de validar todas las parcelas; pertenece a la misma ejecución y se retira junto con los resultados al deshacer o ante un fallo.
+
+Cada parcela debe ser **una sola pieza conectada**. Si una dirección genera fragmentos separados, se rechaza toda la operación; no se suman fragmentos para presentarlos como un lote. En anclado se admiten solamente cuerdas interiores que no cruzan, tocan ni se superponen a la frontera salvo en sus dos extremos. Se elige la primera solución válida en orden de frontera, avanzando de un acumulado al siguiente para evitar parcelas superpuestas. Si no se encuentra un abanico válido, se solicita otro vértice o el modo paralelo. La búsqueda no es exhaustiva: no reconsidera cortes anteriores si un acumulado posterior falla, por lo que puede rechazar un ancla aun cuando otra combinación fuera viable. Se valida toda la geometría antes de publicar resultados. Las etiquetas se ubican en el **centroide real**: si queda fuera de una parcela cóncava, se informa el número de lote y se mantiene esa posición matemática.
+
+No se admiten arcos/bulges (se rechazan, **no se aproximan por cuerdas**), huecos, autointersecciones, contactos consigo misma, vértices consecutivos coincidentes, geometría inclinada, normal −Z, POLYLINE antigua ni entidades 3D. Una capa actual bloqueada también impide iniciar la operación.
+
+Requiere AutoCAD Windows con ActiveX y operaciones REGION/Boolean. El DCL y las entidades de cálculo son temporales. ESC o un error restablecen `OSMODE`, `CMDECHO` y `DIMZIN` y eliminan únicamente lo creado por esa ejecución. Los resultados se agrupan en una marca de deshacer para retirarlos con un solo `UNDO`. Si AutoCAD impide borrar o restaurar algo, el comando imprime un aviso para revisar el dibujo y las variables.
+
+#### Lista de verificación manual
+
+Las pruebas manuales reportadas fueron positivas y la feature fue aceptada. La siguiente lista se conserva para futuras regresiones; sus casillas no representan resultados individuales confirmados.
+
+Usar un **DWG de prueba**, guardar las variables originales y comprobar áreas mediante las propiedades de AutoCAD, no solamente leyendo las etiquetas. Después de cada rechazo o cancelación, comprobar fuente intacta, ausencia de resultados/REGION/temporales y restauración de variables.
+
+- [ ] **Carga:** `APPLOAD` muestra `MCSUBDIV cargado. Escriba MCSUBDIV para iniciar.` y el comando abre el diálogo.
+- [ ] **Ejemplo base:** rectángulo WCS `(0,0)-(25,0)-(25,20)-(0,20)`, cerrado con `C`: área `500 m²`. Guía vertical, área `200`, lado Este: corte `X=15`, lote 1 a la derecha `200 m²`, resto `300 m²`, dos contornos y dos etiquetas. Repetir con porcentaje `40`: mismo resultado dentro de `0.01 m²`.
+- [ ] **Partes:** dos partes de `250 m²` con un corte; tres partes de `166.666666… m²` con dos posiciones de corte. Comprobar superficies reales y suma `500 m²`, sin huecos ni solapes.
+- [ ] **Guía corta/larga:** repetir el ejemplo con puntos `(10,8)-(10,12)` y `(10,-10)-(10,30)`; mismo corte y ningún tramo LINE fuera del contorno. Repetir usando los vértices `(0,0)` y `(0,20)`.
+- [ ] **Lados:** repetir área `200` al Oeste (corte `X=10`), Norte (guía horizontal, `Y=12`) y Sur (`Y=8`); probar las cuatro diagonales con guía diagonal. Lado paralelo a la guía muestra el aviso y mantiene el diálogo abierto.
+- [ ] **Rotación:** guía horizontal, pivote `(0,0)`, ángulo `90`, área `200` al Este: corte vertical `X=15`. Repetir con ángulo negativo y otro pivote. Sin pivote o ángulo inválido no acepta.
+- [ ] **Irregular:** contorno convexo `(0,0)-(30,0)-(20,20)-(0,20)` de `500 m²`, tres partes iguales: áreas equivalentes aunque los cortes paralelos no sean equidistantes.
+- [ ] **Conectividad:** polígono U `(0,0)-(10,0)-(10,10)-(7,10)-(7,3)-(3,3)-(3,10)-(0,10)` de `72 m²`; guía horizontal, área `20` al Norte: debe rechazar fragmentos separados sin dejar geometría. Probar también una división conectada de un cóncavo.
+- [ ] **Entorno:** trasladar el ejemplo a coordenadas UTM y elevación `100`; usar UCS rotado. Contornos, líneas y textos conservan el plano de la fuente y los lados WCS.
+- [ ] **Entrada:** `1abc`, vacío, cero y negativo; partes `1`/`2.5`; porcentaje `0`/`100`; área `500`/mayor que total; dos puntos iguales; tolerancia/altura no positivas. Los avisos conservan los campos al reabrir por selección; no crean resultados.
+- [ ] **Fuente abierta:** repetir el rectángulo de 500 m² sin `C`, tanto con cuatro vértices y nuevo tramo de cierre como con un quinto punto coincidente con el primero. Área 200 al Este en modo paralelo produce 200+300 y una copia cerrada adicional; la fuente conserva bandera abierta y coordenadas. Probar también en modo anclado y verificar que `UNDO` retira copia y resultados, no la fuente.
+- [ ] **Cierre inválido:** abierta `(0,0)-(10,0)-(0,10)-(10,10)` produce un cierre que se cruza: rechazo sin copia ni resultados; fuente intacta. Bulge, normal −Z, inclinadas, cruces, contactos y duplicados consecutivos siguen rechazándose. Capa actual bloqueada: aviso sin temporales.
+- [ ] **Ancla / área:** rectángulo 25×20, guía `(0,0)-(0,20)`, tipo anclado, primer punto fijo, área `200` al Este: cuerda `(0,0)-(25,16)`, áreas 200+300. Repetir porcentaje `40`. Con segundo punto fijo: cuerda `(0,20)-(25,4)`, mismas áreas. Comprobar extremos exactos y ausencia de huecos/solapes.
+- [ ] **Abanico:** mismo rectángulo, primer punto fijo, tres partes: cuerdas hacia `(25,13.333333…)` y `(16.666666…,20)`, tres áreas `166.666666…`, misma ancla y ángulos distintos. Dos partes: una cuerda hacia `(25,20)` y dos áreas 250.
+- [ ] **Ancla inválida / regresión:** guía `(10,8)-(10,12)` sigue válida en paralelo (corte X=15 para 200 al Este) pero no en anclado, porque ningún extremo es un vértice. Alternar tipos, cambiar extremo fijo y reabrir por selección conservando valores. La rotación manual anterior mantiene su comportamiento al volver al paralelo.
+- [ ] **Cóncavo anclado:** probar distintas anclas en L/U, incluidos cortes que salen/reentran, solapan un borde o tocan un vértice intermedio. Cada cuerda publicada permanece dentro; en rechazo no queda geometría parcial y el área total se conserva en las operaciones aceptadas.
+- [ ] **Cancelación:** ESC en selección, diálogo, primer/segundo punto, vértices, pivote y procesamiento. Comprobar `OSMODE`, `CMDECHO`, `DIMZIN`, fuente y temporales. Tras una ejecución correcta, un `UNDO` retira todos sus resultados y conserva la fuente.
+- [ ] **Centroide:** comprobar la ubicación con propiedades de región en copia de prueba; en un cóncavo cuyo centroide quede fuera, aparece el aviso y no se desplaza silenciosamente la etiqueta.
 
 ## Estructura del repositorio
 
