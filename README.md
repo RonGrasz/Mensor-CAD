@@ -19,6 +19,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-COORD.lsp"  "\nError al cargar MC-COORD")
 (load "MC-VERTEX.lsp" "\nError al cargar MC-VERTEX")
 (load "MC-SUBDIV.lsp" "\nError al cargar MC-SUBDIV")
+(load "MC-TRANSFORM.lsp" "\nError al cargar MC-TRANSFORM")
 ```
 
 ## Comandos
@@ -217,6 +218,48 @@ Usar un **DWG de prueba**, guardar las variables originales y comprobar áreas m
 - [ ] **Cóncavo anclado:** probar distintas anclas en L/U, incluidos cortes que salen/reentran, solapan un borde o tocan un vértice intermedio. Cada cuerda publicada permanece dentro; en rechazo no queda geometría parcial y el área total se conserva en las operaciones aceptadas.
 - [ ] **Cancelación:** ESC en selección, diálogo, primer/segundo punto, vértices, pivote y procesamiento. Comprobar `OSMODE`, `CMDECHO`, `DIMZIN`, fuente y temporales. Tras una ejecución correcta, un `UNDO` retira todos sus resultados y conserva la fuente.
 - [ ] **Centroide:** comprobar la ubicación con propiedades de región en copia de prueba; en un cóncavo cuyo centroide quede fuera, aparece el aviso y no se desplaza silenciosamente la etiqueta.
+
+### MCTRANSFORM — Escala de contorno por superficie
+
+```
+MCTRANSFORM
+```
+
+Crea un **contorno cerrado verde (ACI 3)** y lo reduce o amplía hasta el área indicada, conservando la forma y la posición del **centroide real del área**. La entidad original permanece intacta. El script es independiente: no requiere cargar otros comandos.
+
+#### Uso
+
+1. Cargar `lisp/MC-TRANSFORM.lsp` con `APPLOAD` y ejecutar `MCTRANSFORM`.
+2. Seleccionar una **LWPOLYLINE simple, horizontal y de tramos rectos**, cerrada o abierta. En abiertas se une último y primer vértice **solo en la copia**. Si el extremo final coincide con el primero dentro de la tolerancia geométrica, se retira ese extremo duplicado únicamente de la copia. El cierre debe formar un contorno válido.
+3. El comando crea la copia verde y muestra su área inicial. Introducir un **área objetivo positiva** por línea de comandos; Enter o ESC cancela y elimina la copia de esa ejecución.
+4. Se aplica el factor `sqrt(área objetivo / área original)` alrededor del centroide. El resultado queda en la **capa actual**, sin crear capas ni estilos. Un solo `UNDO` retira el resultado y conserva la fuente.
+
+El área se expresa en **unidades de dibujo al cuadrado (`u2`)**: si el dibujo está en metros, corresponde a m². No se convierte el CRS ni se convierten unidades. La elevación se conserva; los vértices se convierten de OCS a WCS y los cálculos usan un origen local cercano a la fuente para reducir pérdida de precisión en coordenadas UTM. El UCS no determina el centro de escala.
+
+#### Precisión y restricciones
+
+- La escala es uniforme y positiva: no rota, refleja ni deforma. Un área objetivo igual a la inicial produce un contorno coincidente; el original sigue intacto.
+- El centroide es el de la superficie, **no** el promedio de vértices ni el centro de la caja. Puede quedar fuera de un polígono cóncavo; se mantiene su posición matemática.
+- Solo se acepta normal `+Z`. No se admiten arcos/bulges, POLYLINE antigua, entidades 3D, autointersecciones, contactos consigo misma, aristas superpuestas, vértices consecutivos coincidentes ni área nula. No se aproximan arcos por cuerdas. Una capa actual bloqueada impide crear el contorno.
+- La copia es un contorno sin ancho ni grosor: no replica las propiedades, etiquetas ni asociaciones de la fuente; usa la capa actual y color verde explícito, no `ByLayer`.
+- La tolerancia geométrica interna es `max(1e-8, extensión XY × 1e-10)` en unidades de dibujo. Después de escribir la geometría se verifican nuevamente su validez, el área (error relativo máximo `1e-8`) y el centroide (tolerancia geométrica máxima entre fuente y resultado). Una escala extrema que produzca geometría degenerada o pérdida de precisión se rechaza y se retira la copia.
+- Requiere AutoCAD Windows con ActiveX. ESC o error elimina únicamente la copia creada por esa ejecución y restaura `OSMODE`, `CMDECHO` y `DIMZIN`. Si AutoCAD impide la limpieza o restauración, se imprime un aviso para revisar el dibujo y las variables.
+
+#### Verificación manual
+
+**Feature aceptada tras pruebas manuales positivas en AutoCAD.** El usuario confirmó polígonos cerrados con `C` y cerrados manualmente, reducción y ampliación de áreas, y cancelación con ESC que restaura las variables y elimina el contorno, dejando el dibujo limpio. Posteriormente confirmó «Todo OK» y dio por terminada la feature.
+
+La siguiente lista se conserva para futuras regresiones; sus casillas no representan resultados individuales confirmados. Usar un DWG de prueba y comprobar las superficies mediante las propiedades de AutoCAD. Para verificar el centroide, crear una REGION de una copia de prueba y consultar sus propiedades de masa; no usar el centro de la caja envolvente.
+
+- [ ] **Carga:** `APPLOAD` muestra `MCTRANSFORM cargado. Escriba MCTRANSFORM para iniciar.`; el comando solicita la fuente sin cargar otros scripts.
+- [ ] **Reducción:** cuadrado `(0,0)-(10,0)-(10,10)-(0,10)`, cerrado con `C`, área 100; objetivo 25 → factor 0.5 y límites `(2.5,2.5)-(7.5,7.5)`. Centroide `(5,5)` y fuente intacta.
+- [ ] **Ampliación e igualdad:** mismo cuadrado, objetivo 400 → factor 2 y límites `(-5,-5)-(15,15)`; objetivo 100 → copia coincidente. En ambos casos, una copia cerrada verde en la capa actual y ningún cambio en la fuente.
+- [ ] **Centroide irregular:** trapecio `(0,0)-(10,0)-(6,4)-(0,4)`, área 32 y centroide `(4.083333…,1.833333…)`; objetivo 128 → factor 2, mismo centroide y todas las longitudes al doble. Repetir invirtiendo el recorrido y con un cóncavo simple.
+- [ ] **Abiertas:** repetir el cuadrado sin `C`, con cuatro vértices y con un quinto coincidente con el primero. Resultado cerrado de área 25, sin extremo duplicado; fuente conserva coordenadas y bandera abierta. No aparece una copia adicional sin transformar.
+- [ ] **Rechazos:** abierta cuyo cierre cruza el contorno, bulge, entidad distinta de LWPOLYLINE, normal −Z/inclinada, cruces, contactos, superposiciones, duplicados consecutivos, área nula y capa actual bloqueada. Aviso sin copia residual ni cambios en fuente/variables.
+- [ ] **Entrada:** cero, negativo y texto como `1abc` no se aceptan como área; el prompt sigue activo. Introducir luego un área válida y comprobar que no hay copias adicionales. Enter o ESC retira la copia y conserva la fuente.
+- [ ] **Entorno y precisión:** fuente en UTM, elevación 100 y UCS rotado; misma área objetivo y centroide WCS, con elevación preservada. Probar escala extrema y comprobar retirada del resultado si no supera las verificaciones.
+- [ ] **Cancelación y deshacer:** ESC en selección y entrada de área; revisar ausencia de copias parciales y restauración de `OSMODE`, `CMDECHO`, `DIMZIN`. Tras una ejecución correcta, un `UNDO` retira solo su resultado. Repetir ejecuciones para descartar estado residual.
 
 ## Estructura del repositorio
 
