@@ -21,6 +21,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-SUBDIV.lsp" "\nError al cargar MC-SUBDIV")
 (load "MC-TRANSFORM.lsp" "\nError al cargar MC-TRANSFORM")
 (load "MC-IMPORT.lsp" "\nError al cargar MC-IMPORT")
+(load "MC-FIX.lsp" "\nError al cargar MC-FIX")
 ```
 
 ## Comandos
@@ -322,6 +323,43 @@ Se valida **todo el archivo antes de crear entidades**. Un error indica la líne
 - [ ] **Regresión de opciones:** probar las 20 combinaciones de símbolos y las cuatro combinaciones de etiquetas: todos los elementos realmente creados de cada punto pertenecen a su grupo; coordenadas y apariencia no cambian. Probar símbolo invisible con un único TEXT y con descripción vacía: sin grupos vacíos. El resumen muestra el número real de grupos.
 - [ ] **Selección / edición:** con `PICKSTYLE=0` o `2`, el comando conserva ese valor y muestra el aviso; cambiar manualmente a `1` o `3` permite selección conjunta. Alternar con `Ctrl+H` y editar solo un TEXT. Mover un grupo completo: símbolo y sus etiquetas se desplazan juntos sin mover puntos vecinos.
 - [ ] **Rollback / deshacer:** conservar grupos preexistentes y cancelar con ESC durante una importación de volumen suficiente: desaparecen solamente grupos y entidades de esa ejecución. Importación correcta seguida de un solo `UNDO`: desaparecen sus símbolos, textos y definiciones de grupo; los grupos anteriores quedan intactos. Repetir ejecuciones, también con P repetidos, un único punto y un archivo de volumen representativo.
+
+### MCFIX — Normalización segura de polilíneas
+
+Convierte **POLYLINE antiguas 2D y POLYLINE 3D horizontales** a **LWPOLYLINE** sin depender de `PL32`, `CONVERT` ni otros scripts. No aplana alturas diferentes, no cierra contornos abiertos y no elimina vértices, duplicados ni autointersecciones. Las LWPOLYLINE existentes no se modifican.
+
+#### Uso
+
+1. Cargar `lisp/MC-FIX.lsp` con `APPLOAD` y ejecutar `MCFIX`.
+2. Elegir **Seleccion** (por defecto) para seleccionar polilíneas, **Todo** para recorrer únicamente el espacio actual, o **Ayuda** para consultar los límites. En un layout con una ventana de modelo activa, el espacio actual es modelo; en papel, solo ese layout. No se recorren otros layouts ni definiciones de bloques o referencias externas.
+3. **Configurar puntos** está desactivado por defecto. Elegir **Si** aplica deliberadamente `PDMODE=32` y `PDSIZE=1` al dibujo completo; afecta todos los POINT existentes, no solo la selección. Usar `REGEN` para actualizar su representación. Elegir **No** conserva ambas variables.
+4. Leer el resumen de **convertidas / ya compatibles / omitidas / fallidas**. Cada omisión o fallo identifica el handle de la fuente y su motivo. Un fallo recuperable conserva esa fuente y permite continuar con las demás.
+
+Las 2D conservan coordenadas **OCS**, normal, elevación, arcos (bulges), anchos inicial/final por vértice, cierre y generación continua del tipo de línea. Las 3D se admiten únicamente si **todos sus vértices tienen exactamente la misma Z WCS**; se conserva esa cota, no se fuerza Z=0 ni se usa una tolerancia para aplanar pequeñas diferencias. El UCS actual no interviene. Se conservan capa, color ACI/TrueColor, tipo y escala de línea, grosor de línea, espesor, visibilidad, transparencia y propietario/espacio; no se crean capas ni estilos. Las entidades convertidas tienen **handles nuevos**.
+
+Se omiten capas bloqueadas, mallas/polyface, ajustes curve-fit/spline, secuencias inválidas, menos de dos vértices y 3D con arcos, anchos o espesor no compatibles. Por seguridad también se omiten fuentes o subentidades con XDATA, diccionarios o referencias de reactor/grupo: no se intenta transferir asociaciones a handles nuevos. No se ejecuta `PURGE` ni `OVERKILL`, no se cambia `PLINETYPE` ni se realiza transformación geodésica o conversión de unidades.
+
+#### Errores y deshacer
+
+Se examina todo el lote antes de modificar geometría. Cada reemplazo se verifica contra la fuente (vértices, arcos, anchos, elevación, normal, propiedades y propietario) **antes de retirar el original**. La retirada usa `entdel`, que permite recuperar la POLYLINE original completa durante la misma sesión de dibujo. ESC o un error no recuperable restaura los originales ya retirados y elimina los reemplazos de esa ejecución. Si AutoCAD impide alguna restauración, se imprime un aviso: revisar el dibujo y no asumir que quedó limpio.
+
+Se restauran `CMDECHO` y `OSMODE`. Si se cancela o falla el lote, también se revierten los cambios visuales opcionales; tras el éxito se conservan porque fueron solicitados expresamente. Una ejecución con cambios se agrupa en una marca de deshacer: un solo `UNDO` debe recuperar las fuentes y retirar los reemplazos, sin afectar entidades anteriores. No hay comandos encolados ni conjuntos de selección COM compartidos.
+
+#### Verificación manual
+
+**Comando aceptado tras pruebas manuales positivas en AutoCAD.** El usuario confirmó: «las pruebas manuales fueron exitosas». La confirmación es general y no acredita individualmente cada casilla; la siguiente lista se conserva para futuras regresiones. No hay runner automatizado en este repositorio. Para repetir las pruebas, usar un DWG de prueba, guardar una copia y consultar Propiedades/`LIST` antes y después, incluyendo conteos y handles; no comprobar solamente la apariencia.
+
+- [ ] **Carga y ayuda:** `APPLOAD` muestra `MCFIX cargado. Escriba MCFIX para iniciar.`. `Ayuda` explica opciones y vuelve al prompt. Enter en alcance usa selección manual; Enter sin selección no modifica geometría ni variables.
+- [ ] **2D abierta/cerrada:** POLYLINE antigua `(0,0)-(10,0)-(10,10)-(0,10)` a cota 100, con y sin `C`: una sola LWPOLYLINE con iguales coordenadas, elevación y bandera de cierre; original retirada. Repetir con extremo final duplicado: no eliminarlo ni cerrar implícitamente la abierta.
+- [ ] **Arcos y anchos:** POLYLINE 2D con bulge `1` y `-1`, ancho constante y anchos variables por segmento. Comparar bulges, anchos y longitud antes/después; no sustituir arcos por cuerdas. Repetir con espesor, normal inclinada y normal -Z, conservando el plano y la orientación.
+- [ ] **3D horizontal:** vértices WCS `(343872,2151544,100)-(343882,2151544,100)-(343882,2151554,100)`, abiertos y cerrados: conservar todos los XYZ y el cierre. Repetir con Z=0 y Z negativa.
+- [ ] **3D no horizontal:** mismo ejemplo con Z `100,100,101`, y después con `100,100,100.000000001`: omisión con motivo, original y conteos intactos, sin reemplazo. No proyectar a Z=0.
+- [ ] **Apariencia/entorno:** distintas capas, ACI, TrueColor, ByLayer/ByBlock, tipos/escalas, grosores, transparencia y materiales/estilos de trazado disponibles. Cambiar antes `CLAYER`, `CECOLOR`, `CELTYPE`, `CELWEIGHT` y UCS: la salida conserva las propiedades fuente, no las actuales.
+- [ ] **Selección/espacios:** procesar solo una parte del dibujo; `Todo` en modelo, en papel y dentro de una ventana de layout. Ninguna modificación de otros espacios, entidades dentro de bloques o referencias externas. LWPOLYLINE existentes intactas y contadas como compatibles.
+- [ ] **Omisiones:** incluir capa bloqueada, malla/polyface, curve-fit/spline, entidad agrupada y fuente con XDATA/diccionario/reactor. Avisos con handle y motivo; conservar fuentes, metadatos, grupos y conteos. Un lote mixto procesa las compatibles sin modificar las omitidas.
+- [ ] **Puntos:** anotar `PDMODE`/`PDSIZE` y crear POINT preexistentes. Por defecto/No permanecen intactos; Si aplica 32/1 a todo el dibujo. Ninguna selección no aplica la opción visual. Revisar restauración en cancelación/fallo y deshacer tras el éxito.
+- [ ] **Cancelación/recuperación:** ESC en alcance, selección, opción visual y durante un lote suficientemente grande. Conservar todas las POLYLINE originales con sus subentidades y no dejar LWPOLYLINE temporales; restaurar variables. En un fallo recuperable del reemplazo, esa fuente queda intacta y se cuenta como fallida, nunca como convertida.
+- [ ] **Deshacer/repetición:** tras el éxito, un solo `UNDO` recupera originales y retira reemplazos del lote; entidades anteriores intactas. Repetir `MCFIX` sobre la salida: cero nuevas conversiones, solo compatibles. Comparar conteos del resumen y probar un lote representativo sin estado residual.
 
 ## Estructura del repositorio
 
