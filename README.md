@@ -20,6 +20,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-VERTEX.lsp" "\nError al cargar MC-VERTEX")
 (load "MC-SUBDIV.lsp" "\nError al cargar MC-SUBDIV")
 (load "MC-TRANSFORM.lsp" "\nError al cargar MC-TRANSFORM")
+(load "MC-IMPORT.lsp" "\nError al cargar MC-IMPORT")
 ```
 
 ## Comandos
@@ -260,6 +261,67 @@ La siguiente lista se conserva para futuras regresiones; sus casillas no represe
 - [ ] **Entrada:** cero, negativo y texto como `1abc` no se aceptan como área; el prompt sigue activo. Introducir luego un área válida y comprobar que no hay copias adicionales. Enter o ESC retira la copia y conserva la fuente.
 - [ ] **Entorno y precisión:** fuente en UTM, elevación 100 y UCS rotado; misma área objetivo y centroide WCS, con elevación preservada. Probar escala extrema y comprobar retirada del resultado si no supera las verificaciones.
 - [ ] **Cancelación y deshacer:** ESC en selección y entrada de área; revisar ausencia de copias parciales y restauración de `OSMODE`, `CMDECHO`, `DIMZIN`. Tras una ejecución correcta, un `UNDO` retira solo su resultado. Repetir ejecuciones para descartar estado residual.
+
+### MCIMPORT — Importación de puntos TXT / CSV
+
+Cargar `lisp/MC-IMPORT.lsp` con `APPLOAD` y ejecutar `MCIMPORT`. El diálogo permite buscar el archivo, elegir el orden de sus columnas, un símbolo con previsualización y las etiquetas opcionales. Al aceptar se importan los puntos y se ajusta la vista a la salida, incluidas las etiquetas.
+
+**Símbolos independientes.** Se reproducen las 20 combinaciones de `DDPTYPE`: punto, sin marca central, cruz `+`, cruz `X` o trazo vertical, solos o rodeados por círculo, cuadrado o ambos. Se crean entidades `LINE`, `CIRCLE` y un pequeño `SOLID` para la marca puntual; **no son entidades POINT ni objetos COGO de Civil 3D**. El comando no abre `DDPTYPE` ni modifica `PDMODE`/`PDSIZE`, y no afecta la apariencia de puntos existentes. El tipo sin ninguna marca requiere etiquetas que produzcan salida.
+
+Un **único valor positivo** fija la altura de los textos y el radio del círculo o semilado del cuadrado, en unidades del dibujo. Los textos son entidades **TEXT separadas y editables**, a la derecha del símbolo; si se muestran ambos, el número queda encima de la descripción. Se conservan X/Y/Z en WCS, independientemente del UCS, sin transformación geodésica ni conversión de unidades. Símbolos y textos usan la capa actual; los textos usan el estilo actual con altura explícita, sin modificar su definición. No se crean capas, bloques ni estilos.
+
+**Agrupación por punto.** Cada punto importado con entidades visibles forma automáticamente un **GROUP nativo seleccionable** con todos los componentes de su símbolo y las etiquetas activadas. Son grupos separados incluso si dos puntos coinciden o tienen el mismo identificador P; no se agrupa el archivo completo ni se convierten los textos en bloques. Los nombres `MCIMPORT_<handle>` usan un identificador de entidad, con sufijo si ya existe ese nombre, sin modificar grupos anteriores. Un registro sin símbolo ni etiquetas efectivas no crea un grupo vacío.
+
+La selectabilidad se consulta y, si hace falta, se activa mediante el **campo DXF `71 = 1` de GROUP**; no se llama a `VLA-PUT-SELECTABLE`, porque `AcadGroup` no expone esa propiedad en ActiveX. Referencias: [GROUP (DXF)](https://help.autodesk.com/cloudhelp/2018/ENU/AutoCAD-DXF/files/GUID-5F1372C4-37C8-4056-9303-EE1715F58E67.htm) y [Group Object (ActiveX)](https://help.autodesk.com/cloudhelp/2026/ENU/AutoCAD-ActiveX-Reference/files/GUID-1CA2C9D1-F8F7-4C11-B361-2998C4869119.htm).
+
+Para seleccionar o mover un punto completo haciendo clic en uno de sus elementos, usar **`PICKSTYLE = 1` o `3`**. El comando no cambia esa variable; si la selección de grupos está desactivada, informa cómo activarla al terminar. `Ctrl+H` permite alternar la selección de grupos para editar elementos por separado; los textos siguen siendo TEXT editables. La agrupación se aplica a **nuevas importaciones**, no modifica puntos ya importados.
+
+#### Archivo y formatos
+
+- Extensión `.txt` o `.csv`, **separador coma** y un punto por línea. No se admiten archivos separados por punto y coma o tabulaciones.
+- `E = X`, `N = Y`, `Z = altura`, `P = número/identificador`, `D = descripción`.
+- Formatos de la propuesta: `ENZ`, `NEZ`, `PENZ`, `PNEZ`, `PENZD`, **`PNEZD` (inicial)**, `PEN`, `PNE`.
+- Formatos adicionales: `EN`, `NE`, `END`, `NED`, `ENZD`, `NEZD`, `PEND`, `PNED`.
+- Si falta `Z`, se usa `0`; si falta `P`, se numera desde `1` en orden de archivo; si falta `D` o está vacía, no se crea ese texto. Los identificadores P se conservan como texto, incluidos ceros iniciales; no se exige que sean únicos.
+- Coordenadas decimales con punto, signo opcional y sin unidades ni exponentes. Se rechazan coordenadas vacías, `1abc`, columnas sobrantes/faltantes y comillas sin cerrar. Las líneas vacías se ignoran.
+- Se admite una cabecera opcional en la primera línea no vacía, **exactamente con las letras del formato seleccionado** (sin distinguir mayúsculas). Ejemplo: `P,N,E,Z,D` para `PNEZD`.
+- Descripciones con comas deben ir entre comillas; `""` representa una comilla literal dentro de un campo entrecomillado. No se admiten campos multilínea. Se recortan espacios exteriores de cada campo. P y D admiten hasta 255 caracteres.
+- La codificación debe ser legible por la versión/configuración de AutoCAD; en versiones antiguas usar la codificación ANSI local para tildes. Se retira el BOM UTF-8 si AutoCAD lo entrega al leer la primera línea.
+
+Ejemplo `PNEZD` de la propuesta:
+
+```csv
+1,2151544.225,343872.683,346.931,alambrada
+```
+
+Produce un punto en **WCS `(343872.683, 2151544.225, 346.931)`**, número `1` y descripción `alambrada`. Ejemplo de descripción con coma y comillas:
+
+```csv
+2,2151550.000,343880.000,347.000,"poste, lado ""norte"""
+```
+
+#### Errores y deshacer
+
+Se valida **todo el archivo antes de crear entidades**. Un error indica la línea física y no importa puntos parciales. Una capa actual bloqueada impide la creación. Cancelar o fallar durante la creación elimina solamente los grupos y entidades creados en esa ejecución; se cierran archivos y se retira el DCL temporal, restaurando `OSMODE` y `CMDECHO`. Una importación correcta queda en una sola marca de deshacer: un `UNDO` retira sus símbolos, textos y definiciones de grupo. El resumen informa las cantidades de puntos, etiquetas y grupos creados. Si solo falla el ajuste de vista, se conservan los resultados y se informa el aviso. Si AutoCAD impide limpiar/restaurar recursos se informa para revisar el dibujo.
+
+#### Verificación manual
+
+**Comando y agrupación por punto aceptados tras pruebas manuales positivas en AutoCAD.** El usuario confirmó la versión inicial tras probar diferentes opciones («todo OK»). La primera prueba de agrupación falló con `MCIMPORT: no function definition: VLA-PUT-SELECTABLE`; se sustituyó esa llamada por el campo DXF 71 y el usuario confirmó después: «Pruebas manuales positivas, todo OK». Estas confirmaciones son generales, no acreditan individualmente cada casilla de la lista, que se conserva para futuras regresiones. No hay runner automatizado; la revisión de código no sustituye la prueba real de DCL, ActiveX y comportamiento del dibujo. Para futuras pruebas, usar un DWG de prueba y revisar coordenadas/entidades mediante Propiedades o `LIST`, no solamente las etiquetas.
+
+- [ ] Cargar con `APPLOAD`: mensaje `MCIMPORT cargado. Escriba MCIMPORT para iniciar.`; abrir el diálogo, buscar TXT y CSV, cancelar el buscador y comprobar que conserva el archivo y los campos.
+- [ ] Importar el ejemplo `PNEZD`: comprobar X `343872.683`, Y `2151544.225`, Z `346.931`, número `1`, descripción `alambrada` y zoom a la salida. Editar cada TEXT por separado.
+- [ ] Probar los ocho formatos de la propuesta y los ocho adicionales con el mismo punto; comprobar E/N, Z=0 cuando falta, numeración desde 1 cuando falta P, y ausencia de descripción cuando falta D.
+- [ ] Probar cabecera exacta, líneas vacías, BOM, P `001`, coordenadas cero/negativas, D vacía, coma y comillas escapadas en D; tildes con la codificación de AutoCAD utilizada.
+- [ ] Cambiar los 20 estilos y comprobar previsualización y geometría, incluida marca invisible con etiquetas. Registrar `PDMODE`/`PDSIZE` y puntos preexistentes antes/después: deben permanecer intactos.
+- [ ] Tamaño `2`: altura TEXT `2`, radio CIRCLE `2` y semilado del cuadrado `2`; número encima de descripción. Probar las cuatro combinaciones de etiquetas, distintos estilos de texto y UCS rotado, conservando XYZ y orientación WCS.
+- [ ] Archivo con una fila válida seguida de `1abc`, coordenada vacía, columnas de más/de menos o comillas mal cerradas: aviso con línea correcta, ninguna entidad nueva, ninguna modificación de datos existentes ni de variables. Repetir archivo vacío, solo cabecera y ruta inexistente.
+- [ ] Tamaño vacío, `1abc`, cero y negativo: diálogo abierto con aviso. Archivo con extensión no admitida, capa bloqueada y estilo invisible sin salida: rechazo limpio.
+- [ ] ESC en diálogo, buscador, lectura y creación: sin salida parcial, archivos abiertos ni DCL residual; `OSMODE`, `CMDECHO`, `PDMODE`, `PDSIZE` y geometría preexistente intactos.
+- [ ] **Corrección de selectabilidad:** recargar el script con `APPLOAD` e importar el ejemplo `PNEZD` con las opciones iniciales. No debe aparecer `MCIMPORT: no function definition: VLA-PUT-SELECTABLE`; el resumen debe indicar un punto, dos TEXT y un grupo. Con `PICKSTYLE=1`, seleccionar símbolo y ambos textos juntos. Si falla la creación, verificar que no queden grupos ni entidades de esa ejecución y que las variables y grupos preexistentes permanezcan intactos.
+- [ ] **Grupos / puntos próximos:** importar dos filas `PNEZD`, `1,100,200,10,poste` y `1,100.1,200.1,10,alambrada`, con círculo y cruz y ambas etiquetas. Con `PICKSTYLE=1` o `3`, hacer clic en cada punto: seleccionar solo su símbolo completo y sus dos TEXT, sin incluir el vecino pese a compartir P. Repetir con coordenadas coincidentes; consultar `GROUP` para comprobar dos grupos distintos. Guardar/reabrir el DWG y comprobar que los grupos persisten.
+- [ ] **Regresión de opciones:** probar las 20 combinaciones de símbolos y las cuatro combinaciones de etiquetas: todos los elementos realmente creados de cada punto pertenecen a su grupo; coordenadas y apariencia no cambian. Probar símbolo invisible con un único TEXT y con descripción vacía: sin grupos vacíos. El resumen muestra el número real de grupos.
+- [ ] **Selección / edición:** con `PICKSTYLE=0` o `2`, el comando conserva ese valor y muestra el aviso; cambiar manualmente a `1` o `3` permite selección conjunta. Alternar con `Ctrl+H` y editar solo un TEXT. Mover un grupo completo: símbolo y sus etiquetas se desplazan juntos sin mover puntos vecinos.
+- [ ] **Rollback / deshacer:** conservar grupos preexistentes y cancelar con ESC durante una importación de volumen suficiente: desaparecen solamente grupos y entidades de esa ejecución. Importación correcta seguida de un solo `UNDO`: desaparecen sus símbolos, textos y definiciones de grupo; los grupos anteriores quedan intactos. Repetir ejecuciones, también con P repetidos, un único punto y un archivo de volumen representativo.
 
 ## Estructura del repositorio
 
