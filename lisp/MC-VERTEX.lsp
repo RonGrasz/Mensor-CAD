@@ -1,17 +1,19 @@
 ;;; ============================================================
-;;; MC-VERTEX.LSP - Círculos y etiquetas de vértices
+;;; MC-VERTEX.LSP - Símbolos y etiquetas de vértices
 ;;; Comando: MCVERTEX
 ;;; Requiere: AutoCAD 64-bit con ActiveX/VLA (vl-load-com)
 ;;; ============================================================
 ;;;
-;;; Dibuja un CIRCLE centrado en la coordenada exacta de cada vértice
+;;; Dibuja un símbolo centrado en la coordenada exacta de cada vértice
 ;;; de una fuente planar horizontal (LWPOLYLINE cerrada o abierta,
 ;;; LINE, o contorno generado con -BOUNDARY desde un punto interior)
 ;;; y, opcionalmente, una etiqueta "PREFIJO-n" cerca del vértice,
-;;; después del círculo y sobre el lado exterior del contorno,
-;;; paralela a la dirección de salida y legible. La caja real del texto
-;;; se mide con TEXTBOX y debe quedar completa fuera del polígono y sin
-;;; invadir ningún círculo; si no existe posición segura dentro de una
+;;; después del símbolo y sobre el lado exterior del contorno,
+;;; paralela a la dirección de salida y legible. El símbolo se elige
+;;; entre las 20 combinaciones de DDPTYPE (círculo predeterminado), sin
+;;; modificar PDMODE/PDSIZE. La caja real del texto se mide con TEXTBOX
+;;; y debe quedar completa fuera del polígono y sin invadir la envolvente
+;;; máxima de los símbolos; si no existe posición segura dentro de una
 ;;; búsqueda acotada, la etiqueta se omite con un aviso identificatorio.
 ;;;
 ;;; Convenciones:
@@ -50,7 +52,7 @@
     (progn
       (setq lineas
         '("mcvertex_dlg : dialog {"
-          "  label = \"MCVERTEX - Círculos y etiquetas de vértices\";"
+          "  label = \"MCVERTEX - Símbolos y etiquetas de vértices\";"
           "  width = 60;"
           "  : boxed_radio_column {"
           "    label = \"Tipo de fuente\";"
@@ -85,6 +87,18 @@
           "      : text { label = \"Prefijo etiquetas:\"; }"
           "      : edit_box { key = \"eb_prefijo\"; value = \"E\"; width = 8; edit_width = 6; }"
           "    }"
+          "    : edit_box { key = \"eb_inicio\"; label = \"Número inicial:\"; value = \"1\"; edit_width = 12; }"
+          "    : edit_box { key = \"eb_omitir\"; label = \"Vértices a omitir entre puntos:\"; value = \"0\"; edit_width = 12; }"
+          "    : text { label = \"Desde 5 vértices: 0 = todos; 3 = posiciones 1, 5, 9, 13...\"; }"
+          "    : text { label = \"Omitir puntos no renumera los vértices.\"; }"
+          "  }"
+          "  : boxed_column {"
+          "    label = \"Símbolo del vértice\";"
+          "    : row {"
+          "      : popup_list { key = \"pl_simbolo\"; label = \"Tipo:\"; edit_width = 30; }"
+          "      : image { key = \"preview\"; width = 10; height = 4; fixed_width = true; fixed_height = true; color = -2; }"
+          "    }"
+          "    : text { label = \"20 estilos; predeterminado: círculo sin marca. No toca PDMODE/PDSIZE.\"; }"
           "  }"
           "  ok_cancel;"
           "}"))
@@ -227,6 +241,107 @@
     (progn
       (setq val (atof s))
       (if (> val 0.0) val nil))))
+
+;; Entero decimal estricto en el rango de AutoLISP; no trunca decimales
+;; ni acepta el texto sobrante que atoi ignoraría. MINIMO permite 0 o 1.
+(defun mcvertex:parsear-entero (txt minimo / s i valido val)
+  (setq s (if txt (vl-string-trim " \t" txt) "")
+        i 1 valido (> (strlen s) 0))
+  (while (and valido (<= i (strlen s)))
+    (if (not (member (substr s i 1) '("0" "1" "2" "3" "4" "5" "6" "7" "8" "9")))
+      (setq valido nil))
+    (setq i (1+ i)))
+  (if valido
+    (progn
+      (setq val (atof s))
+      (if (and (>= val minimo) (<= val 2147483647.0)) (fix val) nil))
+    nil))
+
+;; Devuelve índices, no una geometría simplificada: las direcciones y
+;; las colisiones siempre se calculan con el recorrido completo.
+(defun mcvertex:indices-anotacion (n omitir / i salto indices)
+  (setq i 0 salto (if (>= n 5) (+ 1.0 omitir) 1) indices nil)
+  (while (< i n)
+    (setq indices (cons (fix i) indices) i (+ i salto)))
+  (reverse indices))
+
+;;; ============================================================
+;;; SECCIÓN 2c: SÍMBOLOS DE VÉRTICE (lista, previsualización, envolvente)
+;;; ============================================================
+
+;; Las 20 combinaciones de DDPTYPE usadas como referencia en MC-IMPORT,
+;; reproducidas de forma independiente dentro del espacio de nombres
+;; MCVERTEX. No hay dependencia de MC-IMPORT ni cambios en PDMODE/PDSIZE.
+(defun mcvertex:lista-modos ()
+  '(0 1 2 3 4 32 33 34 35 36 64 65 66 67 68 96 97 98 99 100))
+
+;; Índice del símbolo por defecto: modo 33 = círculo sin marca central.
+(defun mcvertex:modo-inicial () 7)
+
+;; Nombres legibles en el mismo orden que mcvertex:lista-modos.
+(defun mcvertex:nombres-modos ( / nombres outer base)
+  (setq nombres nil)
+  (foreach outer '("" "Círculo + " "Cuadrado + " "Círculo y cuadrado + ")
+    (foreach base '("Punto" "Sin marca central" "Cruz +" "Cruz X" "Trazo vertical")
+      (setq nombres (cons (strcat outer base) nombres))))
+  (reverse nombres))
+
+;; Radio máximo real del símbolo: base conservadora para las colisiones de
+;; etiquetas. Cuadrado o cruz X alcanzan sqrt(2)*radio en sus esquinas; el
+;; punto solo es un SOLID diminuto; la marca sin envolvente ni marca central
+;; (invisible) no deja huella.
+(defun mcvertex:radio-envolvente (modo radio / base outer rb ro)
+  (setq base (rem modo 32)
+        outer (- modo base)
+        rb (cond ((= base 0) (* radio 0.08 (sqrt 2.0)))
+                 ((= base 1) 0.0)
+                 ((= base 3) (* radio (sqrt 2.0)))
+                 (T radio))
+        ro (cond ((= outer 0) 0.0)
+                 ((member outer '(64 96)) (* radio (sqrt 2.0)))
+                 (T radio)))
+  (max rb ro))
+
+;; Previsualización DCL del símbolo elegido en el popup (índice de texto).
+(defun mcvertex:preview (index / modo base outer w h cx cy r i ang x y px py)
+  (setq modo (nth (atoi index) (mcvertex:lista-modos))
+        base (rem modo 32)
+        outer (- modo base)
+        w (dimx_tile "preview")
+        h (dimy_tile "preview")
+        cx (fix (/ w 2))
+        cy (fix (/ h 2))
+        r (fix (/ (min w h) 3)))
+  (start_image "preview")
+  (fill_image 0 0 w h -2)
+  (cond
+    ((= base 0) (fill_image (1- cx) (1- cy) 3 3 7))
+    ((= base 2)
+     (vector_image (- cx r) cy (+ cx r) cy 7)
+     (vector_image cx (- cy r) cx (+ cy r) 7))
+    ((= base 3)
+     (vector_image (- cx r) (- cy r) (+ cx r) (+ cy r) 7)
+     (vector_image (+ cx r) (- cy r) (- cx r) (+ cy r) 7))
+    ((= base 4) (vector_image cx cy cx (- cy r) 7)))
+  (if (member outer '(32 96))
+    (progn
+      (setq i 0
+            px (+ cx r)
+            py cy)
+      (repeat 32
+        (setq i (1+ i)
+              ang (* 2.0 pi (/ i 32.0))
+              x (+ cx (fix (* r (cos ang))))
+              y (+ cy (fix (* r (sin ang)))))
+        (vector_image px py x y 7)
+        (setq px x py y))))
+  (if (member outer '(64 96))
+    (progn
+      (vector_image (- cx r) (- cy r) (+ cx r) (- cy r) 7)
+      (vector_image (+ cx r) (- cy r) (+ cx r) (+ cy r) 7)
+      (vector_image (+ cx r) (+ cy r) (- cx r) (+ cy r) 7)
+      (vector_image (- cx r) (+ cy r) (- cx r) (- cy r) 7)))
+  (end_image))
 
 ;;; ============================================================
 ;;; SECCIÓN 3: LECTURA DE FUENTES (OCS -> WCS, validación planar)
@@ -548,7 +663,7 @@
             (cons 'n-conservados (length out))))))
 
 ;;; ============================================================
-;;; SECCIÓN 7: ANOTACIONES (círculos y etiquetas)
+;;; SECCIÓN 7: ANOTACIONES (símbolos y etiquetas)
 ;;; ============================================================
 
 ;; Ángulo del segmento de salida de cada vértice. El último vértice
@@ -720,14 +835,15 @@
     (setq i (1+ i)))
   res)
 
-;; T si cada centro de círculo queda a distancia >= RADIO + GAP del rect.
-(defun mcvertex:recto-libre-circulos (rect circulos radio gap / res d)
+;; T si cada centro de marcador queda a distancia >= ENV + GAP del rect.
+;; ENV es la envolvente máxima del símbolo elegido, no su radio nominal.
+(defun mcvertex:recto-libre-circulos (rect circulos env gap / res d)
   (setq res T)
   (foreach c circulos
     (if res
       (progn
         (setq d (mcvertex:dist-punto-recto rect c))
-        (if (< d (+ radio gap)) (setq res nil)))))
+        (if (< d (+ env gap)) (setq res nil)))))
   res)
 
 ;; Rectángulo orientado con inserción INS y rotación ROT.
@@ -805,52 +921,129 @@
     (list (- (sin ang)) (cos ang))))
 
 ;; Validación completa de un candidato de etiqueta.
-(defun mcvertex:etiqueta-valida (rect borde abierto circulos radio gap claro hay-pol)
+(defun mcvertex:etiqueta-valida (rect borde abierto circulos env gap claro hay-pol)
   (and (if hay-pol (mcvertex:recto-fuera-poligono rect borde) T)
        (mcvertex:recto-claro rect borde abierto claro)
-       (mcvertex:recto-libre-circulos rect circulos radio gap)))
+       (mcvertex:recto-libre-circulos rect circulos env gap)))
+
+;;; ============================================================
+;;; SECCIÓN 7b: SÍMBOLOS DE VÉRTICE (creación y seguimiento)
+;;; ============================================================
+;; Símbolos locales equivalentes a DDPTYPE: LINE, CIRCLE y un pequeño
+;; SOLID, nunca entidades POINT ni cambios en PDMODE/PDSIZE. Cada entidad
+;; creada se registra en *mcvertex-creadas* para el rollback parcial.
+
+(defun mcvertex:desplazar (p dx dy)
+  (list (+ (car p) dx) (+ (cadr p) dy) (caddr p)))
+
+;; Crea la entidad de anotación DATA y la registra para limpieza/rollback.
+;; Devuelve la entidad creada o nil si entmake no generó una nueva.
+(defun mcvertex:crear (data / antes nuevo)
+  (setq antes (entlast))
+  (entmake data)
+  (setq nuevo (entlast))
+  (if (equal antes nuevo)
+    nil
+    (progn
+      (setq *mcvertex-creadas* (cons nuevo *mcvertex-creadas*))
+      nuevo)))
+
+(defun mcvertex:linea (a b)
+  (mcvertex:crear (list '(0 . "LINE")
+                        (cons 8 (getvar "CLAYER"))
+                        (cons 10 a)
+                        (cons 11 b)
+                        '(210 0.0 0.0 1.0))))
+
+(defun mcvertex:circulo (p r)
+  (mcvertex:crear (list '(0 . "CIRCLE")
+                        (cons 8 (getvar "CLAYER"))
+                        (cons 10 p)
+                        (cons 40 r)
+                        '(210 0.0 0.0 1.0))))
+
+;; Marca puntual: SOLID diminuto, como el estilo «Punto» de DDPTYPE.
+(defun mcvertex:marca-punto (p r / dot)
+  (setq dot (* r 0.08))
+  (mcvertex:crear
+    (list '(0 . "SOLID")
+          (cons 8 (getvar "CLAYER"))
+          (cons 10 (mcvertex:desplazar p (- dot) (- dot)))
+          (cons 11 (mcvertex:desplazar p dot (- dot)))
+          (cons 12 (mcvertex:desplazar p (- dot) dot))
+          (cons 13 (mcvertex:desplazar p dot dot))
+          '(210 0.0 0.0 1.0))))
+
+;; Símbolo completo (marca central y/o envolvente) en P con radio R.
+;; Devuelve T solo si todas las entidades del símbolo se crearon.
+(defun mcvertex:simbolo (p modo r / base outer a b c d ok)
+  (setq base (rem modo 32)
+        outer (- modo base)
+        a (mcvertex:desplazar p (- r) (- r))
+        b (mcvertex:desplazar p r (- r))
+        c (mcvertex:desplazar p r r)
+        d (mcvertex:desplazar p (- r) r)
+        ok T)
+  (cond
+    ((= base 0) (setq ok (mcvertex:marca-punto p r)))
+    ((= base 1) nil)
+    ((= base 2)
+     (setq ok (and (mcvertex:linea (mcvertex:desplazar p (- r) 0.0)
+                                   (mcvertex:desplazar p r 0.0))
+                   (mcvertex:linea (mcvertex:desplazar p 0.0 (- r))
+                                   (mcvertex:desplazar p 0.0 r)))))
+    ((= base 3)
+     (setq ok (and (mcvertex:linea a c) (mcvertex:linea b d))))
+    ((= base 4)
+     (setq ok (mcvertex:linea p (mcvertex:desplazar p 0.0 r)))))
+  (if (member outer '(32 96))
+    (setq ok (and ok (mcvertex:circulo p r))))
+  (if (member outer '(64 96))
+    (setq ok (and ok
+                  (mcvertex:linea a b)
+                  (mcvertex:linea b c)
+                  (mcvertex:linea c d)
+                  (mcvertex:linea d a))))
+  (if ok T nil))
 
 ;; Dibuja todas las anotaciones. Cada etiqueta se mide con TEXTBOX y se
 ;; ubica tras una búsqueda acotada hacia el exterior/lo largo de la salida;
-;; si no hay posición segura se omite con aviso conservando su círculo.
+;; si no hay posición segura se omite con aviso conservando su símbolo.
 ;; Si un entmake falla, se revierten solo las entidades de esta llamada.
 (defun mcvertex:anotar (verts cerrada radio prefijo etiquetar cola-ref borde abierto
-                        / n i v ang u nor th gap claro paso na nb ja jb a0 b0 a b
+                          inicio omitir simbolo
+                        / n i numero indices centros v ang u nor th gap claro paso na nb ja jb a0 b0 a b
                           ins rect texto caja x1 y1 x2 y2 rot proy mU mN hay-pol
-                          ef hallado antes nuevo fallo)
+                          ef hallado antes nuevo fallo env)
   (setq n (length verts)
-        i 0
+        indices (mcvertex:indices-anotacion n omitir)
+        centros (mapcar '(lambda (idx) (nth idx verts)) indices)
         fallo nil
+        ;; Envolvente máxima del símbolo para colisiones conservadoras.
+        env (mcvertex:radio-envolvente simbolo radio)
         *mcvertex-creadas* nil)
   (setq th (* radio 0.9)
         gap (* radio 0.35)
         ;; Un pequeño margen visual adicional separa la caja tanto del
-        ;; círculo como de todos los tramos: claro = gap = 0.35 * radio.
+        ;; símbolo como de todos los tramos: claro = gap = 0.35 * radio.
         claro (* radio 0.35)
         paso (* radio 0.5)
         na 8
         nb 8
         hay-pol (and (not abierto) (>= (length borde) 3)))
-  (while (and (< i n) (not fallo))
-    (setq v (nth i verts))
+  (while (and indices (not fallo))
+    ;; La omisión solo controla la visibilidad, no el número del vértice.
+    (setq i (car indices) numero (+ inicio i) v (nth i verts))
 
-    ;; Círculo exacto en la coordenada del vértice (WCS, extrusión +Z).
-    (setq antes (entlast))
-    (entmake (list '(0 . "CIRCLE")
-                   (cons 8 (getvar "CLAYER"))
-                   (cons 10 v)
-                   (cons 40 radio)
-                   '(210 0.0 0.0 1.0)))
-    (setq nuevo (entlast))
-    (if (equal antes nuevo)
-      (setq fallo T)
-      (setq *mcvertex-creadas* (cons nuevo *mcvertex-creadas*)))
+    ;; Símbolo en la coordenada exacta del vértice (WCS, extrusión +Z).
+    (if (not (mcvertex:simbolo v simbolo radio))
+      (setq fallo T))
 
     ;; Etiqueta opcional. Con un único vértice no hay dirección de salida
-    ;; definida: se omite la etiqueta (el círculo ya quedó dibujado).
+    ;; definida: se omite la etiqueta (el símbolo ya quedó dibujado).
     (if (and etiquetar (not fallo) (>= n 2))
       (progn
-        (setq texto (strcat prefijo "-" (itoa (1+ i))))
+        (setq texto (strcat prefijo "-" (itoa numero)))
         (setq ang (mcvertex:angulo-salida verts i cerrada))
         ;; Casi cierre abierto: el nuevo último vértice conserva su salida
         ;; hacia el extremo original descartado, no hacia el tramo previo.
@@ -870,10 +1063,11 @@
             (setq proy (mcvertex:proyecciones-caja rot u nor x1 y1 x2 y2)
                   mU (car proy)
                   mN (cadr proy))
-            ;; Desplazamiento mínimo que separa la caja del círculo y del
-            ;; borde; luego búsqueda acotada priorizando el margen exterior
-            ;; pequeño y, dentro de él, la cercanía al vértice.
-            (setq a0 (- (+ radio gap) mU)
+            ;; Desplazamiento mínimo que separa la caja de la envolvente
+            ;; del símbolo y del borde; luego búsqueda acotada priorizando
+            ;; el margen exterior pequeño y, dentro de él, la cercanía al
+            ;; vértice.
+            (setq a0 (- (+ env gap) mU)
                   b0 (- gap mN)
                   jb 0
                   hallado nil)
@@ -886,7 +1080,7 @@
                                 (+ (cadr v) (* a (cadr u)) (* b (cadr nor)))
                                 (caddr v)))
                 (setq rect (mcvertex:recto-candidato ins rot x1 y1 x2 y2))
-                (if (mcvertex:etiqueta-valida rect borde abierto verts radio
+                (if (mcvertex:etiqueta-valida rect borde abierto centros env
                                               gap claro hay-pol)
                   (setq hallado T))
                 (setq ja (1+ ja)))
@@ -917,7 +1111,7 @@
                   (setq fallo T)
                   (setq *mcvertex-creadas* (cons nuevo *mcvertex-creadas*)))))))))
 
-    (setq i (1+ i)))
+    (setq indices (cdr indices)))
 
   (if (and etiquetar (< n 2))
     (princ (strcat "\nMCVERTEX: un solo vértice tras la tolerancia; "
@@ -934,8 +1128,39 @@
 ;;; SECCIÓN 8: CARGA DE CONTROLES DEL DIÁLOGO
 ;;; ============================================================
 
+;; Estos controles se guardan en las variables locales del comando antes
+;; de suspender el diálogo; se conservan incluso las entradas inválidas.
+(defun mcvertex:guardar-dlg ()
+  (setq radio-raw (get_tile "eb_radio")
+        tol-raw (get_tile "eb_tol")
+        prefijo (get_tile "eb_prefijo")
+        etiquetar (= (get_tile "ck_etiquetas") "1")
+        inicio-raw (get_tile "eb_inicio")
+        omitir-raw (get_tile "eb_omitir")
+        simbolo-idx (atoi (get_tile "pl_simbolo"))))
+
+(defun mcvertex:aceptar-dlg ()
+  (mcvertex:guardar-dlg)
+  (setq radio (mcvertex:parsear-positivo radio-raw)
+        tol (mcvertex:parsear-positivo tol-raw)
+        inicio (mcvertex:parsear-entero inicio-raw 1)
+        omitir (mcvertex:parsear-entero omitir-raw 0)
+        simbolo (nth simbolo-idx (mcvertex:lista-modos)))
+  (cond
+    ((null radio) (alert "El radio debe ser un número positivo (p. ej. 1.0)."))
+    ((null tol) (alert "La tolerancia debe ser un número positivo en metros (p. ej. 0.001)."))
+    ((null inicio) (alert "El número inicial debe ser un entero entre 1 y 2147483647."))
+    ((null omitir) (alert "Los vértices a omitir deben ser un entero entre 0 y 2147483647."))
+    ;; El estilo invisible solo produce las etiquetas: sin ellas no habría
+    ;; ninguna salida que crear.
+    ((and (= simbolo 1) (not etiquetar))
+     (alert (strcat "El símbolo invisible no genera salida sin etiquetas.\n"
+                    "Active las etiquetas o elija otro símbolo.")))
+    ((null verts) (alert "Seleccione primero la geometría."))
+    (T (done_dialog 1))))
+
 (defun mcvertex:cargar-dlg (modo radio-raw tol-raw prefijo etiquetar verts pt-origen
-                            / lbl-g lbl-o)
+                              inicio-raw omitir-raw simbolo-idx / lbl-g lbl-o)
   (set_tile "rb_cerrada"  (if (= modo "cerrada")  "1" "0"))
   (set_tile "rb_linea"    (if (= modo "linea")    "1" "0"))
   (set_tile "rb_abierta"  (if (= modo "abierta")  "1" "0"))
@@ -945,7 +1170,16 @@
   (set_tile "eb_radio"    radio-raw)
   (set_tile "eb_tol"      tol-raw)
   (set_tile "eb_prefijo"  prefijo)
+  (set_tile "eb_inicio"   inicio-raw)
+  (set_tile "eb_omitir"   omitir-raw)
   (set_tile "ck_etiquetas" (if etiquetar "1" "0"))
+  ;; El popup del símbolo conserva el índice elegido entre reaperturas y
+  ;; actualiza la previsualización al abrir el diálogo.
+  (start_list "pl_simbolo")
+  (mapcar 'add_list (mcvertex:nombres-modos))
+  (end_list)
+  (set_tile "pl_simbolo" (itoa simbolo-idx))
+  (mcvertex:preview (itoa simbolo-idx))
 
   (setq lbl-g (if verts
                 (strcat "Fuente: " (itoa (length verts)) " vértices")
@@ -965,6 +1199,8 @@
                       old-osmode old-cmdecho old-dimzin
                       dcl-ruta dcl-id estado continuar cancelado
                       modo radio radio-raw tol tol-raw prefijo etiquetar
+                      inicio inicio-raw omitir omitir-raw indices
+                      simbolo-idx simbolo
                       ent-geom verts cerrada pt-origen
                       completado listo fusion orden-fuente abierto r
                       cierre-virtual cerrada-anotacion verts-anotacion borde-fuente)
@@ -1021,7 +1257,7 @@
         *mcvertex-contorno-activo* nil
         *mcvertex-plinetype* nil)
 
-  (princ "\n=== MCVERTEX: círculos y etiquetas de vértices ===")
+  (princ "\n=== MCVERTEX: símbolos y etiquetas de vértices ===")
 
   ;; ----------------------------------------------------------
   ;; 9.3 ESTADO DEL DIÁLOGO
@@ -1033,6 +1269,10 @@
         tol-raw   "0.001"
         prefijo   "E"
         etiquetar T
+        inicio 1 inicio-raw "1"
+        omitir 0 omitir-raw "0"
+        ;; 7 -> modo 33: círculo sin marca central (predeterminado).
+        simbolo-idx (mcvertex:modo-inicial)
         ent-geom  nil
         verts     nil
         cerrada   nil
@@ -1062,7 +1302,8 @@
         (alert "No se encontró la definición del diálogo.")
         (setq continuar nil cancelado T))
       (progn
-        (mcvertex:cargar-dlg modo radio-raw tol-raw prefijo etiquetar verts pt-origen)
+        (mcvertex:cargar-dlg modo radio-raw tol-raw prefijo etiquetar verts pt-origen
+                             inicio-raw omitir-raw simbolo-idx)
 
         ;; Cambiar de tipo de fuente invalida la geometría ya elegida.
         (action_tile "rb_cerrada"
@@ -1076,36 +1317,10 @@
 
         ;; Los botones persisten TODOS los controles (incluido el radio
         ;; crudo sin convertir) antes de salir y reabrir el diálogo.
-        (action_tile "btn_geom"
-          (strcat
-            "(setq radio-raw (get_tile \"eb_radio\"))"
-            "(setq tol-raw (get_tile \"eb_tol\"))"
-            "(setq prefijo (get_tile \"eb_prefijo\"))"
-            "(setq etiquetar (= (get_tile \"ck_etiquetas\") \"1\"))"
-            "(done_dialog 10)"))
-        (action_tile "btn_origen"
-          (strcat
-            "(setq radio-raw (get_tile \"eb_radio\"))"
-            "(setq tol-raw (get_tile \"eb_tol\"))"
-            "(setq prefijo (get_tile \"eb_prefijo\"))"
-            "(setq etiquetar (= (get_tile \"ck_etiquetas\") \"1\"))"
-            "(done_dialog 11)"))
-
-        (action_tile "accept"
-          (strcat
-            "(setq radio-raw (get_tile \"eb_radio\"))"
-            "(setq tol-raw (get_tile \"eb_tol\"))"
-            "(setq prefijo (get_tile \"eb_prefijo\"))"
-            "(setq etiquetar (= (get_tile \"ck_etiquetas\") \"1\"))"
-            "(setq radio (mcvertex:parsear-positivo radio-raw))"
-            "(setq tol (mcvertex:parsear-positivo tol-raw))"
-            "(if (null radio)"
-            "  (alert \"El radio debe ser un número positivo (p. ej. 1.0).\")"
-            "  (if (null tol)"
-            "    (alert \"La tolerancia debe ser un número positivo en metros (p. ej. 0.001).\")"
-            "    (if (null verts)"
-            "      (alert \"Seleccione primero la geometría.\")"
-            "      (done_dialog 1))))"))
+        (action_tile "btn_geom" "(mcvertex:guardar-dlg) (done_dialog 10)")
+        (action_tile "btn_origen" "(mcvertex:guardar-dlg) (done_dialog 11)")
+        (action_tile "pl_simbolo" "(mcvertex:preview $value)")
+        (action_tile "accept" "(mcvertex:aceptar-dlg)")
         (action_tile "cancel" "(done_dialog 0)")
 
         (setq estado (start_dialog))
@@ -1186,13 +1401,28 @@
       (if (cdr (assoc 'casi-cierre fusion))
         (princ (strcat "\nMCVERTEX: extremos originales abiertos dentro de la tolerancia; "
                        "se usa envolvente virtual para el exterior y la fuente sigue abierta.")))
-      (if (mcvertex:anotar listo cerrada-anotacion radio prefijo etiquetar
-                           (cdr (assoc 'cola-ref fusion))
-                           borde-fuente abierto)
-        (progn
-          (setq completado T)
-          (princ "\nMCVERTEX: anotación completada."))
-        (princ "\nMCVERTEX: falló la creación de anotaciones; se revirtieron las creadas."))))
+      (setq indices (mcvertex:indices-anotacion (length listo) omitir)
+            simbolo (nth simbolo-idx (mcvertex:lista-modos)))
+      (princ (strcat "\nMCVERTEX: " (itoa (length indices)) " puntos seleccionados para anotar."
+                     " Número inicial: " (itoa inicio) "."))
+      (if (and (= simbolo 1) (< (length listo) 2))
+        ;; Estilo invisible: el único resultado posible es la etiqueta. Con
+        ;; un único representante la etiqueta se omite por falta de
+        ;; dirección de salida, así que no habría ninguna salida que crear.
+        (alert (strcat "El símbolo invisible no genera salida con un único vértice.\n"
+                       "Seleccione otra fuente u otro símbolo; no se creó nada."))
+        ;; Evitar desbordar itoa al continuar la numeración, antes de crear.
+        (if (and
+              (if (> (+ (float inicio) (last indices)) 2147483647.0)
+                (progn (alert "La numeración excede 2147483647. Reduzca el número inicial.") nil)
+                T)
+              (mcvertex:anotar listo cerrada-anotacion radio prefijo etiquetar
+                               (cdr (assoc 'cola-ref fusion))
+                               borde-fuente abierto inicio omitir simbolo))
+          (progn
+            (setq completado T)
+            (princ "\nMCVERTEX: anotación completada."))
+          (princ "\nMCVERTEX: falló la creación de anotaciones; se revirtieron las creadas.")))))
 
   ;; ----------------------------------------------------------
   ;; 9.7 RESTAURAR ENTORNO
