@@ -22,6 +22,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-TRANSFORM.lsp" "\nError al cargar MC-TRANSFORM")
 (load "MC-IMPORT.lsp" "\nError al cargar MC-IMPORT")
 (load "MC-FIX.lsp" "\nError al cargar MC-FIX")
+(load "MC-COLIND.lsp" "\nError al cargar MC-COLIND")
 ```
 
 ## Comandos
@@ -372,6 +373,112 @@ Se restauran `CMDECHO` y `OSMODE`. Si se cancela o falla el lote, también se re
 - [ ] **Puntos:** anotar `PDMODE`/`PDSIZE` y crear POINT preexistentes. Por defecto/No permanecen intactos; Si aplica 32/1 a todo el dibujo. Ninguna selección no aplica la opción visual. Revisar restauración en cancelación/fallo y deshacer tras el éxito.
 - [ ] **Cancelación/recuperación:** ESC en alcance, selección, opción visual y durante un lote suficientemente grande. Conservar todas las POLYLINE originales con sus subentidades y no dejar LWPOLYLINE temporales; restaurar variables. En un fallo recuperable del reemplazo, esa fuente queda intacta y se cuenta como fallida, nunca como convertida.
 - [ ] **Deshacer/repetición:** tras el éxito, un solo `UNDO` recupera originales y retira reemplazos del lote; entidades anteriores intactas. Repetir `MCFIX` sobre la salida: cero nuevas conversiones, solo compatibles. Comparar conteos del resumen y probar un lote representativo sin estado residual.
+
+### MCCOLIND — Simbología y etiquetas de colindancias
+
+```
+MCCOLIND
+```
+
+Dibuja uno de **siete estilos de lindero** sobre un **tramo parcial** de una `LINE` o `LWPOLYLINE` de tramos rectos y añade, por cada recorrido, un **par de etiquetas**: el nombre del estilo en el interior y el nombre de la colindancia en el exterior. La fuente **nunca se modifica**. El comando es independiente: no requiere cargar otros scripts.
+
+#### Uso
+
+1. Cargar `lisp/MC-COLIND.lsp` con `APPLOAD` y ejecutar `MCCOLIND`.
+2. Seleccionar una **LINE o LWPOLYLINE de tramos rectos**, horizontal (normal `+Z`) y con cota constante, en el espacio activo.
+3. En fuentes abiertas, indicar con un clic el **lado considerado interior**.
+4. En el diálogo, ajustar escala y medidas, elegir el estilo y escribir el **nombre de la colindancia exterior**. «Aplicar a dos puntos...» suspende el diálogo para tomar dos clics sobre el borde.
+5. Previsualizar el recorrido: `ENTER` o `ESPACIO` aplica, `I` invierte el sentido (solo en fuentes cerradas) y `ESC` cancela toda la ejecución.
+6. Repetir el paso 4 tantas veces como tramos se quieran estilizar. «Deshacer última aplicación» retira solo la última y deja libre su tramo; si se deshizo todo, «Aceptar» cierra igualmente e informa **0 aplicaciones retenidas**. «Aceptar» conserva lo dibujado; «Cancelar» o `ESC` descartan toda la ejecución.
+
+Un solo `UNDO` retira una ejecución aceptada y conserva la fuente.
+
+#### Controles y valores iniciales
+
+| Control | Valor inicial | Significado |
+|---|---|---|
+| Escala `1:N` | `500` | El dibujo se interpreta en **metros**: `medida_en_dibujo = mm × N / 1000` |
+| Altura de texto (mm) | `2` | Altura de las dos etiquetas |
+| Repetición del patrón (mm) | `4` | Paso entre marcas, dentro de cada tramo |
+| Ancho total de franja (mm) | `1` | Separación entre los dos bordes de la franja |
+| Separación libre texto/patrón (mm) | `1` | Holgura mínima entre cada etiqueta y el patrón |
+| Estilo | Alambrada | Uno de los siete patrones |
+| Colindancia exterior | `Colindancia` | Texto de la etiqueta exterior |
+
+Las cinco medidas se escriben en **milímetros de papel** y se convierten con la escala. Se validan con un **parser positivo estricto**: se rechazan cero, negativos, comas, exponentes y textos como `1abc`; el aviso indica el campo y **el texto crudo se conserva** al reabrir el diálogo.
+
+**Ejemplo a 1:500, en metros:** texto `2 mm` → **1 m** de altura; repetición `4 mm` → una marca cada **2 m**; franja `1 mm` → **0,5 m** de ancho total; separación `1 mm` → **0,5 m**. Son parámetros iniciales propuestos, no dimensiones normativas.
+
+#### Siete estilos
+
+| Estilo | Trazado |
+|---|---|
+| Alambrada | Marcas `X` centradas sobre el lindero, sin franja |
+| Lindero | Puntos centrados sobre el lindero, sin franja |
+| Pared propia | Franja hacia el **interior** con diagonales |
+| Pared medianera | Franja **centrada** en el lindero con diagonales |
+| Pared colindante | Franja hacia el **exterior** con diagonales |
+| Malla ciclónica | Franja centrada con diagonales cruzadas |
+| Lindero de árboles vivos | Franja centrada con zigzag continuo |
+
+En las paredes y en la malla, las diagonales forman **30° con la perpendicular** al lindero (60° con el lindero); la tangente de 30° se calcula con `sin`/`cos`, porque AutoLISP no tiene `TAN`. El tamaño de cruces y puntos se deriva de la franja (`franja/2`). En **Pared propia** y **Pared colindante** el patrón dibuja solo el borde lejano: el borde cercano es el propio lindero de la fuente, que se conserva intacto; por eso esos dos estilos **dependen de que la fuente siga visible**.
+
+Los patrones se calculan **por segmento**, con tamaño y paso constantes, y se **recortan en los extremos del tramo** para no prolongarse en las esquinas: las marcas que no caben completas se omiten. En el zigzag, la pierna final incompleta se **interpola** sobre la pierna completa (no cruza toda la franja) y el paso fijo se conserva. Los resultados son **estáticos**: editar después la fuente **no** actualiza las colindancias (no hay asociatividad).
+
+#### Etiquetas
+
+Cada recorrido recibe **un par**: el **nombre del estilo** en el interior y el **nombre de la colindancia** en el exterior, cerca de la **mitad de la longitud recorrida** y con rotación legible (nunca boca abajo). La caja se mide con **`textbox`** usando el estilo de texto actual —si el estilo tiene altura fija se usa esa altura y se avisa— y el `TEXT` creado recibe **explícitamente** ese mismo ancho y oblicuidad y **banderas de generación 0** (texto normal, sin espejo ni giro); si AutoCAD no expone alguna de esas propiedades, se informa.
+
+La **caja orientada completa** se valida en los **dos sentidos**: cada uno de sus cuatro lados contra cada tramo de referencia (no solo sus esquinas), de modo que una arista o un vértice de la fuente no puede quedar cerca de la mitad de un lado largo de la caja. Cruzar, tocar o quedar a menos de la holgura exigida invalida la posición. En contornos **cóncavos** se exige además que la caja quede completa dentro (o completa fuera) del polígono y que, en el exterior, no **contenga** ningún vértice del contorno: una caja que envuelve la fuente no es una posición exterior válida. No se usa una comprobación por centroide. Las dos etiquetas del par tampoco pueden solaparse entre sí. La misma comprobación se aplica a la ubicación automática y a la manual.
+
+Cuando la **búsqueda acotada** (desplazamientos limitados junto a la mitad del recorrido) no encuentra posición válida, el comando pide el **centro de la etiqueta con un clic** y vuelve a validar; si el punto no sirve, avisa y vuelve a pedirlo. `ESC` cancela la ejecución. Las etiquetas **nunca se omiten en silencio ni se dibujan del lado equivocado**: si ninguna posición válida existe (por ejemplo, en una franja más estrecha que la holgura exigida), el comando lo indica y **descarta la ejecución completa**, como `ESC`, en lugar de dibujar mal la etiqueta.
+
+#### Restricciones
+
+- Solo **`LINE`** y **`LWPOLYLINE`** de tramos rectos, con normal `+Z` y cota constante. Se rechazan arcos (`bulge`), POLYLINE antigua, geometría 3D o inclinada y otros tipos de entidad. Los arcos **no se aproximan por cuerdas**.
+- Se rechazan fuentes con **aristas nulas**, vértices consecutivos coincidentes, **retrocesos** (aristas superpuestas), **autointersecciones o contactos** y, en contornos cerrados, **superficie nula**.
+- **Cierre geométrico:** si el extremo final coincide con el primero dentro de la tolerancia, ese extremo duplicado se retira **solo de la copia de trabajo** y la fuente se trata como cerrada aunque su bandera diga lo contrario. La entidad original conserva sus coordenadas y su bandera: **no se cierra físicamente** ni se reordena.
+- La fuente debe estar en el **espacio de edición** real: modelo (con `TILEMODE` activo o dentro de una **ventana gráfica flotante**, `CVPORT > 1`) o el espacio papel del layout activo. El resultado se crea en el espacio de la fuente, en la capa actual (`CLAYER`) y con el estilo de texto actual (`TEXTSTYLE`), sin crear capas, estilos, bloques ni recursos globales, sin archivos `.lin` y sin reactores. Una capa actual bloqueada impide crear.
+- **Fuentes abiertas:** el interior es el lado indicado con el clic. **Fuentes cerradas:** el interior se deduce de la orientación del contorno (antihorario u horario). Al **invertir** el recorrido se conservan los lados interior y exterior.
+- Dos clics que se proyectan al **mismo punto** se rechazan y no crean nada.
+- Dentro de una misma ejecución se **evita repetir un tramo ya cubierto**: si el recorrido elegido se superpone con una aplicación anterior, se avisa y no se crea nada. El registro de solapes es **de sesión**: **no hay memoria entre ejecuciones** distintas del comando. Sirve para no duplicar trabajo en la misma pasada, no para editar lo ya dibujado.
+- Los clics se **proyectan** al punto más cercano del borde. El cálculo usa coordenadas locales cercanas a la fuente para no perder precisión en UTM, convierte de OCS a WCS la fuente y de UCS a WCS los clics, y conserva la cota de la fuente.
+- **Límites de seguridad de dibujo:** una aplicación puede crear como máximo **20 000 entidades**, y un tramo, requerir como máximo **20 000 marcas** o vértices de zigzag. Si se supera el límite, se avisa y se descarta la ejecución en lugar de bloquear AutoCAD.
+- Requiere AutoCAD 64-bit con ActiveX. El dibujo se interpreta en **metros**; en un dibujo con otras unidades los valores convertidos no serán los esperados.
+
+#### Cancelación y deshacer
+
+`ESC` en cualquier etapa, o un error, **descarta toda la ejecución**: se borran únicamente las entidades creadas por ese comando (el lote en curso y las aplicaciones ya registradas), se retira el DCL temporal y se restauran `OSMODE`, `CMDECHO` y `DIMZIN`. La fuente **no se borra ni se modifica**: las únicas entidades retiradas son las creadas por el propio comando; antes de borrar, cada entidad se compara por identidad con la fuente, de modo que ninguna ruta de limpieza puede alcanzarla. «Cancelar» en el diálogo hace lo mismo de forma ordenada.
+
+El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira alguna entidad, el comando lo **informa con el número exacto** y **no da por descartado lo que sigue en el dibujo**: conserva el registro de esas entidades (y su tramo sigue ocupado) en lugar de simular un éxito. «Deshacer última aplicación» retira **solo** la última aplicación y libera su tramo en el registro de solapes; si algo sobrevive, conserva su registro y lo avisa. «Aceptar» conserva los resultados y cierra una **única marca de deshacer**: un solo `UNDO` los retira. Si la marca de deshacer no se puede **iniciar**, la ejecución se **cancela antes de crear nada** (no se promete un `UNDO` único que no existiría); si no se puede **cerrar**, se informa y el mensaje final deja de garantizar el `UNDO` único. El resumen final informa el número de aplicaciones **retenidas**, no el contador acumulado, porque «Deshacer última aplicación» puede haber retirado algunas antes de aceptar.
+
+#### Verificación manual
+
+**Pendiente: no hay AutoCAD disponible ni runner automatizado en el repositorio.** Esta lista es la comprobación prevista (S13) y **no representa resultados obtenidos**. Usar un DWG de prueba y revisar las entidades y las variables con Propiedades o `LIST`.
+
+- [ ] **Carga y diálogo:** `APPLOAD` muestra `MCCOLIND cargado. Escriba MCCOLIND para iniciar.`; el comando pide la fuente sin cargar otros scripts; el diálogo abre con escala `500`, texto `2`, repetición `4`, franja `1`, separación `1`, estilo *Alambrada* y nombre `Colindancia`.
+- [ ] **Conversión 1:500:** con los valores iniciales, el resumen indica texto `1.000 m`, paso `2.000 m`, franja `0.500 m` y separación `0.500 m`, y el patrón repite cada 2 m de lindero.
+- [ ] **Siete estilos:** dibujar los siete sobre un mismo polígono cerrado y comprobar el trazado: X y puntos sin franja; franja interior, centrada y exterior con diagonales inclinadas **30° respecto de la perpendicular** y **60° respecto del lindero**; malla con cruces; zigzag continuo. Comprobar que la **fuente queda visible** y sin cambios (mismas coordenadas, capa y bandera).
+- [ ] **Cadena abierta de tres vértices:** una LWPOLYLINE abierta de tres vértices no debe rechazarse como contorno inválido; sus dos tramos se estilizan con normalidad. Un retroceso (por ejemplo `(0,0)-(10,0)-(5,0)`) y un autotoque sí deben rechazarse.
+- [ ] **UTM y zigzag:** con la fuente en UTM (por ejemplo origen `(500000, 2000000, 100)`), el estilo *Lindero de árboles vivos* y la etiqueta colocada manualmente deben aparecer **sobre la fuente**; ningún vértice debe quedar cerca del origen `(0,0)`, y la cota debe ser la de la fuente.
+- [ ] **Ambos sentidos del polígono:** repetir con el contorno dibujado en sentido horario y antihorario; la franja de *Pared propia* queda dentro y la de *Pared colindante* fuera en ambos casos.
+- [ ] **Inversión del recorrido:** con una fuente cerrada, elegir dos puntos y pulsar `I` antes de aplicar: cambia el camino y los lados **no** se invierten; un solo `UNDO` retira el resultado.
+- [ ] **Fuente abierta:** elegir el lado interior con un clic; la etiqueta del estilo queda del lado señalado y la del nombre en el contrario; con un único tramo no se ofrece invertir.
+- [ ] **Selecciones parciales:** aplicar a una parte del contorno y comprobar que el patrón empieza y termina en los puntos proyectados, sin prolongarse en las esquinas.
+- [ ] **Coincidencia:** dos clics sobre el mismo punto avisan y no crean nada; `Enter` en el segundo punto vuelve al diálogo sin resultado.
+- [ ] **Concavidades:** en un contorno en L/U o estrecho, comprobar que ninguna etiqueta cruza el lindero, invade el patrón o cae del lado contrario; si la búsqueda no encuentra sitio, aparece la petición de punto manual y, si el punto no vale, el aviso correspondiente.
+- [ ] **Tramos cortos:** aplicar sobre un tramo más corto que la repetición: se dibujan los bordes de franja y solo las marcas que caben completas, sin prolongaciones. En el zigzag, con paso `4` y un tramo de longitud `4,5` (filas `s=0,1,2`), el último vértice debe quedar **interpolado** en la pierna incompleta, no cruzando toda la franja.
+- [ ] **Holgura de etiqueta (dos sentidos):** con una caja `[-5,5]×[1,2]` y una arista de referencia `(-1, 0.9)-(1, 0.9)` con holgura exigida `0.5`, la posición debe rechazarse (la distancia real es `0.1`), y una caja que **envuelve** la fuente no debe aceptarse como etiqueta exterior. Comprobar que la búsqueda automática y la colocación manual aplican el mismo criterio.
+- [ ] **UCS rotado y elevación:** con UCS girado y cota distinta de cero, los clics se interpretan correctamente y el resultado conserva la cota de la fuente.
+- [ ] **Ventana gráfica flotante:** en un layout de papel con una ventana de modelo activa (`CVPORT > 1`), seleccionar una entidad de **modelo**: debe aceptarse y dibujarse en modelo, sin el aviso de «otro espacio». Con el espacio papel activo (`CVPORT = 1`), una entidad de modelo sí debe rechazarse.
+- [ ] **Distintas escalas:** repetir a `1:100`, `1:1000` y `1:2000` y comprobar tamaño, paso y franja en metros; un estilo con altura fija debe avisar y usar su altura. Con un estilo de texto de **ancho distinto de 1 u oblicuidad distinta de 0**, la caja medida y el texto dibujado deben coincidir (propiedades `41`, `51` y banderas de generación `0` del `TEXT`).
+- [ ] **Errores y rechazos:** arcos (`bulge`), normal `-Z`, LINE con distinta cota entre extremos, autointersecciones, retrocesos, vértices duplicados, superficie nula, capa bloqueada y fuente de otro espacio: aviso claro, sin entidades nuevas y sin cambios en la fuente.
+- [ ] **Entradas inválidas:** `0`, `-1`, `1abc` o `0,5` en cualquier campo muestran el aviso y conservan el texto crudo al reabrir el diálogo; el nombre vacío se rechaza.
+- [ ] **Superposición:** aplicar dos veces sobre el mismo tramo: el segundo aviso indica que ya está cubierto y no se crea nada; tras «Deshacer última aplicación», el tramo vuelve a estar disponible.
+- [ ] **Deshacer última aplicación:** con tres aplicaciones, deshacer retira solo la última (entidades y registro de solapes) y conserva las otras dos; sin aplicaciones, avisa. Tras deshacer y aceptar, el resumen final debe indicar **el número de aplicaciones retenidas**, no el total acumulado.
+- [ ] **Aceptar y UNDO:** aceptar con dos aplicaciones y ejecutar un solo `UNDO`: desaparecen todas las entidades creadas y la fuente sigue intacta.
+- [ ] **Cancelaciones:** `ESC` en la selección de la fuente, en el clic de interior, en los dos puntos, en la vista previa, en la ubicación manual y con «Cancelar»: sin entidades parciales, sin DCL temporal y con `OSMODE`, `CMDECHO` y `DIMZIN` restaurados. Repetir el comando después para descartar estado residual.
+- [ ] **Fallos de borrado (solo si se pueden provocar):** si AutoCAD rechaza retirar alguna entidad al cancelar o al deshacer, el mensaje debe indicar el **número** de entidades que sobrevivieron y el registro no debe liberarse; no se debe leer «no se conservó ningún resultado» mientras queden entidades. No hay forma reproducible de forzar este fallo en una prueba normal; si no se provoca, registrar la casilla como no comprobada.
 
 ## Estructura del repositorio
 
