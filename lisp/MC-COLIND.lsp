@@ -11,7 +11,10 @@
 ;;; dependencia de otros comandos del proyecto.
 ;;;
 ;;; Requiere AutoCAD 64-bit con ActiveX/VLA. El dibujo se interpreta
-;;; en metros; las medidas del diálogo están en milímetros de papel y
+;;; en metros. Por defecto, D es la mayor dimensión XY de la fuente:
+;;; texto interior D/100; exterior 1,5 veces; franja 1 vez;
+;;; holguras interior/exterior 0,5/1,5 veces; paso normal 2 veces.
+;;; En modo manual, las medidas están en milímetros de papel y
 ;;; se convierten con la escala 1:N:
 ;;;   medida_en_dibujo = milímetros * N / 1000
 ;;; Ejemplo a 1:500: texto 2 mm -> 1 m; repetición 4 mm -> 2 m;
@@ -37,13 +40,17 @@
           "  width = 68;"
           "  : text { key = \"fuente\"; width = 66; }"
           "  : boxed_column {"
-          "    label = \"Escala 1:N y medidas en papel\";"
+          "    label = \"Tamaño de símbolos y etiquetas\";"
+          "    : toggle { key = \"automatico\"; label = \"Automático según la geometría seleccionada\"; }"
+          "    : text { label = \"Alternativa manual: escala 1:N y medidas en papel.\"; }"
           "    : edit_box { key = \"escala\"; label = \"Escala 1:N:\"; edit_width = 12; }"
           "    : edit_box { key = \"texto\"; label = \"Altura de texto en mm:\"; edit_width = 12; }"
           "    : edit_box { key = \"repeticion\"; label = \"Repetición del patrón en mm:\"; edit_width = 12; }"
           "    : edit_box { key = \"franja\"; label = \"Ancho total de franja en mm:\"; edit_width = 12; }"
           "    : edit_box { key = \"separacion\"; label = \"Separación libre texto/patrón en mm:\"; edit_width = 12; }"
           "    : text { key = \"medidas\"; width = 66; }"
+          "    : text { key = \"medidas2\"; width = 66; }"
+          "    : text { key = \"medidas3\"; width = 66; }"
           "  }"
           "  : boxed_column {"
           "    label = \"Estilo de colindancia\";"
@@ -90,7 +97,8 @@
 (defun mccolind:der (u) (list (cadr u) (- (car u))))
 
 (defun mccolind:mod (x m / r)
-  (setq r (mod x m))
+  ;; REM es nativa de AutoLISP; ajustar su resto negativo para M positivo.
+  (setq r (rem x m))
   (if (< r 0.0) (+ r m) r))
 
 (defun mccolind:clamp (x lo hi)
@@ -306,7 +314,12 @@
   (setq mccolind-aristas (mccolind:aristas mccolind-puntos mccolind-cerrada)
         mccolind-len (mapcar '(lambda (ar) (distance (car ar) (cadr ar))) mccolind-aristas)
         mccolind-cum (mccolind:acumulado mccolind-len (length mccolind-puntos))
-        mccolind-total (apply '+ mccolind-len))
+        mccolind-total (apply '+ mccolind-len)
+        mccolind-dimension
+          (max (- (apply 'max (mapcar 'car mccolind-puntos))
+                  (apply 'min (mapcar 'car mccolind-puntos)))
+               (- (apply 'max (mapcar 'cadr mccolind-puntos))
+                  (apply 'min (mapcar 'cadr mccolind-puntos)))))
   T)
 
 ;;; ============================================================
@@ -511,7 +524,8 @@
     (princ ". Fuente abierta: un único recorrido; ESC cancela."))
   (while (null elegida)
     (mccolind:pintar (if invertida (cadr rutas) (car rutas)))
-    (setq sig (grread nil nil nil))
+    ;; ALLKEYS y CURTYPE requieren enteros; NIL solo es válido para TRACK.
+    (setq sig (grread nil 0 0))
     (if (and sig (= 2 (car sig)))
       (cond
         ((member (cadr sig) '(13 32))
@@ -538,7 +552,7 @@
     "Franja hacia el interior del recorrido."
     "Franja centrada en el lindero."
     "Franja hacia el exterior del recorrido."
-    "Franja centrada con diagonales cruzadas."
+    "Franja centrada: X a 75 grados del lindero."
     "Franja centrada con zigzag continuo."))
 
 ;; Extensión absoluta del patrón a cada lado: (interior . exterior).
@@ -652,8 +666,9 @@
      (mccolind:segmento-linea p u n largo f2)
      (mccolind:segmento-linea p u n largo (- f2))))
   (cond
-    ;; Alambrada: X centradas sobre el lindero.
+    ;; Alambrada: en automático, 50 % más de paso sin agrandar las X.
     ((= estilo 0)
+     (if (= mccolind-automatico "1") (setq paso (* paso 1.5)))
      (setq k (mccolind:n-marcas largo paso))
      (while (>= k 0)
        (setq c (* (+ k 0.5) paso))
@@ -685,10 +700,15 @@
          (mccolind:linea (mccolind:fram p u n (- c du) o1)
                          (mccolind:fram p u n (+ c du) o2)))
        (setq k (1- k))))
-    ;; Malla ciclónica: diagonales cruzadas dentro de la franja.
+    ;; Malla: conservar la proyección de cada X a 75°: franja*cot(75°).
+    ;; DU se fija antes de ampliar el paso: en automático hay huecos;
+    ;; en manual las X siguen contiguas. No cambia el tamaño ni el ángulo.
     ((= estilo 5)
-     (setq du (* f (mccolind:tan30) 0.5)
-           k (mccolind:n-marcas largo paso))
+     (setq paso (* f (/ (cos (* pi (/ 75.0 180.0)))
+                        (sin (* pi (/ 75.0 180.0)))))
+           du (/ paso 2.0))
+     (if (= mccolind-automatico "1") (setq paso (* paso 1.5)))
+     (setq k (mccolind:n-marcas largo paso))
      (while (>= k 0)
        (setq c (* (+ k 0.5) paso))
        (if (and (>= (- c du) (- mccolind-eps)) (<= (+ c du) (+ largo mccolind-eps)))
@@ -728,7 +748,7 @@
   (list w o fijo))
 
 ;; Caja real del texto con el estilo actual, medida a rotación 0.
-(defun mccolind:medir-texto (texto / ef w o tb p1 p2)
+(defun mccolind:medir-texto (texto altura / ef w o tb p1 p2)
   (setq ef (mccolind:estilo-datos)
         w (car ef)
         o (cadr ef))
@@ -737,7 +757,7 @@
              (list (list '(0 . "TEXT")
                          (cons 1 texto)
                          (cons 7 (getvar "TEXTSTYLE"))
-                         (cons 40 mccolind-h-efectiva)
+                         (cons 40 altura)
                          (cons 41 w)
                          (cons 51 o)
                          (cons 71 0) (cons 72 0) (cons 73 0)
@@ -894,9 +914,9 @@
 ;; Búsqueda acotada: primero lo más cerca posible de la mitad de la
 ;; longitud recorrida y del borde de la franja. Devuelve (inserción caja
 ;; rotación) o nil si no hay posición válida en el límite de la búsqueda.
-(defun mccolind:ubicar-etiqueta (texto signo medio lado holgura otras
+(defun mccolind:ubicar-etiqueta (texto altura signo medio lado holgura otras
                                  / caja x1 y1 x2 y2 u n rot b0 b j dx ins rect objetivo enc)
-  (setq caja (mccolind:medir-texto texto))
+  (setq caja (mccolind:medir-texto texto altura))
   (if (null caja) (mccolind:fallar "textbox no está disponible para medir las etiquetas."))
   (setq x1 (nth 0 caja) y1 (nth 1 caja) x2 (nth 2 caja) y2 (nth 3 caja)
         u (cadr medio)
@@ -921,12 +941,12 @@
   enc)
 
 ;; Ubicación manual validada cuando la búsqueda acotada no encuentra sitio.
-(defun mccolind:ubicar-manual (texto signo puntos lado holgura otras
+(defun mccolind:ubicar-manual (texto altura signo puntos lado holgura otras
                                / res caja x1 y1 x2 y2 p ar u rot ins rect aviso intentos)
   (princ (strcat "\nMCCOLIND: no hay posición segura para la etiqueta "
                  (if (> signo 0) "interior" "exterior")
                  " cerca de la mitad del recorrido."))
-  (setq caja (mccolind:medir-texto texto))
+  (setq caja (mccolind:medir-texto texto altura))
   (if (null caja) (mccolind:fallar "textbox no está disponible para medir las etiquetas."))
   (setq x1 (nth 0 caja) y1 (nth 1 caja) x2 (nth 2 caja) y2 (nth 3 caja)
         res nil
@@ -978,13 +998,16 @@
                    " propiedad(es) del TEXT; compare la caja medida con el texto dibujado.")))
   fallos)
 
-(defun mccolind:crear-texto (ins rot texto / obj)
+(defun mccolind:crear-texto (ins rot texto altura / obj)
   (setq obj (vla-AddText mccolind-espacio texto
                          (vlax-3d-point (mccolind:wcs ins))
-                         mccolind-h-efectiva))
+                         altura))
   (mccolind:entidad obj)
   (vla-put-Layer obj mccolind-capa)
   (vla-put-StyleName obj (getvar "TEXTSTYLE"))
+  ;; Fijar después de asignar el estilo: su altura fija no debe anular
+  ;; el perfil automático. Solo se modifica este TEXT, nunca el STYLE.
+  (vla-put-Height obj altura)
   (vla-put-Rotation obj rot)
   (mccolind:propiedades-texto obj)
   obj)
@@ -998,15 +1021,15 @@
         interior (nth mccolind-estilo (mccolind:nombres))
         exterior mccolind-nombre
         holgura-int (+ (car datos) mccolind-sep)
-        holgura-ext (+ (cdr datos) mccolind-sep))
-  (setq cint (mccolind:ubicar-etiqueta interior 1 medio lado holgura-int nil))
+        holgura-ext (+ (cdr datos) mccolind-sep-ext))
+  (setq cint (mccolind:ubicar-etiqueta interior mccolind-h-efectiva 1 medio lado holgura-int nil))
   (if (null cint)
-    (setq cint (mccolind:ubicar-manual interior 1 puntos lado holgura-int nil)))
-  (setq cext (mccolind:ubicar-etiqueta exterior -1 medio lado holgura-ext (list (cadr cint))))
+    (setq cint (mccolind:ubicar-manual interior mccolind-h-efectiva 1 puntos lado holgura-int nil)))
+  (setq cext (mccolind:ubicar-etiqueta exterior mccolind-h-ext -1 medio lado holgura-ext (list (cadr cint))))
   (if (null cext)
-    (setq cext (mccolind:ubicar-manual exterior -1 puntos lado holgura-ext (list (cadr cint)))))
-  (mccolind:crear-texto (car cint) (nth 2 cint) interior)
-  (mccolind:crear-texto (car cext) (nth 2 cext) exterior)
+    (setq cext (mccolind:ubicar-manual exterior mccolind-h-ext -1 puntos lado holgura-ext (list (cadr cint)))))
+  (mccolind:crear-texto (car cint) (nth 2 cint) interior mccolind-h-efectiva)
+  (mccolind:crear-texto (car cext) (nth 2 cext) exterior mccolind-h-ext)
   T)
 
 ;;; ============================================================
@@ -1156,18 +1179,45 @@
       (setq val (atof s))
       (if (> val 0.0) val nil))))
 
-;; Convierte milímetros de papel a unidades del dibujo (metros).
-(defun mccolind:calcular-medidas (/ d fijo)
-  (setq mccolind-h (* mccolind-texto-m mccolind-escala 0.001)
-        mccolind-paso (* mccolind-paso-m mccolind-escala 0.001)
-        mccolind-franja (* mccolind-franja-m mccolind-escala 0.001)
-        mccolind-sep (* mccolind-sep-m mccolind-escala 0.001))
-  (setq d (mccolind:estilo-datos)
-        fijo (nth 2 d)
-        mccolind-h-efectiva (if (> fijo 1e-9) fijo mccolind-h))
-  (if (and (> fijo 1e-9) (> (abs (- fijo mccolind-h)) 1e-9))
-    (princ (strcat "\nMCCOLIND: el estilo de texto actual tiene altura fija "
-                   (rtos fijo 2 4) "; se usa esa altura en lugar de la medida del diálogo.")))
+;; Perfil en metros: (altura interior, altura exterior, paso normal,
+;; ancho de franja, holgura interior, holgura exterior). Sin modificar
+;; campos ni recursos globales; también sirve para el resumen del DCL.
+(defun mccolind:perfil-medidas (/ h k fijo)
+  (if (= mccolind-automatico "1")
+    (progn
+      (setq h (/ mccolind-dimension 100.0))
+      ;; Símbolos y franjas al doble; textos, holguras y paso conservados.
+      (list h (* h 1.5) (* h 2.0) h (* h 0.5) (* h 1.5)))
+    (progn
+      (setq k (* (mccolind:positivo mccolind-escala-raw) 0.001)
+            h (* (mccolind:positivo mccolind-texto-raw) k)
+            fijo (nth 2 (mccolind:estilo-datos)))
+      ;; El modo manual conserva la altura fija y las dos etiquetas
+      ;; iguales del comportamiento anterior.
+      (if (> fijo 1e-9) (setq h fijo))
+      (list h h
+            (* (mccolind:positivo mccolind-paso-raw) k)
+            (* (mccolind:positivo mccolind-franja-raw) k)
+            (* (mccolind:positivo mccolind-sep-raw) k)
+            (* (mccolind:positivo mccolind-sep-raw) k)))))
+
+;; Auto: proporciones respecto de la fuente completa seleccionada.
+;; Manual: milímetros de papel a metros, con la escala 1:N conservada.
+(defun mccolind:calcular-medidas (/ perfil fijo)
+  (setq perfil (mccolind:perfil-medidas)
+        mccolind-h-efectiva (nth 0 perfil)
+        mccolind-h-ext (nth 1 perfil)
+        mccolind-paso (nth 2 perfil)
+        mccolind-franja (nth 3 perfil)
+        mccolind-sep (nth 4 perfil)
+        mccolind-sep-ext (nth 5 perfil))
+  (if (/= mccolind-automatico "1")
+    (progn
+      (setq mccolind-h (* mccolind-texto-m mccolind-escala 0.001)
+            fijo (nth 2 (mccolind:estilo-datos)))
+      (if (and (> fijo 1e-9) (> (abs (- fijo mccolind-h)) 1e-9))
+        (princ (strcat "\nMCCOLIND: el estilo de texto actual tiene altura fija "
+                       (rtos fijo 2 4) "; se usa esa altura en lugar de la medida del diálogo.")))))
   T)
 
 (defun mccolind:validar-campos (/ msg)
@@ -1180,15 +1230,15 @@
                           (vl-string-trim " \t" mccolind-nombre-raw)
                           ""))
   (cond
-    ((null mccolind-escala)
+    ((and (/= mccolind-automatico "1") (null mccolind-escala))
      "La escala 1:N debe ser un número positivo (por ejemplo, 500).")
-    ((null mccolind-texto-m)
+    ((and (/= mccolind-automatico "1") (null mccolind-texto-m))
      "La altura de texto debe ser un número positivo en milímetros (por ejemplo, 2).")
-    ((null mccolind-paso-m)
+    ((and (/= mccolind-automatico "1") (null mccolind-paso-m))
      "La repetición del patrón debe ser un número positivo en milímetros (por ejemplo, 4).")
-    ((null mccolind-franja-m)
+    ((and (/= mccolind-automatico "1") (null mccolind-franja-m))
      "El ancho total de franja debe ser un número positivo en milímetros (por ejemplo, 1).")
-    ((null mccolind-sep-m)
+    ((and (/= mccolind-automatico "1") (null mccolind-sep-m))
      "La separación libre debe ser un número positivo en milímetros (por ejemplo, 1).")
     ((= (strlen mccolind-nombre) 0)
      "Escriba el nombre de la colindancia exterior que se rotulará fuera.")
@@ -1196,21 +1246,26 @@
      "El nombre de la colindancia no debe superar 200 caracteres.")
     (T (mccolind:calcular-medidas) nil)))
 
-(defun mccolind:resumen-medidas (/ n k)
-  (setq n (mccolind:positivo mccolind-escala-raw))
-  (if (or (null n)
-          (null (mccolind:positivo mccolind-texto-raw))
-          (null (mccolind:positivo mccolind-paso-raw))
-          (null (mccolind:positivo mccolind-franja-raw))
-          (null (mccolind:positivo mccolind-sep-raw)))
-    "Medidas: complete números positivos para ver la conversión."
+(defun mccolind:resumen-medidas (/ perfil)
+  (if (and (/= mccolind-automatico "1")
+           (or (null (mccolind:positivo mccolind-escala-raw))
+               (null (mccolind:positivo mccolind-texto-raw))
+               (null (mccolind:positivo mccolind-paso-raw))
+               (null (mccolind:positivo mccolind-franja-raw))
+               (null (mccolind:positivo mccolind-sep-raw))))
+    (list "Medidas: complete números positivos para ver la conversión." "" "")
     (progn
-      ;; Factor común: milímetros de papel a unidades del dibujo.
-      (setq k (* n 0.001))
-      (strcat "En el dibujo, en metros: texto " (rtos (* (atof mccolind-texto-raw) k) 2 3)
-              "; paso " (rtos (* (atof mccolind-paso-raw) k) 2 3)
-              "; franja " (rtos (* (atof mccolind-franja-raw) k) 2 3)
-              "; separación " (rtos (* (atof mccolind-sep-raw) k) 2 3) "."))))
+      (setq perfil (mccolind:perfil-medidas))
+      (list
+        (strcat (if (= mccolind-automatico "1")
+                  (strcat "D=" (rtos mccolind-dimension 2 3) " m. ")
+                  "Manual. ")
+                "Texto int./ext.: " (rtos (nth 0 perfil) 2 3) " / "
+                (rtos (nth 1 perfil) 2 3) " m.")
+        (strcat "Paso normal: " (rtos (nth 2 perfil) 2 3)
+                " m; franja: " (rtos (nth 3 perfil) 2 3) " m.")
+        (strcat "Separación libre int./ext.: " (rtos (nth 4 perfil) 2 3)
+                " / " (rtos (nth 5 perfil) 2 3) " m.")))))
 
 (defun mccolind:resumen-sesion ()
   (if (null mccolind-sesion)
@@ -1219,7 +1274,8 @@
             ". Última: " (nth (car (car mccolind-sesion)) (mccolind:nombres)) ".")))
 
 (defun mccolind:guardar-dlg ()
-  (setq mccolind-escala-raw (get_tile "escala")
+  (setq mccolind-automatico (get_tile "automatico")
+        mccolind-escala-raw (get_tile "escala")
         mccolind-texto-raw (get_tile "texto")
         mccolind-paso-raw (get_tile "repeticion")
         mccolind-franja-raw (get_tile "franja")
@@ -1229,9 +1285,14 @@
   (if (or (< mccolind-estilo 0) (> mccolind-estilo 6)) (setq mccolind-estilo 0))
   T)
 
-(defun mccolind:actualizar-dlg ()
+(defun mccolind:actualizar-dlg (/ resumen)
+  (foreach clave '("escala" "texto" "repeticion" "franja" "separacion")
+    (mode_tile clave (if (= mccolind-automatico "1") 1 0)))
   (set_tile "lado" (nth mccolind-estilo (mccolind:descripciones)))
-  (set_tile "medidas" (mccolind:resumen-medidas))
+  (setq resumen (mccolind:resumen-medidas))
+  (set_tile "medidas" (nth 0 resumen))
+  (set_tile "medidas2" (nth 1 resumen))
+  (set_tile "medidas3" (nth 2 resumen))
   (set_tile "estado" (mccolind:resumen-sesion))
   T)
 
@@ -1239,6 +1300,7 @@
 ;; inválidos, para no perder lo escrito por el usuario.
 (defun mccolind:cargar-dlg ()
   (set_tile "fuente" mccolind-descripcion-fuente)
+  (set_tile "automatico" mccolind-automatico)
   (set_tile "escala" mccolind-escala-raw)
   (set_tile "texto" mccolind-texto-raw)
   (set_tile "repeticion" mccolind-paso-raw)
@@ -1293,6 +1355,7 @@
                      mccolind-origen mccolind-z mccolind-puntos mccolind-cerrada
                      mccolind-eps mccolind-lado-canonico mccolind-aristas
                      mccolind-len mccolind-cum mccolind-total mccolind-uA mccolind-uB
+                     mccolind-automatico mccolind-dimension mccolind-h-ext mccolind-sep-ext
                      mccolind-actual mccolind-sesion mccolind-aplicaciones
                      mccolind-cuenta mccolind-tope
                      mccolind-escala-raw mccolind-texto-raw mccolind-paso-raw
@@ -1330,6 +1393,7 @@
         mccolind-cuenta 0
         mccolind-tope 20000
         mccolind-estilo 0
+        mccolind-automatico "1"
         mccolind-escala-raw "500"
         mccolind-texto-raw "2"
         mccolind-paso-raw "4"
@@ -1395,6 +1459,7 @@
     (if (not (new_dialog "mccolind_dlg" mccolind-id))
       (mccolind:fallar "No se encontró la definición del diálogo MCCOLIND."))
     (mccolind:cargar-dlg)
+    (action_tile "automatico" "(mccolind:guardar-dlg) (mccolind:actualizar-dlg)")
     (action_tile "estilo" "(mccolind:guardar-dlg) (mccolind:actualizar-dlg)")
     (action_tile "escala" "(mccolind:guardar-dlg) (mccolind:actualizar-dlg)")
     (action_tile "texto" "(mccolind:guardar-dlg) (mccolind:actualizar-dlg)")

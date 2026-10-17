@@ -387,7 +387,7 @@ Dibuja uno de **siete estilos de lindero** sobre un **tramo parcial** de una `LI
 1. Cargar `lisp/MC-COLIND.lsp` con `APPLOAD` y ejecutar `MCCOLIND`.
 2. Seleccionar una **LINE o LWPOLYLINE de tramos rectos**, horizontal (normal `+Z`) y con cota constante, en el espacio activo.
 3. En fuentes abiertas, indicar con un clic el **lado considerado interior**.
-4. En el diálogo, ajustar escala y medidas, elegir el estilo y escribir el **nombre de la colindancia exterior**. «Aplicar a dos puntos...» suspende el diálogo para tomar dos clics sobre el borde.
+4. En el diálogo, mantener **Automático según la geometría seleccionada** (predeterminado), elegir el estilo y escribir el **nombre de la colindancia exterior**. Para introducir medidas de papel y escala `1:N`, desactivar Automático. «Aplicar a dos puntos...» suspende el diálogo para tomar dos clics sobre el borde.
 5. Previsualizar el recorrido: `ENTER` o `ESPACIO` aplica, `I` invierte el sentido (solo en fuentes cerradas) y `ESC` cancela toda la ejecución.
 6. Repetir el paso 4 tantas veces como tramos se quieran estilizar. «Deshacer última aplicación» retira solo la última y deja libre su tramo; si se deshizo todo, «Aceptar» cierra igualmente e informa **0 aplicaciones retenidas**. «Aceptar» conserva lo dibujado; «Cancelar» o `ESC` descartan toda la ejecución.
 
@@ -397,17 +397,32 @@ Un solo `UNDO` retira una ejecución aceptada y conserva la fuente.
 
 | Control | Valor inicial | Significado |
 |---|---|---|
-| Escala `1:N` | `500` | El dibujo se interpreta en **metros**: `medida_en_dibujo = mm × N / 1000` |
-| Altura de texto (mm) | `2` | Altura de las dos etiquetas |
-| Repetición del patrón (mm) | `4` | Paso entre marcas, dentro de cada tramo |
+| Automático según la geometría seleccionada | Activado | Tamaños proporcionales a la fuente completa; no al tramo elegido, zoom ni extensión global del DWG |
+| Escala `1:N` (manual) | `500` | El dibujo se interpreta en **metros**: `medida_en_dibujo = mm × N / 1000` |
+| Altura de texto (mm, manual) | `2` | Altura de las dos etiquetas en modo manual |
+| Repetición del patrón (mm, manual) | `4` | Paso entre marcas, excepto malla, que usa X contiguas |
 | Ancho total de franja (mm) | `1` | Separación entre los dos bordes de la franja |
 | Separación libre texto/patrón (mm) | `1` | Holgura mínima entre cada etiqueta y el patrón |
 | Estilo | Alambrada | Uno de los siete patrones |
 | Colindancia exterior | `Colindancia` | Texto de la etiqueta exterior |
 
-Las cinco medidas se escriben en **milímetros de papel** y se convierten con la escala. Se validan con un **parser positivo estricto**: se rechazan cero, negativos, comas, exponentes y textos como `1abc`; el aviso indica el campo y **el texto crudo se conserva** al reabrir el diálogo.
+**Modo automático.** Se calcula `D = max(ancho X, alto Y)` de la fuente seleccionada en WCS. Los tamaños son:
 
-**Ejemplo a 1:500, en metros:** texto `2 mm` → **1 m** de altura; repetición `4 mm` → una marca cada **2 m**; franja `1 mm` → **0,5 m** de ancho total; separación `1 mm` → **0,5 m**. Son parámetros iniciales propuestos, no dimensiones normativas.
+| Medida | Proporción | Ejemplo con D = 1000 m |
+|---|---|---|
+| Altura interior | `D / 100` | 10 m |
+| Altura exterior | `1,5 × altura interior` | 15 m |
+| Ancho total de franja | `1 × altura interior` | 10 m |
+| Separación libre interior | `0,5 × altura interior` | 5 m |
+| Separación libre exterior | `1,5 × altura interior` | 15 m |
+| Repetición normal (puntos, paredes y zigzag) | `2 × altura interior` | 20 m |
+| Repetición de alambrada | `3 × altura interior` | 30 m |
+
+El diálogo muestra las medidas resultantes en metros; «Paso normal» es la referencia común, no el paso específico de alambrada o malla. Los símbolos (cruces y puntos) y el ancho de las franjas se ampliaron **al doble** respecto del perfil automático inicial, sin cambiar alturas de texto, holguras libres ni paso normal. Las etiquetas pueden desplazarse para respetar la franja mayor. Una LINE también usa su mayor extensión XY. La holgura se mide desde el borde del patrón hasta la **caja real** del texto, no hasta su inserción. No se garantiza que las etiquetas quepan en todo contorno estrecho: se conserva la ubicación manual validada.
+
+**Modo manual.** Al desactivar Automático se habilitan la escala y las cuatro medidas en **milímetros de papel**. Conserva las alturas iguales, la separación común y el tratamiento de altura fija del estilo de la versión anterior; la malla conserva 75° y su paso contiguo en manual. El ajuste de menor densidad de alambrada/malla se aplica **solo en automático**. Se validan con un **parser positivo estricto**: se rechazan cero, negativos, comas, exponentes y textos como `1abc`. Se conservan el modo y **los textos crudos**, incluso inválidos, al alternar modos o reabrir el diálogo; los campos manuales deshabilitados no bloquean el automático.
+
+**Ejemplo manual a 1:500, en metros:** texto `2 mm` → **1 m** de altura; repetición `4 mm` → una marca cada **2 m**; franja `1 mm` → **0,5 m** de ancho total; separación `1 mm` → **0,5 m**. Son parámetros iniciales propuestos, no dimensiones normativas.
 
 #### Siete estilos
 
@@ -418,16 +433,18 @@ Las cinco medidas se escriben en **milímetros de papel** y se convierten con la
 | Pared propia | Franja hacia el **interior** con diagonales |
 | Pared medianera | Franja **centrada** en el lindero con diagonales |
 | Pared colindante | Franja hacia el **exterior** con diagonales |
-| Malla ciclónica | Franja centrada con diagonales cruzadas |
+| Malla ciclónica | Franja centrada con X a 75°: separadas en automático, contiguas en manual |
 | Lindero de árboles vivos | Franja centrada con zigzag continuo |
 
-En las paredes y en la malla, las diagonales forman **30° con la perpendicular** al lindero (60° con el lindero); la tangente de 30° se calcula con `sin`/`cos`, porque AutoLISP no tiene `TAN`. El tamaño de cruces y puntos se deriva de la franja (`franja/2`). En **Pared propia** y **Pared colindante** el patrón dibuja solo el borde lejano: el borde cercano es el propio lindero de la fuente, que se conserva intacto; por eso esos dos estilos **dependen de que la fuente siga visible**.
+En automático, **alambrada y malla** usan un paso **1,5 veces** el anterior: aproximadamente **un tercio menos de cruces**, sin cambiar el tamaño de cada X, los textos, las holguras ni los otros estilos. La alambrada pasa de 20 a **30 m** entre centros en el ejemplo D=1000.
+
+En las **paredes**, las diagonales conservan **30° con la perpendicular** al lindero (60° con el lindero). En la **malla**, forman **75° con el lindero**: la proyección longitudinal de cada X es `franja × cos(75°) / sin(75°)`. En **automático**, el paso entre centros es **1,5 veces esa proyección**, dejando pequeños huecos; en **manual** el paso sigue siendo la proyección y las X comparten extremos. Con franja de 10 m, la proyección es aproximadamente **2,679 m**, el paso automático **4,019 m** y el hueco **1,340 m**. Se calculan con `sin`/`cos`, porque AutoLISP no tiene `TAN`. El tamaño de cruces y puntos se deriva de la franja (`franja/2`). En **Pared propia** y **Pared colindante** el patrón dibuja solo el borde lejano: el borde cercano es el propio lindero de la fuente, que se conserva intacto; por eso esos dos estilos **dependen de que la fuente siga visible**.
 
 Los patrones se calculan **por segmento**, con tamaño y paso constantes, y se **recortan en los extremos del tramo** para no prolongarse en las esquinas: las marcas que no caben completas se omiten. En el zigzag, la pierna final incompleta se **interpola** sobre la pierna completa (no cruza toda la franja) y el paso fijo se conserva. Los resultados son **estáticos**: editar después la fuente **no** actualiza las colindancias (no hay asociatividad).
 
 #### Etiquetas
 
-Cada recorrido recibe **un par**: el **nombre del estilo** en el interior y el **nombre de la colindancia** en el exterior, cerca de la **mitad de la longitud recorrida** y con rotación legible (nunca boca abajo). La caja se mide con **`textbox`** usando el estilo de texto actual —si el estilo tiene altura fija se usa esa altura y se avisa— y el `TEXT` creado recibe **explícitamente** ese mismo ancho y oblicuidad y **banderas de generación 0** (texto normal, sin espejo ni giro); si AutoCAD no expone alguna de esas propiedades, se informa.
+Cada recorrido recibe **un par**: el **nombre del estilo** en el interior y el **nombre de la colindancia** en el exterior, cerca de la **mitad de la longitud recorrida** y con rotación legible (nunca boca abajo). En automático, la exterior mide **1,5 veces** la interior y tiene **tres veces** su separación libre. Cada caja se mide con **`textbox`** a la altura real de su etiqueta y usando el estilo de texto actual. El `TEXT` recibe **altura explícita después de asignar el estilo**, además del mismo ancho y oblicuidad y **banderas de generación 0** (texto normal, sin espejo ni giro); si AutoCAD no expone alguna de esas últimas propiedades, se informa. La altura fija del estilo **no anula el automático** y no se modifica la definición global del estilo. En manual se conserva la altura fija y su aviso.
 
 La **caja orientada completa** se valida en los **dos sentidos**: cada uno de sus cuatro lados contra cada tramo de referencia (no solo sus esquinas), de modo que una arista o un vértice de la fuente no puede quedar cerca de la mitad de un lado largo de la caja. Cruzar, tocar o quedar a menos de la holgura exigida invalida la posición. En contornos **cóncavos** se exige además que la caja quede completa dentro (o completa fuera) del polígono y que, en el exterior, no **contenga** ningún vértice del contorno: una caja que envuelve la fuente no es una posición exterior válida. No se usa una comprobación por centroide. Las dos etiquetas del par tampoco pueden solaparse entre sí. La misma comprobación se aplica a la ubicación automática y a la manual.
 
@@ -454,11 +471,14 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 
 #### Verificación manual
 
-**Pendiente: no hay AutoCAD disponible ni runner automatizado en el repositorio.** Esta lista es la comprobación prevista (S13) y **no representa resultados obtenidos**. Usar un DWG de prueba y revisar las entidades y las variables con Propiedades o `LIST`.
+**Versión actual validada por el usuario tras pruebas manuales positivas en AutoCAD**, incluida la reducción de densidad de alambrada/malla: «Los test resultaron positivos. Todo esta OK». La confirmación es general y no acredita individualmente cada escenario; la lista se conserva para futuras regresiones. No hay AutoCAD disponible ni runner automatizado en el repositorio. Esta lista es la comprobación prevista (S13) y **no representa resultados individuales obtenidos**. Usar un DWG de prueba y revisar las entidades y las variables con Propiedades o `LIST`.
 
-- [ ] **Carga y diálogo:** `APPLOAD` muestra `MCCOLIND cargado. Escriba MCCOLIND para iniciar.`; el comando pide la fuente sin cargar otros scripts; el diálogo abre con escala `500`, texto `2`, repetición `4`, franja `1`, separación `1`, estilo *Alambrada* y nombre `Colindancia`.
-- [ ] **Conversión 1:500:** con los valores iniciales, el resumen indica texto `1.000 m`, paso `2.000 m`, franja `0.500 m` y separación `0.500 m`, y el patrón repite cada 2 m de lindero.
-- [ ] **Siete estilos:** dibujar los siete sobre un mismo polígono cerrado y comprobar el trazado: X y puntos sin franja; franja interior, centrada y exterior con diagonales inclinadas **30° respecto de la perpendicular** y **60° respecto del lindero**; malla con cruces; zigzag continuo. Comprobar que la **fuente queda visible** y sin cambios (mismas coordenadas, capa y bandera).
+- [ ] **Carga y diálogo:** `APPLOAD` muestra `MCCOLIND cargado. Escriba MCCOLIND para iniciar.`; el comando pide la fuente sin cargar otros scripts; el diálogo abre con Automático activado, medidas manuales deshabilitadas (conservan `500`, `2`, `4`, `1`, `1`), estilo *Alambrada* y nombre `Colindancia`.
+- [ ] **Automático:** rectángulo `(0,0)-(1000,0)-(1000,600)-(0,600)`: D=1000; altura interior/exterior **10/15 m**, paso normal **20 m**, franja **10 m**, holguras libres **5/15 m**. Medir alturas y separaciones reales con Propiedades y distancias, también en una selección parcial. Cambiar zoom y añadir un objeto lejano: no deben cambiar. Repetir con fuente escalada por 10: todas las medidas se multiplican por 10.
+- [ ] **Modo y persistencia:** desactivar Automático, introducir valores manuales, aplicar y deshacer: el diálogo conserva modo y entradas. Introducir `1abc`, activar Automático y aplicar: el valor manual inválido no bloquea; al volver a manual, se conserva y se rechaza sin crear entidades.
+- [ ] **Conversión manual 1:500:** desactivar Automático; con los valores iniciales, el resumen indica texto `1.000 m`, paso `2.000 m`, franja `0.500 m` y separación `0.500 m`, y el patrón repite cada 2 m de lindero.
+- [ ] **Siete estilos:** dibujar los siete sobre un mismo polígono cerrado y comprobar el trazado: X y puntos sin franja; franja interior, centrada y exterior con diagonales inclinadas **30° respecto de la perpendicular** y **60° respecto del lindero**; malla con cruces a **75° respecto del lindero**, con huecos en automático y extremos contiguos en manual; zigzag continuo. Probar malla también en manual y con un tramo que no admita una X completa: no debe prolongarse fuera del tramo. Comprobar que la **fuente queda visible** y sin cambios (mismas coordenadas, capa y bandera).
+- [ ] **Menor densidad automática:** con D=1000, alambrada repite cada **30 m** (X del mismo tamaño), malla de franja10 mantiene X a75° y proyección≈**2,679 m**, con centros cada **4,019 m** y hueco≈**1,340 m**. En un tramo largo habrá aproximadamente un tercio menos de X que antes, sin cambiar textos ni holguras. Confirmar que puntos, paredes y zigzag siguen iguales. En manual, alambrada conserva el paso introducido y malla las X contiguas; probar ambas en tramos cortos y extremos parciales sin prolongaciones.
 - [ ] **Cadena abierta de tres vértices:** una LWPOLYLINE abierta de tres vértices no debe rechazarse como contorno inválido; sus dos tramos se estilizan con normalidad. Un retroceso (por ejemplo `(0,0)-(10,0)-(5,0)`) y un autotoque sí deben rechazarse.
 - [ ] **UTM y zigzag:** con la fuente en UTM (por ejemplo origen `(500000, 2000000, 100)`), el estilo *Lindero de árboles vivos* y la etiqueta colocada manualmente deben aparecer **sobre la fuente**; ningún vértice debe quedar cerca del origen `(0,0)`, y la cota debe ser la de la fuente.
 - [ ] **Ambos sentidos del polígono:** repetir con el contorno dibujado en sentido horario y antihorario; la franja de *Pared propia* queda dentro y la de *Pared colindante* fuera en ambos casos.
@@ -471,9 +491,9 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 - [ ] **Holgura de etiqueta (dos sentidos):** con una caja `[-5,5]×[1,2]` y una arista de referencia `(-1, 0.9)-(1, 0.9)` con holgura exigida `0.5`, la posición debe rechazarse (la distancia real es `0.1`), y una caja que **envuelve** la fuente no debe aceptarse como etiqueta exterior. Comprobar que la búsqueda automática y la colocación manual aplican el mismo criterio.
 - [ ] **UCS rotado y elevación:** con UCS girado y cota distinta de cero, los clics se interpretan correctamente y el resultado conserva la cota de la fuente.
 - [ ] **Ventana gráfica flotante:** en un layout de papel con una ventana de modelo activa (`CVPORT > 1`), seleccionar una entidad de **modelo**: debe aceptarse y dibujarse en modelo, sin el aviso de «otro espacio». Con el espacio papel activo (`CVPORT = 1`), una entidad de modelo sí debe rechazarse.
-- [ ] **Distintas escalas:** repetir a `1:100`, `1:1000` y `1:2000` y comprobar tamaño, paso y franja en metros; un estilo con altura fija debe avisar y usar su altura. Con un estilo de texto de **ancho distinto de 1 u oblicuidad distinta de 0**, la caja medida y el texto dibujado deben coincidir (propiedades `41`, `51` y banderas de generación `0` del `TEXT`).
+- [ ] **Distintas escalas y altura fija:** en manual repetir a `1:100`, `1:1000` y `1:2000` y comprobar tamaño, paso y franja en metros; un estilo con altura fija debe avisar y usar su altura. En automático y con el rectángulo D=1000, usar un estilo de altura fija distinta de 10: ambos TEXT deben medir **10/15 m**, las cajas y holguras deben corresponder a esas alturas y la definición del estilo debe quedar intacta. Con un estilo de texto de **ancho distinto de 1 u oblicuidad distinta de 0**, la caja medida y el texto dibujado deben coincidir (propiedades `41`, `51` y banderas de generación `0` del `TEXT`).
 - [ ] **Errores y rechazos:** arcos (`bulge`), normal `-Z`, LINE con distinta cota entre extremos, autointersecciones, retrocesos, vértices duplicados, superficie nula, capa bloqueada y fuente de otro espacio: aviso claro, sin entidades nuevas y sin cambios en la fuente.
-- [ ] **Entradas inválidas:** `0`, `-1`, `1abc` o `0,5` en cualquier campo muestran el aviso y conservan el texto crudo al reabrir el diálogo; el nombre vacío se rechaza.
+- [ ] **Entradas inválidas:** en modo manual, `0`, `-1`, `1abc` o `0,5` en cualquier campo numérico muestran el aviso y conservan el texto crudo al reabrir el diálogo; el nombre vacío se rechaza.
 - [ ] **Superposición:** aplicar dos veces sobre el mismo tramo: el segundo aviso indica que ya está cubierto y no se crea nada; tras «Deshacer última aplicación», el tramo vuelve a estar disponible.
 - [ ] **Deshacer última aplicación:** con tres aplicaciones, deshacer retira solo la última (entidades y registro de solapes) y conserva las otras dos; sin aplicaciones, avisa. Tras deshacer y aceptar, el resumen final debe indicar **el número de aplicaciones retenidas**, no el total acumulado.
 - [ ] **Aceptar y UNDO:** aceptar con dos aplicaciones y ejecutar un solo `UNDO`: desaparecen todas las entidades creadas y la fuente sigue intacta.
