@@ -661,11 +661,13 @@
 )
 
 (defun mce:region-agua (curva / copia resultado regiones region area perimetro
-                         longitud fin motivo ok reg)
-  ;; Devuelve (region motivo): region válida o (nil motivo con la causa medida).
-  ;; region solo se asigna cuando la región es válida; reg es el iterador.
-  ;; El núcleo REGION valida la curva FINAL, no solo las cuerdas de entrada.
-  ;; Una región única y perímetro completo evitan aceptar lóbulos descartados.
+                         longitud fin motivo ok reg suave diagnostico)
+  ;; Devuelve (region motivo [diagnostico]): region válida o (nil motivo con la
+  ;; causa medida). Los dos primeros elementos conservan el contrato previo; el
+  ;; tercero es metadata informativa (perímetro y longitud de la curva final) y
+  ;; SOLO existe cuando una SPLINE se acepta. region solo se asigna a una región
+  ;; válida; reg es el iterador. El núcleo REGION valida la curva FINAL, no solo
+  ;; las cuerdas de entrada.
   (if (not (vlax-curve-isClosed curva))
     (setq motivo "la curva suave no quedó cerrada")
     (progn
@@ -689,22 +691,28 @@
               (setq area (vla-get-Area (car regiones))
                     perimetro (vla-get-Perimeter (car regiones))
                     longitud (vlax-curve-getDistAtParam curva (vlax-curve-getEndParam curva))
-                    ;; Ajuste empírico acotado (S4): la REGION reconvierte la SPLINE
-                    ;; suavizada con más error relativo que una polilínea recta.
-                    ;; Solo la SPLINE usa 1e-7; el resto conserva 1e-8 y el piso
-                    ;; absoluto 1e-8 no cambia. No demuestra por sí solo corrección
-                    ;; geométrica: la validación de región/cruce sigue intacta.
-                    fin (max 1e-8 (* longitud
-                                      (if (= (vla-get-ObjectName curva) "AcDbSpline")
-                                        1e-7 1e-8))))
+                    suave (= (vla-get-ObjectName curva) "AcDbSpline"))
               (cond
                 ((<= area 1e-16)
                   (setq motivo "la región tiene superficie nula"))
-                ((not (equal perimetro longitud fin))
-                  (setq motivo (strcat "el perímetro " (rtos perimetro 2 8)
-                                       " no coincide con la longitud de la curva "
-                                       (rtos longitud 2 8) " (tolerancia " (rtos fin 2 8) ")")))
-                (T (setq ok T region (car regiones)))
+                (suave
+                  ;; SPLINE: cierre nativo + AddRegion exitoso + exactamente una
+                  ;; región con área positiva son el criterio. Perímetro y
+                  ;; longitud ya no vetan: solo se devuelven como diagnóstico.
+                  ;; No prueban mapeo íntegro ni ausencia de lóbulos descartados.
+                  (setq ok T region (car regiones)
+                        diagnostico (list perimetro longitud)))
+                (T
+                  ;; Polilíneas y demás curvas conservan el guard previo: una
+                  ;; región positiva no demuestra recorrido íntegro, así que el
+                  ;; perímetro debe cubrir toda la longitud.
+                  (setq fin (max 1e-8 (* longitud 1e-8)))
+                  (if (equal perimetro longitud fin)
+                    (setq ok T region (car regiones))
+                    (setq motivo (strcat "el perímetro " (rtos perimetro 2 8)
+                                         " no coincide con la longitud de la curva "
+                                         (rtos longitud 2 8) " (tolerancia " (rtos fin 2 8) ")")))
+                )
               )
             )
           )
@@ -721,7 +729,9 @@
       )
     )
   )
-  (list region motivo)
+  (if diagnostico
+    (list region motivo diagnostico)
+    (list region motivo))
 )
 
 (defun mce:contenida (hija madre tolerancia / resto molde resultado dentro)
@@ -742,9 +752,10 @@
 (defun mce:agua (contorno capa / original area centro medidas paso tolerancia
                   cola nodo curva padre profundidad siguientes signo resultado
                   fragmentos fragmento region superficie aceptadas par duplicado
-                  total niveles intentos incompleto analisis)
+                  total niveles intentos incompleto analisis diagnostico)
   (setq analisis (mce:region-agua contorno)
-        original (car analisis))
+        original (car analisis)
+        diagnostico (caddr analisis))
   (if (not original)
     (mce:fallar
       (strcat "El contorno final de agua es inválido, se cruza o no produce una región simple completa: "
@@ -754,6 +765,17 @@
         medidas (list area (list (car centro) (cadr centro) (mce:cota contorno)))
         paso (* 0.05 (sqrt area)) tolerancia (max 1e-16 (* area 1e-9))
         cola (list (list contorno original 0)) total 0 niveles 0 intentos 0)
+  ;; Diagnóstico informativo del contorno ORIGINAL: se imprime una sola vez, no
+  ;; por fragmento. Solo la SPLINE aporta esta metadata; las polilíneas no.
+  (if diagnostico
+    (princ (strcat
+             "\nAgua: SPLINE original aceptada por validación nativa de REGION "
+             "(cerrada, una región, área positiva)."
+             "\n  REGION perímetro " (rtos (car diagnostico) 2 8)
+             "; longitud de curva " (rtos (cadr diagnostico) 2 8)
+             "; diferencia " (rtos (abs (- (car diagnostico) (cadr diagnostico))) 2 8)
+             " (informativo: no certifica topología ni ausencia de lóbulos descartados)."))
+  )
   (mce:azul contorno capa)
   ;; Búsqueda por niveles. Cada nodo conserva su región para probar a sus hijos.
   (while cola
