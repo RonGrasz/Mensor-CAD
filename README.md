@@ -501,16 +501,16 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 - [ ] **Cancelaciones:** `ESC` en la selección de la fuente, en el clic de interior, en los dos puntos, en la vista previa, en la ubicación manual y con «Cancelar»: sin entidades parciales, sin DCL temporal y con `OSMODE`, `CMDECHO` y `DIMZIN` restaurados. Repetir el comando después para descartar estado residual.
 - [ ] **Fallos de borrado (solo si se pueden provocar):** si AutoCAD rechaza retirar alguna entidad al cancelar o al deshacer, el mensaje debe indicar el **número** de entidades que sobrevivieron y el registro no debe liberarse; no se debe leer «no se conservó ningún resultado» mientras queden entidades. No hay forma reproducible de forzar este fallo en una prueba normal; si no se provoca, registrar la casilla como no comprobada.
 
-### MCELEMENTS — Edificaciones, vegetación y masas de agua
+### MCELEMENTS — Edificaciones, vegetación, masas de agua y ríos
 
-**T4/T5 implementados; pendientes de prueba funcional en AutoCAD.** Crea geometría nueva sin seleccionar ni modificar objetos anteriores. Incluye cinco estructuras; los ríos quedan para T6 y **no aparecen en el selector**. Requiere AutoCAD Windows con ActiveX, patrones ANSI y, para agua, operaciones REGION/Boolean y Offset.
+**T4/T5/T6 implementados; pendientes de prueba funcional en AutoCAD.** Crea geometría nueva sin seleccionar ni modificar objetos anteriores. Incluye seis estructuras, con ríos abiertos por centro o límite. Requiere AutoCAD Windows con ActiveX, patrones ANSI y, para agua, operaciones REGION/Boolean y Offset.
 
 #### Uso
 
 1. Cargar `lisp/MC-ELEMENTS.lsp` con `APPLOAD` y ejecutar `MCELEMENTS`; no necesita otros scripts.
-2. Elegir estructura, **factor visual positivo** y un único rótulo: ninguno, texto centrado o círculo con tag. El contenido se deshabilita sin rótulo y conserva su valor al alternar. Se exige contenido no vacío cuando hay rótulo. **Recta/ondulada** solo se habilita para masa de agua; conserva la selección al cambiar a otro tipo y volver.
-3. Para polígonos, marcar al menos tres vértices y pulsar Enter para cerrar. Puede repetirse el primero al final. Para el octágono, indicar centro y un punto para su radio horizontal.
-4. Edificaciones/vegetación crean una **LWPOLYLINE cerrada** y un **HATCH no asociativo**. Agua crea el contorno cerrado y sus desfases interiores, sin HATCH: LWPOLYLINE en recta, SPLINE en ondulada (los desfases pueden cambiar de tipo según AutoCAD). Según el rótulo se añade un TEXT o un CIRCLE con TEXT. Los resultados son estáticos y editables; editar el contorno no recalcula el patrón ni el rótulo.
+2. Elegir estructura, **factor visual positivo** y un único rótulo: ninguno, texto centrado o círculo con tag (este último solo para polígonos). Ríos ofrece ninguno/texto sin borrar la elección poligonal al alternar. El contenido se deshabilita sin rótulo y conserva su valor. Se exige contenido no vacío cuando hay rótulo. **Recta/ondulada** se habilita para ambas estructuras de agua; centro/límite y cantidad solo para ríos. Los campos deshabilitados conservan sus valores crudos y no se validan como parámetros de río para otros tipos.
+3. Para polígonos, marcar al menos tres vértices y pulsar Enter para cerrar. Puede repetirse el primero al final. Para el octágono, indicar centro y un punto para su radio horizontal. Para ríos, dibujar dos o más puntos y pulsar Enter **sin cerrar**; elegir previamente centro/límite y total. En límite con más de una línea, señalar después del dibujo el lado hacia donde copiar.
+4. Edificaciones/vegetación crean una **LWPOLYLINE cerrada** y un **HATCH no asociativo**. Masa de agua crea el contorno cerrado y sus desfases interiores, sin HATCH: LWPOLYLINE en recta, SPLINE en ondulada (los desfases pueden cambiar de tipo según AutoCAD). Según el rótulo se añade un TEXT o un CIRCLE con TEXT. Los resultados son estáticos y editables; editar el contorno no recalcula el patrón ni el rótulo.
 
 | Estructura | Patrón (ángulo adicional 0) | Capa propia |
 |---|---|---|
@@ -519,6 +519,7 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 | Edificación circular (octágono) | ANSI31 | `MC-EDIFICACION-CIRCULAR` |
 | Área verde | ANSI36; TrueColor RGB **22,163,74** (`#16a34a`) en el HATCH | `MC-AREA-VERDE` |
 | Masa de agua | Desfases interiores automáticos; TrueColor RGB **59,130,246** (`#3b82f6`) en contorno y copias | `MC-MASA-AGUA` |
+| Ríos | Eje/límite abierto y copias equidistantes; mismo azul RGB **59,130,246** en todas las curvas | `MC-RIO` |
 
 El ángulo adicional cero conserva la orientación definida por cada patrón ANSI. El octágono tiene un vértice hacia el **norte +Y de WCS**, independientemente del UCS. Los clics se convierten de UCS a WCS y se proyectan al plano horizontal con la Z del primer vértice o centro. No hay transformación de CRS ni conversión de unidades.
 
@@ -537,9 +538,9 @@ Sea `A` el área real de la REGION temporal, `L = sqrt(A)` y `f` el factor visua
 
 `w` y `b` son ancho y alto de la caja del TEXT real medida con `textbox`; un tag largo agranda el círculo. Son proporciones visuales propuestas, no medidas normativas. La escala del patrón es su multiplicador, **no** la distancia entre líneas: esta depende de la definición ANSI. Con la misma figura y contenido, factores `0.5`, `1`, `2` reducen a la mitad, conservan o duplican las medidas de trama y rótulo; no alteran el contorno ni la separación del agua. Usar punto decimal: `0.5`; se rechazan vacío, cero, negativos, comas, exponentes y texto sobrante como `1abc`.
 
-El rótulo se coloca en el **centroide real del área**, obtenido mediante REGION, no en el promedio de vértices. Puede quedar fuera de un cóncavo: se avisa y se conserva esa posición matemática. No se garantiza que texto o círculo quepan dentro de una figura estrecha.
+En polígonos, el rótulo se coloca en el **centroide real del área**, obtenido mediante REGION, no en el promedio de vértices. Puede quedar fuera de un cóncavo: se avisa y se conserva esa posición matemática. No se garantiza que texto o círculo quepan dentro de una figura estrecha.
 
-Se rechazan menos de tres vértices, lados nulos, retrocesos, cruces, contactos consigo mismo, superficie nula o región no única. La tolerancia geométrica de los vértices es `max(1e-8, extensión XY × 1e-10)` en unidades de dibujo. Solo se admiten figuras horizontales sin huecos; no se convierte geometría existente.
+En polígonos se rechazan menos de tres vértices, lados nulos, retrocesos, cruces, contactos consigo mismo, superficie nula o región no única. La tolerancia geométrica de los vértices es `max(1e-8, extensión XY × 1e-10)` en unidades de dibujo. Solo se admiten figuras horizontales sin huecos; no se convierte geometría existente.
 
 #### Agua: suavizado, fragmentos y compatibilidad
 
@@ -551,17 +552,28 @@ Se rechazan menos de tres vértices, lados nulos, retrocesos, cruces, contactos 
 
 **Compatibilidad aún no probada:** AddSpline, Closed2, Offset y REGION/Boolean requieren ejecución real en la versión de AutoCAD del usuario. La conversión nativa y sus tolerancias limitan las curvas admitidas; formas demasiado estrechas o pequeñas pueden no producir ningún desfase. No se promete completar una geometría que el motor no pueda resolver.
 
+#### Ríos: conteo exacto y separación
+
+- **Centro:** el total incluye el eje original y debe ser impar. `3` genera eje + una copia a cada lado; `5`, eje + dos a cada lado. Un par se rechaza **en el diálogo antes de dibujar**. El eje se conserva.
+- **Límite:** el total también incluye la frontera original. `3` genera original + dos copias hacia el punto señalado. Se convierten los clics a WCS y se proyectan a la Z inicial. Un punto sobre la curva o sobre una dirección tangente ambigua se rechaza; no se adivina el lado. Se comparan ambos signos reales de Offset con la tangente local: invertir el recorrido no debe invertir el lado físico elegido.
+- **Total `1`:** solo original, tanto en centro como límite; no se pide punto de lado ni se llama a Offset. Cantidad exige exclusivamente dígitos, entero entre `1` y `2147483647`; se rechazan espacios, signos, decimales, exponentes, cero y texto sobrante. Los ceros iniciales son válidos si el valor es positivo.
+- Sea `R` la **longitud de la curva final** (no la cuerda ni el perímetro de un cierre ficticio): separación fija `d = 0.05 × R`, altura TEXT `h = 0.04 × R × f`. Cada copia se calcula desde el original a distancia `i × d`, nunca por acumulación sobre copias. El factor visual no afecta ni paso ni total. Ejemplo recto `(0,0)-(100,0)`: `R=100`, `d=5`; centro 3 ocupa `Y=-5,0,5`, centro 5 ocupa `Y=-10,-5,0,5,10`. Límite 3 hacia Norte ocupa `Y=0,5,10`; hacia Sur, `Y=0,-5,-10`. Con `f=0.5/1/2`, alturas `2/4/8`, mismas curvas.
+- El rótulo es un **TEXT ByLayer en MC-RIO**, situado a **mitad de longitud** del eje/frontera original, no en un centroide de área ni en el promedio de puntos. No hay CIRCLE/tag. Para `(0,0)-(60,0)-(60,40)`, `R=100` y posición `(50,0)`, no `(60,0)`.
+- Recta produce LWPOLYLINE abierta conservando los puntos; ondulada produce SPLINE **abierta** con ajuste global, suministrando tangentes nulas y sin Closed2. La respuesta del motor a esas tangentes, también con dos puntos, requiere prueba en la versión de AutoCAD usada; la referencia de AddSpline no garantiza un modo automático para vectores nulos. El suavizado cerrado de masas de agua sigue independiente. Ambos admiten dos puntos; se rechazan cierres, puntos repetidos, retrocesos, cruces y contactos no adyacentes sin añadir tramo último→primero.
+- **Límite conservador del suavizado:** la SPLINE final y cada SPLINE devuelta deben tener controles con avance estrictamente creciente al proyectarlos sobre su cuerda inicial→final. Esto certifica ausencia de retroceso/cruce sin confundir muestras con prueba; curvas en U o controles sin avance certificable pueden rechazarse aunque fueran simples. Usar recta o un recorrido más simple. Los desfases deben ser LWPOLYLINE o SPLINE abiertos y válidos; no se fuerza REGION ni área en ríos.
+- **Todo o nada:** cada Offset solicitado debe devolver exactamente una curva válida, con lado inequívoco y consistente. Salida vacía, fragmentada, incompatible, ambigua o fallo del motor retira **toda** la ejecución, incluido original, copias y capas propias: nunca se reduce el total silenciosamente. A diferencia de las masas de agua, no se conservan fragmentos parciales. La operación puede rechazar radios cerrados o grandes cantidades que el motor no pueda resolver; ESC permite cancelar el procesamiento.
+
 #### Cancelación, recursos y deshacer
 
 ESC o error retira **solo los objetos y capas creados por esa ejecución**, incluida la REGION temporal, y cierra/descarga/borra el DCL temporal. No se usan comandos encolados de limpieza. Se restaura `CMDECHO`; `OSMODE` se conserva durante los clics y también se restituye al terminar. Si AutoCAD impide borrar un recurso o restaurar variables, se imprime un aviso: revisar el dibujo, no asumir limpieza completa.
 
 Una ejecución correcta se agrupa mediante una marca UNDO, incluidas sus capas nuevas. **Un solo `UNDO` debe retirarla** sin tocar objetos anteriores. Se exige UNDO habilitado y sin un grupo previo abierto; si falla el inicio, no se crean resultados. Si falla el cierre se advierte que no se garantiza un deshacer único.
 
-#### Verificación manual pendiente (T4/T5)
+#### Verificación manual pendiente (T4/T5/T6)
 
 No hay runtime AutoCAD ni runner, linter, build o CI disponible. La lectura y los controles estructurales no prueban DCL, ActiveX, REGION, HATCH ni UNDO. **Todas las casillas siguientes están sin comprobar**. Usar un DWG aislado con objetos/capas preexistentes y registrar entidades, propiedades, conteos y variables antes/después; no bastan capturas de pantalla. Los ejemplos oficiales de [AddRegion](https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-ActiveX-Reference/files/GUID-74C8765E-EB4A-4773-ADD4-6C0F318FE6BE.htm) también deben ejecutarse allí, nunca como prueba automatizada inferida.
 
-- [ ] **S1:** cargar solo este script; comprobar mensaje, diálogo, sus cinco opciones y creación de entidades nuevas en modelo, papel y ventana flotante. Ríos no aparece. Alternar agua→edificación→agua: recta/ondulada se deshabilita y conserva su valor; el contenido del rótulo también se conserva.
+- [ ] **S1:** cargar solo este script; comprobar mensaje, diálogo, sus seis opciones y creación de entidades nuevas en modelo, papel y ventana flotante. Alternar agua→edificación→agua: recta/ondulada se deshabilita y conserva su valor; el contenido del rótulo también se conserva.
 - [ ] **S3/S4/S15:** crear los cuatro tipos; revisar ANSI31/ANSI37/ANSI31/ANSI36, PatternAngle=0, PatternScale y RGB exacto de la trama verde. Contorno y rótulos en su capa, sin recolorear entidades anteriores.
 - [ ] **S3:** octágono de centro `(20,30,5)` y radio 10: ocho vértices, primero `(20,40,5)`, área `200 × sqrt(2)`, centroide `(20,30,5)`. Repetir con UCS rotado e inclinado: la figura sigue horizontal al norte WCS.
 - [ ] **S7/S13:** probar los tres rótulos excluyentes y contenido vacío; ningún rótulo, un TEXT o un CIRCLE más TEXT. Trapecio `(0,0)-(10,0)-(6,4)-(0,4)`: área 32 y centroide `(4.083333…,1.833333…)`, también en sentido inverso y elevación 100. Cóncavo con centroide exterior: aviso sin desplazamiento silencioso.
@@ -578,7 +590,16 @@ No hay runtime AutoCAD ni runner, linter, build o CI disponible. La lectura y lo
 - [ ] **S5/S14/S15:** repetir la misma masa con factores 0.5/1/2: idénticas curvas, conteo y separación, solo altura/tag cambian. Contorno y todos los interiores RGB59,130,246 en `MC-MASA-AGUA`; TEXT/CIRCLE ByLayer. Capa existente y geometría previa conservan definición, propiedades y handles; capa bloqueada se rechaza. Repetir en UTM, Z=100, UCS rotado/inclinado y ambos espacios.
 - [ ] **S2:** ESC durante captura, suavizado y desfases: sin resultados/REGION/copias/capas propias residuales, DCL retirado y variables restauradas. Tras éxito, un solo UNDO retira toda la ejecución, no lo anterior. Registrar también errores Offset, límites y fallos de borrado; un aviso de resultado no certificado no equivale a relleno completo.
 
-La regresión manual T4 anterior sigue obligatoria: se compartieron diálogo y lectura de elevación/centroide. No pudo ejecutarse una comparación diferencial contra T4 con entradas nuevas porque no hay AutoCAD disponible; **no se considera aprobada**.
+**Casos adicionales T6, también sin comprobar:**
+
+- [ ] **S6/S9/S10:** eje `(0,0)-(100,0)`; centro 3/5 y límite 3 a Norte/Sur: comprobar los totales y coordenadas del ejemplo anterior. Repetir invirtiendo los clics, con total 1 en ambos modos (sin petición de lado), Z=100, UTM y UCS rotado/inclinado. Consultar propiedades: curvas abiertas, RGB59,130,246 en MC-RIO y separación 5; ningún cierre ficticio.
+- [ ] **S2/S10:** centro 2/4 no sale del diálogo, no crea nada ni altera variables. Rechazar cantidad vacía, `0`, `-1`, `+3`, `2.5`, `1abc`, `1e2`, espacios y `2147483648`. Alternar río inválido→edificación/masa: no se valida cantidad deshabilitada; volver y comprobar conservación exacta del texto y modo. Polígono con círculo/tag→río→polígono restaura la selección del tag.
+- [ ] **S8/S12:** abiertas de 2 y 3 puntos en recta/ondulada: LWPOLYLINE/SPLINE abierta, sin pérdida de puntos en recta y ajuste continuo en ondulada. Probar cruz, retroceso, cierre y controles no certificables: rechazo íntegro. Masa ondulada sigue cerrándose suavemente con Closed2.
+- [ ] **S7/S13/S14:** quebrada `(0,0)-(60,0)-(60,40)` con texto: inserción `(50,0)` a mitad de longitud. Ninguno/texto solamente, sin círculos. Repetir sobre SPLINE y medir mitad de longitud real; factores 0.5/1/2 cambian solo altura. Rótulo ByLayer, curvas azules; no cambia CLAYER/TEXTSTYLE/UCS.
+- [ ] **S2/S6:** lado sobre el eje y prolongación tangente ambigua: rechazo sin resultados. Probar ambos lados de una quebrada y ambos sentidos. Ante Offset fragmentado, inexistente, no certificable o fallo a mitad del conteo, toda la ejecución desaparece y no se anuncia un total diferente. Revisar cantidad exacta de curvas excluyendo el TEXT.
+- [ ] **S2/S15:** ESC al elegir lado, al suavizar y durante copias; comprobar variables, DCL, capas/curvas propias retiradas y objetos previos intactos. Una ejecución correcta se retira con un solo UNDO. Probar capa MC-RIO existente y bloqueada, conservando sus propiedades y entidades anteriores.
+
+Las regresiones manuales T4 y T5 anteriores siguen obligatorias: se compartieron diálogo y constructor LWPOLYLINE (ahora cierre explícito), aunque Closed2, REGION/Boolean y tramas conservan sus rutas. No pudo ejecutarse comparación funcional/diferencial contra la base porque no hay AutoCAD disponible; **no se considera aprobada**.
 
 ## Estructura del repositorio
 
