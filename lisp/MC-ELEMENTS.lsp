@@ -32,7 +32,22 @@
   )
 )
 
+(defun mce:limpiar-vista (/ resultado)
+  ;; Refrescar solo la vista: grdraw no crea objetos ni entradas de UNDO.
+  (if mce:vista
+    (progn
+      (setq resultado (vl-catch-all-apply 'redraw nil))
+      (if (vl-catch-all-error-p resultado)
+        (princ "\nAviso: no se pudo refrescar la previsualización; revisar la vista.")
+        (setq mce:vista nil)
+      )
+    )
+  )
+)
+
 (defun mce:limpiar (revertir / obj par resultado)
+  ;; También se intenta retirar la vista ante ESC/error y al terminar.
+  (mce:limpiar-vista)
   ;; Orden inverso: entidades antes que las capas propias que las contienen.
   (if revertir
     (progn
@@ -225,6 +240,26 @@
   (list (car w) (cadr w) z)
 )
 
+(defun mce:previsualizar (puntos cerrado / primero anterior siguiente)
+  ;; Puntos WCS en orden de captura; convertir solo la representación a UCS.
+  ;; El refresco puede perderse con pan/zoom hasta el siguiente vértice.
+  (mce:limpiar-vista)
+  (if (cdr puntos)
+    (progn
+      ;; Marcar antes de dibujar para limpiar incluso tras un fallo parcial.
+      (setq mce:vista T primero (car puntos) anterior primero)
+      (foreach siguiente (cdr puntos)
+        (grdraw (trans anterior 0 1) (trans siguiente 0 1) 7 0)
+        (setq anterior siguiente)
+      )
+      ;; Cierre provisional rojo discontinuo; nunca cerrar un río.
+      (if (and cerrado (cddr puntos))
+        (grdraw (trans anterior 0 1) (trans primero 0 1) 1 1)
+      )
+    )
+  )
+)
+
 (defun mce:puntos (tipo / p q z puntos centro radio i angulo)
   (if (= tipo 2)
     (progn
@@ -248,7 +283,9 @@
             q (trans p 1 0) z (caddr q) puntos (list q))
       (while (setq p (getpoint (trans q 0 1) (if (= tipo 5) "\nSiguiente punto <Enter para terminar>: " "\nSiguiente vértice <Enter para cerrar>: ")))
         (setq q (mce:plano p z) puntos (cons q puntos))
+        (mce:previsualizar (reverse puntos) (/= tipo 5))
       )
+      (mce:limpiar-vista)
       (setq puntos (reverse puntos))
       (if (and (/= tipo 5) (> (length puntos) 3) (equal (car puntos) (last puntos) 1e-8))
         (setq puntos (reverse (cdr (reverse puntos))))
@@ -758,7 +795,9 @@
       (vla-put-Layer texto capa)
       (vla-put-Color texto 256)
       (vla-put-Rotation texto 0.0)
-      (vla-put-TextGenerationFlag texto 0)
+      ;; Booleanos documentados: texto legible aunque el estilo esté invertido.
+      (vla-put-Backward texto :vlax-false)
+      (vla-put-UpsideDown texto :vlax-false)
       (vla-put-Alignment texto 10)
       (vla-put-TextAlignmentPoint texto (vlax-3d-point centro))
       (if (= modo 2)
@@ -779,7 +818,7 @@
 
 (defun C:MCELEMENTS (/ *error* mce:doc mce:espacio mce:objetos mce:capas
                        mce:archivo mce:dcl-ruta mce:dcl-id mce:variables mce:color
-                       mce:undo mce:motivo mce:opciones tipo factor modo contenido
+                       mce:undo mce:motivo mce:opciones mce:vista tipo factor modo contenido
                        puntos tol capa contorno medidas longitud centro forma rio total
                        mce:ui-rio mce:rotulo-poligono mce:rotulo-rio)
   (defun *error* (mensaje)
