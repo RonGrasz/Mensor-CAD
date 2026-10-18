@@ -23,6 +23,7 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-IMPORT.lsp" "\nError al cargar MC-IMPORT")
 (load "MC-FIX.lsp" "\nError al cargar MC-FIX")
 (load "MC-COLIND.lsp" "\nError al cargar MC-COLIND")
+(load "MC-ELEMENTS.lsp" "\nError al cargar MC-ELEMENTS")
 ```
 
 ## Comandos
@@ -499,6 +500,63 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 - [ ] **Aceptar y UNDO:** aceptar con dos aplicaciones y ejecutar un solo `UNDO`: desaparecen todas las entidades creadas y la fuente sigue intacta.
 - [ ] **Cancelaciones:** `ESC` en la selección de la fuente, en el clic de interior, en los dos puntos, en la vista previa, en la ubicación manual y con «Cancelar»: sin entidades parciales, sin DCL temporal y con `OSMODE`, `CMDECHO` y `DIMZIN` restaurados. Repetir el comando después para descartar estado residual.
 - [ ] **Fallos de borrado (solo si se pueden provocar):** si AutoCAD rechaza retirar alguna entidad al cancelar o al deshacer, el mensaje debe indicar el **número** de entidades que sobrevivieron y el registro no debe liberarse; no se debe leer «no se conservó ningún resultado» mientras queden entidades. No hay forma reproducible de forzar este fallo en una prueba normal; si no se provoca, registrar la casilla como no comprobada.
+
+### MCELEMENTS — Edificaciones y vegetación
+
+**T4 implementado; pendiente de prueba funcional en AutoCAD.** Crea geometría nueva sin seleccionar ni modificar objetos anteriores. Masas de agua y ríos quedan para T5/T6 y todavía **no aparecen en el selector**. Requiere AutoCAD Windows con ActiveX y patrones ANSI disponibles.
+
+#### Uso
+
+1. Cargar `lisp/MC-ELEMENTS.lsp` con `APPLOAD` y ejecutar `MCELEMENTS`; no necesita otros scripts.
+2. Elegir estructura, **factor visual positivo** y un único rótulo: ninguno, texto centrado o círculo con tag. El contenido se deshabilita sin rótulo y conserva su valor al alternar. Se exige contenido no vacío cuando hay rótulo.
+3. Para polígonos, marcar al menos tres vértices y pulsar Enter para cerrar. Puede repetirse el primero al final. Para el octágono, indicar centro y un punto para su radio horizontal.
+4. Se crean una **LWPOLYLINE cerrada**, un **HATCH no asociativo** y, según el selector, un TEXT o un CIRCLE con TEXT. Son resultados estáticos y editables; editar el contorno después no recalcula la trama ni el rótulo.
+
+| Estructura | Patrón (ángulo adicional 0) | Capa propia |
+|---|---|---|
+| Edificación de 1 nivel | ANSI31 | `MC-EDIFICACION-1` |
+| Edificación de 2 niveles | ANSI37 | `MC-EDIFICACION-2` |
+| Edificación circular (octágono) | ANSI31 | `MC-EDIFICACION-CIRCULAR` |
+| Área verde | ANSI36; TrueColor RGB **22,163,74** (`#16a34a`) en el HATCH | `MC-AREA-VERDE` |
+
+El ángulo adicional cero conserva la orientación definida por cada patrón ANSI. El octágono tiene un vértice hacia el **norte +Y de WCS**, independientemente del UCS. Los clics se convierten de UCS a WCS y se proyectan al plano horizontal con la Z del primer vértice o centro. No hay transformación de CRS ni conversión de unidades.
+
+Las capas nuevas usan sus propiedades predeterminadas. Las existentes se reutilizan **sin alterar su definición**; se rechazan si están apagadas, congeladas, bloqueadas o son externas. Todos los componentes de una estructura usan su capa; salvo la trama verde, el color es ByLayer. `CLAYER`, `TEXTSTYLE` y el UCS no cambian. El texto usa el estilo actual con altura explícita, también si el estilo define altura fija; no modifica el estilo.
+
+#### Fórmulas y límites
+
+Sea `A` el área real de la REGION temporal, `L = sqrt(A)` y `f` el factor visual:
+
+| Medida | Fórmula | Cuadrado 10×10, f=1 |
+|---|---|---|
+| Escala del patrón | `0.02 × L × f` | 0.2 |
+| Altura TEXT `h` | `0.04 × L × f` | 0.4 |
+| Radio del tag | `max(1.5 × h, 0.6 × sqrt(w² + b²))` | Al menos 0.6; depende del contenido |
+
+`w` y `b` son ancho y alto de la caja del TEXT real medida con `textbox`; un tag largo agranda el círculo. Son proporciones visuales propuestas, no medidas normativas. La escala del patrón es su multiplicador, **no** la distancia entre líneas: esta depende de la definición ANSI. Con la misma figura y contenido, factores `0.5`, `1`, `2` reducen a la mitad, conservan o duplican estas medidas; no alteran el contorno. Usar punto decimal: `0.5`; se rechazan vacío, cero, negativos, comas, exponentes y texto sobrante como `1abc`.
+
+El rótulo se coloca en el **centroide real del área**, obtenido mediante REGION, no en el promedio de vértices. Puede quedar fuera de un cóncavo: se avisa y se conserva esa posición matemática. No se garantiza que texto o círculo quepan dentro de una figura estrecha.
+
+Se rechazan menos de tres vértices, lados nulos, retrocesos, cruces, contactos consigo mismo, superficie nula o región no única. La tolerancia geométrica es `max(1e-8, extensión XY × 1e-10)` en unidades de dibujo. El dibujo admitido es de tramos rectos, horizontal, sin huecos; no se convierte geometría existente ni se dibujan curvas en esta unidad.
+
+#### Cancelación, recursos y deshacer
+
+ESC o error retira **solo los objetos y capas creados por esa ejecución**, incluida la REGION temporal, y cierra/descarga/borra el DCL temporal. No se usan comandos encolados de limpieza. Se restaura `CMDECHO`; `OSMODE` se conserva durante los clics y también se restituye al terminar. Si AutoCAD impide borrar un recurso o restaurar variables, se imprime un aviso: revisar el dibujo, no asumir limpieza completa.
+
+Una ejecución correcta se agrupa mediante una marca UNDO, incluidas sus capas nuevas. **Un solo `UNDO` debe retirarla** sin tocar objetos anteriores. Se exige UNDO habilitado y sin un grupo previo abierto; si falla el inicio, no se crean resultados. Si falla el cierre se advierte que no se garantiza un deshacer único.
+
+#### Verificación manual pendiente (T4)
+
+No hay runtime AutoCAD ni runner, linter, build o CI disponible. La lectura y los controles estructurales no prueban DCL, ActiveX, REGION, HATCH ni UNDO. **Todas las casillas siguientes están sin comprobar**. Usar un DWG aislado con objetos/capas preexistentes y registrar entidades, propiedades, conteos y variables antes/después; no bastan capturas de pantalla. Los ejemplos oficiales de [AddRegion](https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-ActiveX-Reference/files/GUID-74C8765E-EB4A-4773-ADD4-6C0F318FE6BE.htm) también deben ejecutarse allí, nunca como prueba automatizada inferida.
+
+- [ ] **S1:** cargar solo este script; comprobar mensaje, diálogo, sus cuatro opciones y creación de entidades nuevas en modelo, papel y ventana flotante. No hay opciones de agua/ríos.
+- [ ] **S3/S4/S15:** crear los cuatro tipos; revisar ANSI31/ANSI37/ANSI31/ANSI36, PatternAngle=0, PatternScale y RGB exacto de la trama verde. Contorno y rótulos en su capa, sin recolorear entidades anteriores.
+- [ ] **S3:** octágono de centro `(20,30,5)` y radio 10: ocho vértices, primero `(20,40,5)`, área `200 × sqrt(2)`, centroide `(20,30,5)`. Repetir con UCS rotado e inclinado: la figura sigue horizontal al norte WCS.
+- [ ] **S7/S13:** probar los tres rótulos excluyentes y contenido vacío; ningún rótulo, un TEXT o un CIRCLE más TEXT. Trapecio `(0,0)-(10,0)-(6,4)-(0,4)`: área 32 y centroide `(4.083333…,1.833333…)`, también en sentido inverso y elevación 100. Cóncavo con centroide exterior: aviso sin desplazamiento silencioso.
+- [ ] **S14:** cuadrado 10×10 con factores 0.5/1/2: escalas 0.1/0.2/0.4 y alturas 0.2/0.4/0.8; medir radio con tag corto y largo, distintos estilos y altura fija. Contorno sin cambios; zoom y objetos lejanos no influyen.
+- [ ] **S2/S14/S15:** valores inválidos (`1abc`, `0`, `-1`, `0,5`, vacío), polígonos cruzados/tocados/degenerados y capas destino apagadas/congeladas/bloqueadas: rechazo sin salida parcial. Capa existente usable conserva todas sus propiedades. Revisar también coordenadas UTM y precisión de REGION.
+- [ ] **S2:** ESC en diálogo, primer punto, vértices, centro/radio y procesamiento; repetir ejecución. Sin REGION, DCL, capas nuevas ni resultados residuales; objetos previos intactos, `CMDECHO`/`OSMODE` restaurados y `CLAYER`/`TEXTSTYLE`/UCS sin cambios.
+- [ ] **S2:** éxito seguido de un solo `UNDO`: retirar contorno, trama, rótulo y capas creadas, conservando lo anterior. Probar UNDO deshabilitado y grupo previo abierto. Si se puede provocar un error de limpieza, comprobar aviso explícito y examinar los recursos supervivientes.
 
 ## Estructura del repositorio
 
