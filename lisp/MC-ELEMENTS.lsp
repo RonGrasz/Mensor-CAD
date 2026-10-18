@@ -819,7 +819,7 @@
 (defun C:MCELEMENTS (/ *error* mce:doc mce:espacio mce:objetos mce:capas
                        mce:archivo mce:dcl-ruta mce:dcl-id mce:variables mce:color
                        mce:undo mce:motivo mce:opciones mce:vista tipo factor modo contenido
-                       puntos tol capa contorno medidas longitud centro forma rio total
+                       puntos tol capa contorno medidas longitud centro forma rio total grupo-previo
                        mce:ui-rio mce:rotulo-poligono mce:rotulo-rio)
   (defun *error* (mensaje)
     (mce:limpiar T)
@@ -833,6 +833,13 @@
   ;; OSMODE se conserva durante los clics; no se cambia UCS, CLAYER ni TEXTSTYLE.
   (if (mce:dialogo)
     (progn
+      (if (= 0 (logand (getvar "UNDOCTL") 1))
+        (mce:fallar "Active UNDO antes de dibujar.")
+      )
+      (setq grupo-previo (/= 0 (logand (getvar "UNDOCTL") 8)))
+      (if grupo-previo
+        (princ "\nAviso: el grupo UNDO existente seguirá abierto; un UNDO posterior puede afectar todas sus acciones previas y esta ejecución.")
+      )
       (setq tipo (nth 0 mce:opciones) factor (nth 1 mce:opciones)
             modo (nth 2 mce:opciones) contenido (nth 3 mce:opciones)
             forma (nth 4 mce:opciones) rio (nth 5 mce:opciones) total (nth 6 mce:opciones)
@@ -841,12 +848,17 @@
       (if (= 0 (logand (getvar "UNDOCTL") 1))
         (mce:fallar "Active UNDO antes de crear resultados.")
       )
+      ;; Reconsultar antes de escribir: nunca iniciar ni cerrar una marca ajena.
       (if (/= 0 (logand (getvar "UNDOCTL") 8))
-        (mce:fallar "Cierre el grupo UNDO existente antes de ejecutar MCELEMENTS.")
+        (if (not grupo-previo)
+          (princ "\nAviso: el grupo UNDO existente seguirá abierto; un UNDO posterior puede afectar todas sus acciones previas y esta ejecución.")
+        )
+        (progn
+          (vla-StartUndoMark mce:doc)
+          (setq mce:undo T)
+        )
       )
-      (vla-StartUndoMark mce:doc)
-      (setq mce:undo T
-            capa (mce:capa (nth tipo '("MC-EDIFICACION-1" "MC-EDIFICACION-2" "MC-EDIFICACION-CIRCULAR" "MC-AREA-VERDE" "MC-MASA-AGUA" "MC-RIO")))
+      (setq capa (mce:capa (nth tipo '("MC-EDIFICACION-1" "MC-EDIFICACION-2" "MC-EDIFICACION-CIRCULAR" "MC-AREA-VERDE" "MC-MASA-AGUA" "MC-RIO")))
             contorno (cond
                        ((and (= tipo 5) (= forma 1)) (mce:suave-abierta puntos capa))
                        ((and (= tipo 4) (= forma 1)) (mce:suave puntos capa))
