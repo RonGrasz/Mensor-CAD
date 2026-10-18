@@ -193,6 +193,7 @@
       ": popup_list { key = \"rotulo\"; label = \"Rótulo:\"; }"
       ": edit_box { key = \"contenido\"; label = \"Texto / tag:\"; edit_width = 32; edit_limit = 120; }"
       ": text { label = \"Polígono: centroide real. Río: mitad de longitud.\"; }"
+      ": text { label = \"Río ondulado: separación aproximada y adaptable.\"; }"
       ": text { key = \"aviso\"; width = 64; }"
       "ok_cancel; }")
     (write-line linea mce:archivo)
@@ -648,6 +649,130 @@
     )
   )
   (princ (strcat "\nRío: " (itoa total) " líneas totales; separación " (rtos paso 2 8) "."))
+  (list longitud centro)
+)
+
+(defun mce:onda-avance-p (puntos tol / direccion norma anterior actual valido p)
+  ;; Precondición geométrica, no prueba por muestreo: también se aplica después
+  ;; a los CONTROLES de la SPLINE real, antes del certificado mce:curva-rio.
+  (if (cdr puntos)
+    (progn
+      (setq direccion (mapcar '- (last puntos) (car puntos))
+            norma (distance '(0.0 0.0 0.0) direccion) valido (> norma tol))
+      (if valido
+        (foreach p puntos
+          (setq actual (/ (apply '+ (mapcar '* (mapcar '- p (car puntos)) direccion)) norma))
+          (if (and anterior (<= (- actual anterior) tol)) (setq valido nil))
+          (setq anterior actual)))
+      valido
+    )
+  )
+)
+
+(defun mce:onda-muestras (original longitud tol / i parametro punto tangente norma muestras)
+  ;; Una sola referencia para todos los niveles: 64 intervalos de longitud.
+  ;; AddSpline recibe puntos de AJUSTE; los controles finales se leen aparte.
+  (setq i 0)
+  (repeat 65
+    (setq parametro (cond ((= i 0) (vlax-curve-getStartParam original))
+                          ((= i 64) (vlax-curve-getEndParam original))
+                          (T (vlax-curve-getParamAtDist original (* longitud (/ i 64.0)))))
+          punto (vlax-curve-getPointAtParam original parametro)
+          tangente (vlax-curve-getFirstDeriv original parametro)
+          norma (sqrt (+ (* (car tangente) (car tangente))
+                         (* (cadr tangente) (cadr tangente)))))
+    (if (<= norma tol) (mce:fallar "Río ondulado: normal local indefinida."))
+    (setq muestras (cons (list punto (list (/ (- (cadr tangente)) norma)
+                                          (/ (car tangente) norma) 0.0)) muestras)
+          i (1+ i))
+  )
+  (reverse muestras)
+)
+
+(defun mce:onda-copia (muestras distancia capa tol / puntos muestra)
+  (foreach muestra muestras
+    (setq puntos (cons (mapcar '+ (car muestra)
+                          (mapcar '(lambda (v) (* distancia v)) (cadr muestra))) puntos)))
+  (setq puntos (reverse puntos))
+  ;; Un pliegue previo al ajuste solicita otro paso, no una SPLINE degenerada.
+  (if (mce:onda-avance-p puntos tol) (mce:suave-abierta puntos capa tol))
+)
+
+(defun mce:onda-compatible-p (curva anteriores base tangente signo tol
+                              / valido cercano delta lateral norma otra)
+  ;; El certificado se evalúa sobre controles reales, nunca sobre muestras.
+  (setq valido (and (not (vlax-curve-isClosed curva))
+                   (mce:onda-avance-p (mce:terna (vlax-get curva 'ControlPoints)) tol)))
+  (if valido
+    (progn
+      (setq cercano (vlax-curve-getClosestPointTo curva base)
+            delta (mapcar '- cercano base)
+            lateral (- (* (car tangente) (cadr delta)) (* (cadr tangente) (car delta)))
+            norma (distance '(0.0 0.0 0.0) tangente)
+            valido (> (* signo lateral) (* tol norma)))
+      ;; Intersección NATIVA entre curvas completas, incluido el original.
+      ;; Error COM o ESC no se disfraza de reducción de separación: aborta.
+      (foreach otra anteriores
+        (if (and valido (vlax-invoke curva 'IntersectWith otra 0)) (setq valido nil)))
+    )
+  )
+  valido
+)
+
+(defun mce:rio-ondulado (original capa modo total tol
+                         / longitud inicial paso centro base tangente punto signo signos cantidad
+                           muestras intento aceptado valido copias anteriores i copia)
+  (mce:curva-rio original tol)
+  (setq longitud (vlax-curve-getDistAtParam original (vlax-curve-getEndParam original))
+        inicial (* 0.05 longitud) paso inicial
+        centro (vlax-curve-getPointAtDist original (/ longitud 2.0)))
+  (mce:azul original capa)
+  (if (> total 1)
+    (progn
+      (setq base centro)
+      (if (= modo 1)
+        (progn
+          (initget 1)
+          (setq punto (mce:plano (getpoint "\nPunto hacia el lado de los desfases: ") (mce:cota original))
+                base (vlax-curve-getClosestPointTo original punto))
+          (if (<= (distance punto base) tol) (mce:fallar "El punto de lado está sobre el río."))))
+      (setq tangente (vlax-curve-getFirstDeriv original (vlax-curve-getParamAtPoint original base))
+            signos (if (= modo 0) '(1.0 -1.0) (list (mce:lado-rio base tangente punto tol)))
+            cantidad (if (= modo 0) (/ (1- total) 2) (1- total))
+            muestras (mce:onda-muestras original longitud tol) intento 0)
+      (while (and (not aceptado) (< intento 12) (> paso tol))
+        (setq copias nil anteriores (list original) valido T i 1)
+        (while (and valido (<= i cantidad))
+          (foreach signo signos
+            (if valido
+              (progn
+                (setq copia (mce:onda-copia muestras (* signo i paso) capa tol))
+                ;; Registrar incluso la copia rechazada para retirar el intento entero.
+                (if copia (setq copias (cons copia copias)))
+                (setq valido (and copia (mce:onda-compatible-p copia anteriores base tangente signo tol)))
+                (if valido (setq anteriores (cons copia anteriores)))
+              )))
+          (setq i (1+ i)))
+        (if valido
+          (setq aceptado T)
+          (progn
+            (foreach copia copias (mce:descartar copia))
+            (setq copias nil paso (/ paso 2.0))))
+        (setq intento (1+ intento))
+      )
+      (if (not aceptado)
+        (mce:fallar "Río ondulado: no se obtuvo un conjunto válido en 12 intentos; se retira todo el río."))
+      (foreach copia copias
+        (mce:curva-rio copia tol)
+        (mce:azul copia capa))
+      (princ (strcat "\nRío ondulado: separación aproximada"
+                     (if (< paso inicial) " reducida" "")
+                     "; paso usado " (rtos paso 2 8)
+                     "; paso inicial " (rtos inicial 2 8) "."))
+    )
+  )
+  (princ (strcat "\nRío: " (itoa total) " líneas totales"
+                 (if (> total 1) "; separación perpendicular aproximada." "; sin copias.")))
   (list longitud centro)
 )
 
@@ -1340,6 +1465,7 @@
                        ((and (= tipo 4) (= forma 1)) (mce:suave puntos capa tol))
                        (T (mce:poligono puntos capa (/= tipo 5))))
             medidas (cond
+                      ((and (= tipo 5) (= forma 1)) (mce:rio-ondulado contorno capa rio total tol))
                       ((= tipo 5) (mce:rio contorno capa rio total tol))
                       ((= tipo 4) (mce:agua contorno capa))
                       (T (mce:medidas contorno)))
