@@ -1,4 +1,4 @@
-;;; MCELEMENTS — Edificaciones y vegetación. AutoCAD Windows / ActiveX.
+;;; MCELEMENTS — Edificaciones, vegetación y masas de agua. AutoCAD Windows / ActiveX.
 ;;; Estado de ejecución por enlace dinámico, siempre local a C:MCELEMENTS.
 (vl-load-com)
 
@@ -107,6 +107,11 @@
   (mode_tile "contenido" (if (= (get_tile "rotulo") "0") 1 0))
 )
 
+(defun mce:agua-ui ()
+  ;; Solo deshabilitar: no sobrescribir el valor crudo del selector.
+  (mode_tile "agua" (if (= (get_tile "tipo") "4") 0 1))
+)
+
 (defun mce:aceptar-ui (/ factor modo texto)
   (setq factor (mce:positivo (get_tile "factor"))
         modo (atoi (get_tile "rotulo"))
@@ -115,7 +120,8 @@
     ((not factor) (set_tile "aviso" "Factor: use un decimal positivo con punto (ej. 0.5)."))
     ((and (> modo 0) (= texto "")) (set_tile "aviso" "Escriba el texto o tag del rótulo."))
     (T
-      (setq mce:opciones (list (atoi (get_tile "tipo")) factor modo texto))
+      (setq mce:opciones (list (atoi (get_tile "tipo")) factor modo texto
+                               (atoi (get_tile "agua"))))
       (done_dialog 1)
     )
   )
@@ -126,8 +132,9 @@
         mce:archivo (open mce:dcl-ruta "w"))
   (if (not mce:archivo) (mce:fallar "No se pudo crear el DCL temporal."))
   (foreach linea
-    '("mce_dialog : dialog { label = \"MCELEMENTS — Edificaciones y vegetación\";"
+    '("mce_dialog : dialog { label = \"MCELEMENTS — Estructuras\";"
       ": popup_list { key = \"tipo\"; label = \"Estructura:\"; width = 40; }"
+      ": popup_list { key = \"agua\"; label = \"Forma del agua:\"; }"
       ": edit_box { key = \"factor\"; label = \"Factor visual positivo:\"; edit_width = 12; }"
       ": popup_list { key = \"rotulo\"; label = \"Rótulo:\"; }"
       ": edit_box { key = \"contenido\"; label = \"Texto / tag:\"; edit_width = 32; edit_limit = 120; }"
@@ -142,14 +149,20 @@
     (mce:fallar "No se pudo abrir el diálogo.")
   )
   (start_list "tipo")
-  (foreach linea '("Edificación de 1 nivel" "Edificación de 2 niveles" "Edificación circular (octágono)" "Área verde")
+  (foreach linea '("Edificación de 1 nivel" "Edificación de 2 niveles" "Edificación circular (octágono)" "Área verde" "Masa de agua")
     (add_list linea)
   )
   (end_list)
+  (start_list "agua")
+  (foreach linea '("Recta" "Ondulada (SPLINE continua)") (add_list linea))
+  (end_list)
+  (set_tile "agua" "0")
+  (action_tile "tipo" "(mce:agua-ui)")
   (start_list "rotulo")
   (foreach linea '("Sin rótulo" "Texto centrado" "Círculo con tag centrado") (add_list linea))
   (end_list)
   (set_tile "tipo" "0")
+  (mce:agua-ui)
   (set_tile "factor" "1")
   (set_tile "rotulo" "0")
   (set_tile "contenido" "")
@@ -281,6 +294,11 @@
   obj
 )
 
+(defun mce:cota (contorno)
+  ;; SPLINE no expone Elevation; vlax-curve devuelve siempre puntos WCS.
+  (caddr (vlax-curve-getStartPoint contorno))
+)
+
 (defun mce:medidas (contorno / regiones region centro area)
   ;; REGION temporal: exige una sola superficie; nunca usar promedio de vértices.
   (setq regiones (vlax-safearray->list
@@ -291,7 +309,197 @@
   (setq region (car regiones) area (vla-get-Area region) centro (vlax-get region 'Centroid))
   (if (<= area 1e-16) (mce:fallar "La superficie es nula o demasiado pequeña."))
   (if (not (mce:retirar region)) (mce:fallar "No se pudo retirar la región temporal."))
-  (list area (list (car centro) (cadr centro) (vla-get-Elevation contorno)))
+  (list area (list (car centro) (cadr centro) (mce:cota contorno)))
+)
+
+(defun mce:descartar (obj)
+  (if (not (mce:retirar obj))
+    (mce:fallar "No se pudo retirar una entidad temporal de agua.")
+  )
+)
+
+(defun mce:azul (obj capa)
+  (vla-put-Layer obj capa)
+  (setq mce:color (vla-get-TrueColor obj))
+  (vla-SetRGB mce:color 59 130 246)
+  (vla-put-TrueColor obj mce:color)
+  (vlax-release-object mce:color)
+  (setq mce:color nil)
+)
+
+(defun mce:suave (puntos capa / coords matriz obj tangente)
+  ;; Ajuste global, no fillets ni ondas. Closed2 exige continuidad en la unión.
+  (setq coords (apply 'append puntos)
+        matriz (vlax-make-safearray vlax-vbDouble (cons 0 (1- (length coords))))
+        tangente (mapcar '- (cadr puntos) (last puntos)))
+  (vlax-safearray-fill matriz coords)
+  (setq obj (mce:registrar
+              (vla-AddSpline mce:espacio matriz
+                (vlax-3d-point tangente) (vlax-3d-point tangente))))
+  (if (not (vlax-property-available-p obj 'Closed2 T))
+    (mce:fallar "Incompatibilidad: SPLINE requiere Closed2 escribible para cierre suave.")
+  )
+  (if (vl-catch-all-error-p
+        (vl-catch-all-apply 'vlax-put-property (list obj 'Closed2 :vlax-true)))
+    (mce:fallar "Incompatibilidad: AutoCAD no permite cerrar suavemente la SPLINE con Closed2.")
+  )
+  (vla-put-Layer obj capa)
+  obj
+)
+
+(defun mce:interrupcion (resultado)
+  ;; No convertir ESC atrapado por COM en un aviso de geometría incompleta.
+  (if (and (vl-catch-all-error-p resultado)
+           (wcmatch (strcase (vl-catch-all-error-message resultado))
+                    "*CANCEL*,*QUIT*,*ABORT*,*BREAK*,*INTERRUP*"))
+    (mce:fallar "Operación cancelada; se retiran los resultados propios.")
+  )
+)
+
+(defun mce:region-agua (curva / copia resultado regiones region area perimetro longitud valido)
+  ;; El núcleo REGION valida la curva FINAL, no solo las cuerdas de entrada.
+  ;; Una región única y perímetro completo evitan aceptar lóbulos descartados.
+  (if (vlax-curve-isClosed curva)
+    (progn
+      (setq copia (mce:registrar (vla-Copy curva))
+            resultado (vl-catch-all-apply 'vla-AddRegion
+                        (list mce:espacio (mce:vector-objetos (list copia)))))
+      (mce:interrupcion resultado)
+      (if (not (vl-catch-all-error-p resultado))
+        (progn
+          (setq regiones (vlax-safearray->list (vlax-variant-value resultado)))
+          ;; Registrar TODOS antes de leer propiedades, incluso si se rechazan.
+          (foreach region regiones (mce:registrar region))
+          (if (= (length regiones) 1)
+            (progn
+              (setq region (car regiones) area (vla-get-Area region)
+                    perimetro (vla-get-Perimeter region)
+                    longitud (vlax-curve-getDistAtParam curva (vlax-curve-getEndParam curva))
+                    valido (and (> area 1e-16)
+                                (equal perimetro longitud (max 1e-8 (* longitud 1e-8)))))
+            )
+          )
+        )
+      )
+      (mce:descartar copia)
+      (if valido
+        region
+        (progn (foreach region regiones (mce:descartar region)) nil)
+      )
+    )
+  )
+)
+
+(defun mce:contenida (hija madre tolerancia / resto molde resultado dentro)
+  ;; Diferencia de superficies completas: no basta área menor, centroide o muestras.
+  ;; Boolean solo modifica copias propias; acSubtraction = 2.
+  (setq resto (mce:registrar (vla-Copy hija))
+        molde (mce:registrar (vla-Copy madre))
+        resultado (vl-catch-all-apply 'vla-Boolean (list resto 2 molde)))
+  (if (vl-catch-all-error-p resultado)
+    (mce:fallar "REGION/Boolean no pudo certificar contención; se retira la ejecución.")
+  )
+  (setq dentro (or (vlax-erased-p resto) (<= (vla-get-Area resto) tolerancia)))
+  (mce:descartar resto)
+  (mce:descartar molde)
+  dentro
+)
+
+(defun mce:agua (contorno capa / original area centro medidas paso tolerancia
+                  cola nodo curva padre profundidad siguientes signo resultado
+                  fragmentos fragmento region superficie aceptadas par duplicado
+                  total niveles intentos incompleto)
+  (setq original (mce:region-agua contorno))
+  (if (not original)
+    (mce:fallar "El contorno final de agua es inválido, se cruza o no produce una región simple completa.")
+  )
+  (setq area (vla-get-Area original) centro (vlax-get original 'Centroid)
+        medidas (list area (list (car centro) (cadr centro) (mce:cota contorno)))
+        paso (* 0.05 (sqrt area)) tolerancia (max 1e-16 (* area 1e-9))
+        cola (list (list contorno original 0)) total 0 niveles 0 intentos 0)
+  (mce:azul contorno capa)
+  ;; Búsqueda por niveles. Cada nodo conserva su región para probar a sus hijos.
+  (while cola
+    (setq siguientes nil)
+    (foreach nodo cola
+      (setq curva (car nodo) padre (cadr nodo) profundidad (caddr nodo)
+            aceptadas nil)
+      (if (>= profundidad 256)
+        (mce:fallar "Límite de agua: 256 niveles; no se garantiza relleno completo. Se retira la ejecución.")
+      )
+      (foreach signo '(1.0 -1.0)
+        (setq intentos (1+ intentos))
+        (if (> intentos 2048)
+          (mce:fallar "Límite de agua: 2048 intentos de desfase. Se retira la ejecución.")
+        )
+        (setq resultado (vl-catch-all-apply 'vla-Offset (list curva (* signo paso))))
+        (mce:interrupcion resultado)
+        (if (vl-catch-all-error-p resultado)
+          ;; Offset no distingue agotamiento geométrico de incompatibilidad.
+          ;; Conservar lo válido, pero JAMÁS anunciar relleno completo en este caso.
+          (setq incompleto T)
+          (progn
+            (setq fragmentos (vlax-safearray->list (vlax-variant-value resultado)))
+            (foreach fragmento fragmentos (mce:registrar fragmento))
+            (setq total (+ total (length fragmentos)))
+            (if (> total 4096)
+              (mce:fallar "Límite de agua: 4096 curvas devueltas. Se retira la ejecución.")
+            )
+            (foreach fragmento fragmentos
+              (setq region (mce:region-agua fragmento) duplicado nil)
+              (if region
+                (progn
+                  (setq superficie (vla-get-Area region))
+                  (if (and (> superficie tolerancia)
+                           (< superficie (- (vla-get-Area padre) tolerancia))
+                           (mce:contenida region padre tolerancia)
+                           (mce:contenida region original tolerancia))
+                    (progn
+                      ;; Ambos signos pueden devolver la misma solución: no duplicarla.
+                      (foreach par aceptadas
+                        (if (and (equal superficie (vla-get-Area (cadr par)) tolerancia)
+                                 (mce:contenida region (cadr par) tolerancia))
+                          (setq duplicado T)
+                        )
+                      )
+                      (if (not duplicado)
+                        (progn
+                          (mce:azul fragmento capa)
+                          (setq aceptadas (cons (list fragmento region (1+ profundidad)) aceptadas)
+                                niveles (max niveles (1+ profundidad)))
+                        )
+                      )
+                    )
+                    (progn
+                      (if (and (> superficie tolerancia)
+                               (< superficie (- (vla-get-Area padre) tolerancia)))
+                        (setq incompleto T)
+                      )
+                      (setq duplicado T)
+                    )
+                  )
+                  (if duplicado
+                    (progn (mce:descartar region) (mce:descartar fragmento))
+                  )
+                )
+                (progn (setq incompleto T) (mce:descartar fragmento))
+              )
+            )
+          )
+        )
+      )
+      (setq siguientes (append aceptadas siguientes))
+      (if (not (eq padre original)) (mce:descartar padre))
+    )
+    (setq cola siguientes)
+  )
+  (mce:descartar original)
+  (princ (strcat "\nAgua: separación " (rtos paso 2 8) "; niveles interiores " (itoa niveles) "."))
+  (if incompleto
+    (princ "\nAviso: Offset falló o devolvió curvas inválidas/no contenidas. Se conserva lo válido; relleno completo NO certificado.")
+    (princ "\nBúsqueda interior agotada dentro de la tolerancia geométrica.")
+  )
+  medidas
 )
 
 (defun mce:dentro (p puntos / dentro a b)
@@ -359,7 +567,7 @@
 (defun C:MCELEMENTS (/ *error* mce:doc mce:espacio mce:objetos mce:capas
                        mce:archivo mce:dcl-ruta mce:dcl-id mce:variables mce:color
                        mce:undo mce:motivo mce:opciones tipo factor modo contenido
-                       puntos tol capa contorno medidas longitud centro)
+                       puntos tol capa contorno medidas longitud centro forma)
   (defun *error* (mensaje)
     (mce:limpiar T)
     (princ (strcat "\nMCELEMENTS: " (if mce:motivo mce:motivo mensaje)))
@@ -374,6 +582,7 @@
     (progn
       (setq tipo (nth 0 mce:opciones) factor (nth 1 mce:opciones)
             modo (nth 2 mce:opciones) contenido (nth 3 mce:opciones)
+            forma (nth 4 mce:opciones)
             puntos (mce:puntos tipo) tol (mce:validar puntos))
       (if (= 0 (logand (getvar "UNDOCTL") 1))
         (mce:fallar "Active UNDO antes de crear resultados.")
@@ -383,15 +592,23 @@
       )
       (vla-StartUndoMark mce:doc)
       (setq mce:undo T
-            capa (mce:capa (nth tipo '("MC-EDIFICACION-1" "MC-EDIFICACION-2" "MC-EDIFICACION-CIRCULAR" "MC-AREA-VERDE")))
-            contorno (mce:poligono puntos capa)
-            medidas (mce:medidas contorno)
+            capa (mce:capa (nth tipo '("MC-EDIFICACION-1" "MC-EDIFICACION-2" "MC-EDIFICACION-CIRCULAR" "MC-AREA-VERDE" "MC-MASA-AGUA")))
+            contorno (if (and (= tipo 4) (= forma 1))
+                       (mce:suave puntos capa) (mce:poligono puntos capa))
+            medidas (if (= tipo 4) (mce:agua contorno capa) (mce:medidas contorno))
             longitud (sqrt (car medidas)) centro (cadr medidas))
       (if (<= longitud tol) (mce:fallar "Superficie degenerada para la precisión del dibujo."))
-      (mce:trama contorno (nth tipo '("ANSI31" "ANSI37" "ANSI31" "ANSI36"))
-                 (* longitud factor 0.02) (= tipo 3) capa)
-      (if (and (> modo 0) (not (mce:dentro centro puntos)))
-        (princ "\nAviso: el centroide real queda fuera del contorno; se conserva esa posición.")
+      (if (< tipo 4)
+        (mce:trama contorno (nth tipo '("ANSI31" "ANSI37" "ANSI31" "ANSI36"))
+                   (* longitud factor 0.02) (= tipo 3) capa)
+      )
+      (if (> modo 0)
+        (if (= tipo 4)
+          (princ "\nRótulo en el centroide real del contorno final; en un cóncavo puede quedar fuera.")
+          (if (not (mce:dentro centro puntos))
+            (princ "\nAviso: el centroide real queda fuera del contorno; se conserva esa posición.")
+          )
+        )
       )
       (mce:rotular centro modo contenido (* longitud factor 0.04) capa)
       (mce:limpiar nil)

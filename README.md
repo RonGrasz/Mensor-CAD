@@ -501,16 +501,16 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 - [ ] **Cancelaciones:** `ESC` en la selección de la fuente, en el clic de interior, en los dos puntos, en la vista previa, en la ubicación manual y con «Cancelar»: sin entidades parciales, sin DCL temporal y con `OSMODE`, `CMDECHO` y `DIMZIN` restaurados. Repetir el comando después para descartar estado residual.
 - [ ] **Fallos de borrado (solo si se pueden provocar):** si AutoCAD rechaza retirar alguna entidad al cancelar o al deshacer, el mensaje debe indicar el **número** de entidades que sobrevivieron y el registro no debe liberarse; no se debe leer «no se conservó ningún resultado» mientras queden entidades. No hay forma reproducible de forzar este fallo en una prueba normal; si no se provoca, registrar la casilla como no comprobada.
 
-### MCELEMENTS — Edificaciones y vegetación
+### MCELEMENTS — Edificaciones, vegetación y masas de agua
 
-**T4 implementado; pendiente de prueba funcional en AutoCAD.** Crea geometría nueva sin seleccionar ni modificar objetos anteriores. Masas de agua y ríos quedan para T5/T6 y todavía **no aparecen en el selector**. Requiere AutoCAD Windows con ActiveX y patrones ANSI disponibles.
+**T4/T5 implementados; pendientes de prueba funcional en AutoCAD.** Crea geometría nueva sin seleccionar ni modificar objetos anteriores. Incluye cinco estructuras; los ríos quedan para T6 y **no aparecen en el selector**. Requiere AutoCAD Windows con ActiveX, patrones ANSI y, para agua, operaciones REGION/Boolean y Offset.
 
 #### Uso
 
 1. Cargar `lisp/MC-ELEMENTS.lsp` con `APPLOAD` y ejecutar `MCELEMENTS`; no necesita otros scripts.
-2. Elegir estructura, **factor visual positivo** y un único rótulo: ninguno, texto centrado o círculo con tag. El contenido se deshabilita sin rótulo y conserva su valor al alternar. Se exige contenido no vacío cuando hay rótulo.
+2. Elegir estructura, **factor visual positivo** y un único rótulo: ninguno, texto centrado o círculo con tag. El contenido se deshabilita sin rótulo y conserva su valor al alternar. Se exige contenido no vacío cuando hay rótulo. **Recta/ondulada** solo se habilita para masa de agua; conserva la selección al cambiar a otro tipo y volver.
 3. Para polígonos, marcar al menos tres vértices y pulsar Enter para cerrar. Puede repetirse el primero al final. Para el octágono, indicar centro y un punto para su radio horizontal.
-4. Se crean una **LWPOLYLINE cerrada**, un **HATCH no asociativo** y, según el selector, un TEXT o un CIRCLE con TEXT. Son resultados estáticos y editables; editar el contorno después no recalcula la trama ni el rótulo.
+4. Edificaciones/vegetación crean una **LWPOLYLINE cerrada** y un **HATCH no asociativo**. Agua crea el contorno cerrado y sus desfases interiores, sin HATCH: LWPOLYLINE en recta, SPLINE en ondulada (los desfases pueden cambiar de tipo según AutoCAD). Según el rótulo se añade un TEXT o un CIRCLE con TEXT. Los resultados son estáticos y editables; editar el contorno no recalcula el patrón ni el rótulo.
 
 | Estructura | Patrón (ángulo adicional 0) | Capa propia |
 |---|---|---|
@@ -518,10 +518,11 @@ El borrado es de **un solo intento y sin reintentos**. Si AutoCAD no retira algu
 | Edificación de 2 niveles | ANSI37 | `MC-EDIFICACION-2` |
 | Edificación circular (octágono) | ANSI31 | `MC-EDIFICACION-CIRCULAR` |
 | Área verde | ANSI36; TrueColor RGB **22,163,74** (`#16a34a`) en el HATCH | `MC-AREA-VERDE` |
+| Masa de agua | Desfases interiores automáticos; TrueColor RGB **59,130,246** (`#3b82f6`) en contorno y copias | `MC-MASA-AGUA` |
 
 El ángulo adicional cero conserva la orientación definida por cada patrón ANSI. El octágono tiene un vértice hacia el **norte +Y de WCS**, independientemente del UCS. Los clics se convierten de UCS a WCS y se proyectan al plano horizontal con la Z del primer vértice o centro. No hay transformación de CRS ni conversión de unidades.
 
-Las capas nuevas usan sus propiedades predeterminadas. Las existentes se reutilizan **sin alterar su definición**; se rechazan si están apagadas, congeladas, bloqueadas o son externas. Todos los componentes de una estructura usan su capa; salvo la trama verde, el color es ByLayer. `CLAYER`, `TEXTSTYLE` y el UCS no cambian. El texto usa el estilo actual con altura explícita, también si el estilo define altura fija; no modifica el estilo.
+Las capas nuevas usan sus propiedades predeterminadas. Las existentes se reutilizan **sin alterar su definición**; se rechazan si están apagadas, congeladas, bloqueadas o son externas. Todos los componentes de una estructura usan su capa; salvo la trama verde y la geometría azul del agua, el color es ByLayer (también los rótulos del agua). `CLAYER`, `TEXTSTYLE` y el UCS no cambian. El texto usa el estilo actual con altura explícita, también si el estilo define altura fija; no modifica el estilo.
 
 #### Fórmulas y límites
 
@@ -529,15 +530,26 @@ Sea `A` el área real de la REGION temporal, `L = sqrt(A)` y `f` el factor visua
 
 | Medida | Fórmula | Cuadrado 10×10, f=1 |
 |---|---|---|
-| Escala del patrón | `0.02 × L × f` | 0.2 |
+| Escala del patrón ANSI (edificaciones/vegetación) | `0.02 × L × f` | 0.2 |
 | Altura TEXT `h` | `0.04 × L × f` | 0.4 |
 | Radio del tag | `max(1.5 × h, 0.6 × sqrt(w² + b²))` | Al menos 0.6; depende del contenido |
+| Separación del agua `d` | `0.05 × L`, **sin factor visual** | 0.5 |
 
-`w` y `b` son ancho y alto de la caja del TEXT real medida con `textbox`; un tag largo agranda el círculo. Son proporciones visuales propuestas, no medidas normativas. La escala del patrón es su multiplicador, **no** la distancia entre líneas: esta depende de la definición ANSI. Con la misma figura y contenido, factores `0.5`, `1`, `2` reducen a la mitad, conservan o duplican estas medidas; no alteran el contorno. Usar punto decimal: `0.5`; se rechazan vacío, cero, negativos, comas, exponentes y texto sobrante como `1abc`.
+`w` y `b` son ancho y alto de la caja del TEXT real medida con `textbox`; un tag largo agranda el círculo. Son proporciones visuales propuestas, no medidas normativas. La escala del patrón es su multiplicador, **no** la distancia entre líneas: esta depende de la definición ANSI. Con la misma figura y contenido, factores `0.5`, `1`, `2` reducen a la mitad, conservan o duplican las medidas de trama y rótulo; no alteran el contorno ni la separación del agua. Usar punto decimal: `0.5`; se rechazan vacío, cero, negativos, comas, exponentes y texto sobrante como `1abc`.
 
 El rótulo se coloca en el **centroide real del área**, obtenido mediante REGION, no en el promedio de vértices. Puede quedar fuera de un cóncavo: se avisa y se conserva esa posición matemática. No se garantiza que texto o círculo quepan dentro de una figura estrecha.
 
-Se rechazan menos de tres vértices, lados nulos, retrocesos, cruces, contactos consigo mismo, superficie nula o región no única. La tolerancia geométrica es `max(1e-8, extensión XY × 1e-10)` en unidades de dibujo. El dibujo admitido es de tramos rectos, horizontal, sin huecos; no se convierte geometría existente ni se dibujan curvas en esta unidad.
+Se rechazan menos de tres vértices, lados nulos, retrocesos, cruces, contactos consigo mismo, superficie nula o región no única. La tolerancia geométrica de los vértices es `max(1e-8, extensión XY × 1e-10)` en unidades de dibujo. Solo se admiten figuras horizontales sin huecos; no se convierte geometría existente.
+
+#### Agua: suavizado, fragmentos y compatibilidad
+
+- **Recta** conserva exactamente los vértices WCS capturados (con su proyección Z y sin repetir el cierre). **Ondulada** ajusta todo el recorrido con `AddSpline` y cierra con **Closed2 escribible**: es una curva suave continua, no redondeos locales ni ondas. Puede apartarse de los clics. Si Closed2 no está disponible o falla, se rechaza con mensaje de incompatibilidad; no se degrada a una polilínea.
+- Se valida el contorno **final** mediante REGION: debe producir una sola región positiva y su perímetro debe coincidir con toda la longitud de la curva, dentro de `max(1e-8, longitud × 1e-8)`. Una curva rechazada por el núcleo, fragmentada o con recorrido descartado no se acepta por haber sido válido el polígono de entrada. El centroide y `A` corresponden a esa figura final, también en ondulada.
+- Cada contorno genera candidatos a distancia `d` por **ambos signos** de Offset. Se examinan **todas** las curvas devueltas y se conservan todas las partes cerradas válidas: área positiva, menor que la de su padre y contenida en **padre y original**. La contención se comprueba por diferencia REGION/Boolean de superficies completas, no por centroide ni muestras. Se eliminan duplicados de ambos signos dentro de la tolerancia.
+- La tolerancia de área es `max(1e-16, A × 1e-9)`; los fragmentos deben superarla, el área debe disminuir más que ella y la diferencia fuera de cada región no puede superarla. La separación permanece constante entre generaciones; la cantidad surge del espacio disponible, **no se solicita** ni depende del factor, zoom u objetos lejanos.
+- Límites explícitos: **256 generaciones, 2048 llamadas Offset y 4096 curvas devueltas** (incluidas rechazadas). Superarlos o no poder certificar un Boolean retira toda la ejecución con diagnóstico. Cuando no quedan candidatos válidos, termina la búsqueda. Si Offset falla o devuelve una curva inválida o un candidato decreciente no contenido, conserva las partes válidas pero advierte **«relleno completo NO certificado»**: un error del motor no prueba agotamiento del interior. El resumen informa separación y máximo de niveles; no cuenta ese aviso como prueba de relleno total.
+
+**Compatibilidad aún no probada:** AddSpline, Closed2, Offset y REGION/Boolean requieren ejecución real en la versión de AutoCAD del usuario. La conversión nativa y sus tolerancias limitan las curvas admitidas; formas demasiado estrechas o pequeñas pueden no producir ningún desfase. No se promete completar una geometría que el motor no pueda resolver.
 
 #### Cancelación, recursos y deshacer
 
@@ -545,11 +557,11 @@ ESC o error retira **solo los objetos y capas creados por esa ejecución**, incl
 
 Una ejecución correcta se agrupa mediante una marca UNDO, incluidas sus capas nuevas. **Un solo `UNDO` debe retirarla** sin tocar objetos anteriores. Se exige UNDO habilitado y sin un grupo previo abierto; si falla el inicio, no se crean resultados. Si falla el cierre se advierte que no se garantiza un deshacer único.
 
-#### Verificación manual pendiente (T4)
+#### Verificación manual pendiente (T4/T5)
 
 No hay runtime AutoCAD ni runner, linter, build o CI disponible. La lectura y los controles estructurales no prueban DCL, ActiveX, REGION, HATCH ni UNDO. **Todas las casillas siguientes están sin comprobar**. Usar un DWG aislado con objetos/capas preexistentes y registrar entidades, propiedades, conteos y variables antes/después; no bastan capturas de pantalla. Los ejemplos oficiales de [AddRegion](https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-ActiveX-Reference/files/GUID-74C8765E-EB4A-4773-ADD4-6C0F318FE6BE.htm) también deben ejecutarse allí, nunca como prueba automatizada inferida.
 
-- [ ] **S1:** cargar solo este script; comprobar mensaje, diálogo, sus cuatro opciones y creación de entidades nuevas en modelo, papel y ventana flotante. No hay opciones de agua/ríos.
+- [ ] **S1:** cargar solo este script; comprobar mensaje, diálogo, sus cinco opciones y creación de entidades nuevas en modelo, papel y ventana flotante. Ríos no aparece. Alternar agua→edificación→agua: recta/ondulada se deshabilita y conserva su valor; el contenido del rótulo también se conserva.
 - [ ] **S3/S4/S15:** crear los cuatro tipos; revisar ANSI31/ANSI37/ANSI31/ANSI36, PatternAngle=0, PatternScale y RGB exacto de la trama verde. Contorno y rótulos en su capa, sin recolorear entidades anteriores.
 - [ ] **S3:** octágono de centro `(20,30,5)` y radio 10: ocho vértices, primero `(20,40,5)`, área `200 × sqrt(2)`, centroide `(20,30,5)`. Repetir con UCS rotado e inclinado: la figura sigue horizontal al norte WCS.
 - [ ] **S7/S13:** probar los tres rótulos excluyentes y contenido vacío; ningún rótulo, un TEXT o un CIRCLE más TEXT. Trapecio `(0,0)-(10,0)-(6,4)-(0,4)`: área 32 y centroide `(4.083333…,1.833333…)`, también en sentido inverso y elevación 100. Cóncavo con centroide exterior: aviso sin desplazamiento silencioso.
@@ -557,6 +569,16 @@ No hay runtime AutoCAD ni runner, linter, build o CI disponible. La lectura y lo
 - [ ] **S2/S14/S15:** valores inválidos (`1abc`, `0`, `-1`, `0,5`, vacío), polígonos cruzados/tocados/degenerados y capas destino apagadas/congeladas/bloqueadas: rechazo sin salida parcial. Capa existente usable conserva todas sus propiedades. Revisar también coordenadas UTM y precisión de REGION.
 - [ ] **S2:** ESC en diálogo, primer punto, vértices, centro/radio y procesamiento; repetir ejecución. Sin REGION, DCL, capas nuevas ni resultados residuales; objetos previos intactos, `CMDECHO`/`OSMODE` restaurados y `CLAYER`/`TEXTSTYLE`/UCS sin cambios.
 - [ ] **S2:** éxito seguido de un solo `UNDO`: retirar contorno, trama, rótulo y capas creadas, conservando lo anterior. Probar UNDO deshabilitado y grupo previo abierto. Si se puede provocar un error de limpieza, comprobar aviso explícito y examinar los recursos supervivientes.
+
+**Casos adicionales T5, también sin comprobar:**
+
+- [ ] **S5/S11:** rectángulo WCS `(0,0)-(20,0)-(20,10)-(0,10)`, recta, Z=0: `A=200`, `d=sqrt(200)/20≈0.70710678`. Resultado ideal del motor: contorno + 7 interiores, último rectángulo de dimensiones `20−14d` por `10−14d`; no debe aparecer un octavo degenerado o exterior. Verificar coordenadas, áreas, contención y distancias reales; registrar cualquier aviso de Offset, no inferir éxito del conteo esperado.
+- [ ] **S16:** forma estrecha con dos lóbulos: `(0,0)-(8,0)-(8,3)-(12,3)-(12,0)-(20,0)-(20,8)-(12,8)-(12,5)-(8,5)-(8,8)-(0,8)`. `A=136`, `d≈0.58309519`; al desaparecer el puente deben conservarse ambas partes válidas y continuar dentro de cada una. Revisar cada frontera mediante REGION/Boolean de copias en el DWG; ningún fragmento exterior ni simplemente menor se acepta. Repetir L/U y sentidos inversos.
+- [ ] **S8/S12/S7:** mismos clics en recta/ondulada: recta conserva vértices, ondulada es SPLINE cerrada suave también en la unión. Comparar área y centroide del rótulo con REGION de la **curva final**, no del polígono de entrada. Provocar una curva final inválida y comprobar rechazo sin temporales; si Closed2 falta, mensaje de incompatibilidad sin degradación.
+- [ ] **S5/S14/S15:** repetir la misma masa con factores 0.5/1/2: idénticas curvas, conteo y separación, solo altura/tag cambian. Contorno y todos los interiores RGB59,130,246 en `MC-MASA-AGUA`; TEXT/CIRCLE ByLayer. Capa existente y geometría previa conservan definición, propiedades y handles; capa bloqueada se rechaza. Repetir en UTM, Z=100, UCS rotado/inclinado y ambos espacios.
+- [ ] **S2:** ESC durante captura, suavizado y desfases: sin resultados/REGION/copias/capas propias residuales, DCL retirado y variables restauradas. Tras éxito, un solo UNDO retira toda la ejecución, no lo anterior. Registrar también errores Offset, límites y fallos de borrado; un aviso de resultado no certificado no equivale a relleno completo.
+
+La regresión manual T4 anterior sigue obligatoria: se compartieron diálogo y lectura de elevación/centroide. No pudo ejecutarse una comparación diferencial contra T4 con entradas nuevas porque no hay AutoCAD disponible; **no se considera aprobada**.
 
 ## Estructura del repositorio
 
