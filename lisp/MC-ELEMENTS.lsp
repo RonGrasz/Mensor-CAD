@@ -515,7 +515,7 @@
   (reverse puntos)
 )
 
-(defun mce:curva-rio (curva tol / nombre valores puntos direccion norma anterior actual p i peso)
+(defun mce:curva-rio (curva tol / nombre valores puntos direccion norma anterior actual p i peso pesos)
   (if (or (vlax-curve-isClosed curva)
           (equal (vlax-curve-getStartPoint curva) (vlax-curve-getEndPoint curva) tol))
     (mce:fallar "Offset/río devolvió una curva cerrada o degenerada."))
@@ -536,9 +536,24 @@
       ;; No se confunde muestreo finito con una prueba de curva simple.
       (setq puntos (mce:terna (vlax-get curva 'ControlPoints)))
       (if (< (length puntos) 2) (mce:fallar "SPLINE sin controles suficientes."))
-      ;; Pesos positivos conservan la propiedad de variación decreciente.
-      (foreach peso (vlax-get curva 'Weights)
-        (if (<= peso 0.0) (mce:fallar "SPLINE con pesos no certificables.")))
+      ;; Pesos positivos conservan la propiedad de variación decreciente, pero
+      ;; Weights solo se consulta en splines racionales. En una polinómica los
+      ;; pesos son unitarios implícitos y pedirlos dispara el error nativo COM
+      ;; "No hay ningún grosor disponible para la spline polinómica". El gate usa
+      ;; el boolean COM :vlax-true (0 es no-nil en Lisp) y NO convierte un error
+      ;; atrapado en reserva polinómica: la consulta directa sigue fallando si
+      ;; COM la rechaza. Tampoco se escriben pesos de la entidad.
+      (if (= (vla-get-IsRational curva) :vlax-true)
+        (progn
+          (setq pesos (vlax-get curva 'Weights))
+          ;; Certificado no vacío: un racional sin pesos devueltos o desacoplado
+          ;; de sus controles no se valida con un FOREACH vacío.
+          (if (/= (length pesos) (length puntos))
+            (mce:fallar "SPLINE racional con pesos ausentes o desacoplados de sus controles."))
+          (foreach peso pesos
+            (if (<= peso 0.0) (mce:fallar "SPLINE con pesos no certificables.")))
+        )
+      )
       (foreach p puntos
         (if (> (abs (- (caddr p) (mce:cota curva))) tol)
           (mce:fallar "SPLINE de río no horizontal.")))
@@ -674,7 +689,14 @@
               (setq area (vla-get-Area (car regiones))
                     perimetro (vla-get-Perimeter (car regiones))
                     longitud (vlax-curve-getDistAtParam curva (vlax-curve-getEndParam curva))
-                    fin (max 1e-8 (* longitud 1e-8)))
+                    ;; Ajuste empírico acotado (S4): la REGION reconvierte la SPLINE
+                    ;; suavizada con más error relativo que una polilínea recta.
+                    ;; Solo la SPLINE usa 1e-7; el resto conserva 1e-8 y el piso
+                    ;; absoluto 1e-8 no cambia. No demuestra por sí solo corrección
+                    ;; geométrica: la validación de región/cruce sigue intacta.
+                    fin (max 1e-8 (* longitud
+                                      (if (= (vla-get-ObjectName curva) "AcDbSpline")
+                                        1e-7 1e-8))))
               (cond
                 ((<= area 1e-16)
                   (setq motivo "la región tiene superficie nula"))
