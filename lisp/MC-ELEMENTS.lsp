@@ -684,123 +684,97 @@
           " (unidades de dibujo; informativo, no altera el cierre)")
 )
 
-(defun mce:diagnostico-conjunto (fragmentos / limite vivo fallo curva copia copias
-                                  resultado regiones region areas lista texto)
-  ;; D1/D2 — Una sola prueba diagnóstica con AddRegion nativo sobre COPIA de los
-  ;; fragmentos de la MISMA llamada Offset que originó el primer rechazo REGION
-  ;; (caso conocido: dos piezas que por separado no cierran). Nunca se envían el
-  ;; contorno original ni los fragmentos reales como entrada mutable. El
-  ;; resultado es informativo: no acepta candidatos, no prueba topología
-  ;; completa y no cambia el rechazo. mce:agua la llama como máximo una vez.
-  (setq limite 8 texto "")
-  (cond
-    ((<= (length fragmentos) 1)
-      ;; No existe conjunto que probar con un solo fragmento. Esto NO significa
-      ;; que ese fragmento ya haya pasado AddRegion: una curva abierta se rechaza
-      ;; antes por cierre y nunca llegó a probarse; simplemente no hay prueba
-      ;; conjunta que aporte información.
-      (setq texto "")
+(defun mce:pieza-abierta (curva / tipo abierta)
+  ;; S1 — Pieza nativa SPLINE que Offset devolvió abierta: candidata a contorno
+  ;; compuesto, nunca a aceptación individual. Lectura con red de seguridad: un
+  ;; error COM no convierte la pieza en abierta.
+  (setq tipo (vl-catch-all-apply 'vla-get-ObjectName (list curva)))
+  (mce:interrupcion tipo)
+  (if (and (not (vl-catch-all-error-p tipo)) (= tipo "AcDbSpline"))
+    (progn
+      (setq abierta (vl-catch-all-apply 'vlax-curve-isClosed (list curva)))
+      (mce:interrupcion abierta)
+      (and (not (vl-catch-all-error-p abierta)) (not abierta))
     )
-    ((> (length fragmentos) limite)
-      ;; Cota explícita: no se prueban lotes grandes solo por este diagnóstico.
-      (setq texto (strcat "; prueba conjunta omitida: la llamada Offset devolvió "
-                          (itoa (length fragmentos)) " fragmentos y el límite diagnóstico es "
-                          (itoa limite)))
-    )
-    (T
-      ;; Solo se copian fragmentos que siguen existiendo: nunca se clona algo ya
-      ;; retirado ni se fabrica el conjunto.
-      (setq vivo T)
-      (foreach curva fragmentos
-        (setq fallo (vl-catch-all-apply 'vlax-erased-p (list curva)))
-        (mce:interrupcion fallo)
-        (if (or (vl-catch-all-error-p fallo) fallo) (setq vivo nil))
-      )
-      (cond
-        ((not vivo)
-          (setq texto "; prueba conjunta no disponible: un fragmento previo de esa llamada Offset ya no existe")
-        )
-        (T
-          (setq fallo nil)
-          (foreach curva fragmentos
-            (if (not fallo)
-              (progn
-                (setq resultado (vl-catch-all-apply 'vla-Copy (list curva)))
-                (mce:interrupcion resultado)
-                (if (vl-catch-all-error-p resultado)
-                  (setq fallo (vl-catch-all-error-message resultado))
-                  (setq copias (cons (mce:registrar resultado) copias))
-                )
-              )
-            )
-          )
-          (cond
-            (fallo
-              (setq texto (strcat "; prueba conjunta no disponible: no se pudo copiar un fragmento ("
-                                  fallo ")"))
-            )
-            (T
-              ;; Una sola llamada con todas las copias en un único vector de objetos.
-              (setq resultado (vl-catch-all-apply 'vla-AddRegion
-                                  (list mce:espacio (mce:vector-objetos copias))))
-              (mce:interrupcion resultado)
-              (cond
-                ((vl-catch-all-error-p resultado)
-                  (setq texto (strcat "; prueba conjunta con copia de " (itoa (length copias))
-                                      " fragmentos: AddRegion falló: "
-                                      (vl-catch-all-error-message resultado)
-                                      " (informativo; no cambia el rechazo)"))
-                )
-                (T
-                  (setq regiones (vl-catch-all-apply
-                                   '(lambda ()
-                                      (vlax-safearray->list (vlax-variant-value resultado)))))
-                  (mce:interrupcion regiones)
-                  (cond
-                    ((vl-catch-all-error-p regiones)
-                      ;; D3 — AddRegion respondió pero la lista no se pudo enumerar:
-                      ;; sin referencias no se pueden registrar ni retirar esas
-                      ;; regiones. Se aborta con el error nativo y aviso explícito;
-                      ;; nunca se continúa como si la limpieza fuera completa.
-                      (mce:fallar
-                        (strcat "AddRegion respondió, pero su lista de regiones no se pudo enumerar ("
-                                (vl-catch-all-error-message regiones)
-                                "). Pueden quedar REGION temporales sin identificar y no se puede certificar su limpieza. Revisar el DWG de prueba o deshacer."))
-                    )
-                    (T
-                      ;; Registrar TODAS las regiones antes de leer cualquier área.
-                      (foreach region regiones (mce:registrar region))
-                      (setq areas nil)
-                      (foreach region regiones
-                        (setq fallo (vl-catch-all-apply 'vla-get-Area (list region)))
-                        (mce:interrupcion fallo)
-                        (setq areas (cons (if (numberp fallo) (rtos fallo 2 8) "no disponible")
-                                          areas))
-                      )
-                      (setq lista "")
-                      (foreach region (reverse areas) (setq lista (strcat lista " " region)))
-                      (setq texto (strcat "; prueba conjunta con copia de " (itoa (length copias))
-                                          " fragmentos: AddRegion devolvió " (itoa (length regiones))
-                                          (if (= (length regiones) 1) " región" " regiones")
-                                          (if areas (strcat " de área(s)" lista) "")
-                                          (if (= (length regiones) 1)
-                                            " (evidencia informativa: no certifica cierre, topología ni ausencia de lóbulos descartados)"
-                                            " (informativo; no cambia el rechazo)")))
-                    )
-                  )
-                )
-              )
-            )
-          )
-          ;; Limpieza SOLO de los recursos propios de esta prueba por el camino
-          ;; existente; si no se pueden retirar, mce:descartar conserva su fallo real.
-          (foreach region regiones (mce:descartar region))
-          (foreach copia copias (mce:descartar copia))
+  )
+)
+
+(defun mce:region-conjunta (piezas / copias fallo curva copia resultado regiones reg region motivo)
+  ;; S1–S3 — Admisión conjunta: una sola prueba nativa con AddRegion sobre COPIA
+  ;; de las piezas abiertas de la MISMA llamada Offset, todavía existentes. No se
+  ;; envían el contorno original ni las piezas reales como entrada mutable.
+  ;; Devuelve (region motivo): region es la ÚNICA región positiva obtenida o nil;
+  ;; motivo describe la causa medida. No decide admisión: mce:agua la contrasta
+  ;; con original, padres y dedup. Registra copias y regiones antes de leer
+  ;; cualquier área y retira solo los recursos propios que no devuelve.
+  (setq copias nil regiones nil region nil)
+  (foreach curva piezas
+    (if (not fallo)
+      (progn
+        (setq resultado (vl-catch-all-apply 'vla-Copy (list curva)))
+        (mce:interrupcion resultado)
+        (if (vl-catch-all-error-p resultado)
+          (setq fallo (vl-catch-all-error-message resultado))
+          (setq copia (mce:registrar resultado) copias (cons copia copias))
         )
       )
     )
   )
-  texto
+  (cond
+    (fallo
+      (setq motivo (strcat "no se pudo copiar una pieza nativa para la prueba conjunta (" fallo ")"))
+    )
+    (T
+      ;; Una sola llamada con todas las copias en un único vector de objetos.
+      (setq resultado (vl-catch-all-apply 'vla-AddRegion
+                          (list mce:espacio (mce:vector-objetos copias))))
+      (mce:interrupcion resultado)
+      (cond
+        ((vl-catch-all-error-p resultado)
+          (setq motivo (strcat "AddRegion falló: " (vl-catch-all-error-message resultado)))
+        )
+        (T
+          (setq regiones (vl-catch-all-apply
+                           '(lambda ()
+                              (vlax-safearray->list (vlax-variant-value resultado)))))
+          (mce:interrupcion regiones)
+          (cond
+            ((vl-catch-all-error-p regiones)
+              ;; D3 heredado — AddRegion respondió pero la lista no se pudo
+              ;; enumerar: sin referencias no se pueden registrar ni retirar esas
+              ;; regiones. Se aborta con el error nativo y aviso explícito; nunca
+              ;; se continúa como si la limpieza fuera completa ni se borra global.
+              (mce:fallar
+                (strcat "AddRegion respondió, pero su lista de regiones no se pudo enumerar ("
+                        (vl-catch-all-error-message regiones)
+                        "). Pueden quedar REGION temporales sin identificar y no se puede certificar su limpieza. Revisar el DWG de prueba o deshacer."))
+            )
+            (T
+              ;; Registrar TODAS antes de leer cualquier área. `reg` itera y
+              ;; `region` solo se asigna con exactamente una: en cualquier otro
+              ;; caso queda nil para que la limpieza retire todas las regiones.
+              (foreach reg regiones (mce:registrar reg))
+              (if (/= (length regiones) 1)
+                (setq motivo (strcat "AddRegion devolvió " (itoa (length regiones))
+                                     " regiones; no se puede asociar cada región con las piezas de esta llamada Offset"))
+                (setq region (car regiones))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  ;; Limpieza SOLO de los recursos propios por el camino existente; si no se
+  ;; pueden retirar, mce:descartar conserva su fallo real.
+  (foreach copia copias (mce:descartar copia))
+  (if (not region)
+    (progn
+      (foreach reg regiones (mce:descartar reg))
+      (if (not motivo) (setq motivo "no se obtuvo una región conjunta única"))
+    )
+  )
+  (list region motivo)
 )
 
 (defun mce:region-agua (curva / copia resultado regiones region area perimetro
@@ -897,7 +871,8 @@
                   fragmento region motivo superficie admitida menor duplicado
                   total niveles intentos incompleto analisis diagnostico
                   nivel-probado incidencia incidencias exclusiones indice-fragmento
-                  conjunto incidencia-region region-en-incidencia)
+                  abiertos piezas pieza compuestos region-conjunta motivo-conjunto
+                  incidencia-region region-en-incidencia)
   (setq analisis (mce:region-agua contorno)
         original (car analisis)
         diagnostico (caddr analisis))
@@ -911,7 +886,9 @@
         paso (* 0.05 (sqrt area)) tolerancia (max 1e-16 (* area 1e-9))
         padres (list (list original 0)) total 0 niveles 0 intentos 0
         nivel 1 nivel-probado 0 incompleto nil incidencia nil incidencias 0
-        exclusiones 0 conjunto nil incidencia-region nil region-en-incidencia nil)
+        exclusiones 0 compuestos 0 abiertos nil piezas nil
+        region-conjunta nil motivo-conjunto nil
+        incidencia-region nil region-en-incidencia nil)
   ;; Diagnóstico informativo del contorno ORIGINAL: se imprime una sola vez, no
   ;; por fragmento. Solo la SPLINE aporta esta metadata; las polilíneas no.
   (if diagnostico
@@ -1041,31 +1018,167 @@
               (progn
                 ;; Rechazo de validación nativa/forma: el motivo medido viaja en
                 ;; el segundo elemento de mce:region-agua.
-                (setq incompleto T incidencias (1+ incidencias))
-                ;; D1/D2 — El primer rechazo REGION recibe metadata acotada una
-                ;; sola vez: motivo, índice/total, tipo, hueco WCS y una única
-                ;; prueba conjunta sobre COPIA de los fragmentos de ESA llamada
-                ;; Offset. Se calcula antes de retirar el fragmento actual; si ya
-                ;; había otra causa previa, se imprime en una línea adicional.
-                (if (not conjunto)
+                (if (mce:pieza-abierta fragmento)
+                  ;; S1–S3 — Pieza nativa abierta de esta MISMA llamada Offset.
+                  ;; No se informa ni se retira todavía: primero se resuelve la
+                  ;; admisión conjunta. Así no se emite un aviso incompleto falso
+                  ;; si el grupo resulta aceptable y no se contamina la rama
+                  ;; individual válida de otro fragmento.
+                  (setq abiertos (cons (list fragmento indice-fragmento motivo) abiertos))
                   (progn
-                    (setq incidencia-region
-                          (list "REGION"
-                                (strcat
-                                  (if motivo motivo "AddRegion no produjo una región válida")
-                                  (mce:diagnostico-fragmento
-                                    fragmento indice-fragmento (length fragmentos))
-                                  (mce:diagnostico-conjunto fragmentos))
-                                nivel (* signo nivel paso))
-                          conjunto T)
-                    (if (not incidencia)
-                      (setq incidencia incidencia-region
-                            region-en-incidencia T)
+                    (setq incompleto T incidencias (1+ incidencias))
+                    ;; El primer rechazo de validación individual recibe metadata
+                    ;; acotada una sola vez: motivo, índice/total, tipo y hueco
+                    ;; WCS. La prueba conjunta ya no es diagnóstica: es la
+                    ;; admisión real de mce:region-conjunta.
+                    (if (not incidencia-region)
+                      (progn
+                        (setq incidencia-region
+                              (list "REGION"
+                                    (strcat
+                                      (if motivo motivo "AddRegion no produjo una región válida")
+                                      (mce:diagnostico-fragmento
+                                        fragmento indice-fragmento (length fragmentos)))
+                                    nivel (* signo nivel paso)))
+                        (if (not incidencia)
+                          (setq incidencia incidencia-region
+                                region-en-incidencia T)
+                        )
+                      )
+                    )
+                    (mce:descartar fragmento)
+                  )
+                )
+              )
+            )
+          )
+          ;; S1–S3 — Conjunto de piezas abiertas de esta llamada Offset. La
+          ;; admisión nativa se prueba sobre COPIA con las piezas reales todavía
+          ;; presentes y sin la cota diagnóstica de 8, que nunca fue límite de
+          ;; aceptación. Un solo fragmento no forma contorno compuesto: se
+          ;; resuelve como rechazo individual para no inventar un grupo.
+          (cond
+            ((cdr abiertos)
+              (setq piezas (mapcar 'car (reverse abiertos))
+                    analisis (mce:region-conjunta piezas)
+                    region-conjunta (car analisis)
+                    motivo-conjunto (cadr analisis)
+                    admitida nil menor nil duplicado nil)
+              (if region-conjunta
+                (progn
+                  (setq superficie (vla-get-Area region-conjunta))
+                  (foreach par padres
+                    (setq area-padre (vla-get-Area (car par)))
+                    (if (< superficie (- area-padre tolerancia))
+                      (setq menor T)
+                    )
+                  )
+                  ;; Mismas condiciones que la rama individual: área sobre la
+                  ;; tolerancia, menor que un padre y contenida en el original Y
+                  ;; en ese mismo padre mayor, todo por Boolean completo.
+                  (if (and (> superficie tolerancia) menor
+                           (mce:contenida region-conjunta original tolerancia))
+                    (foreach par padres
+                      (setq area-padre (vla-get-Area (car par)))
+                      (if (and (not admitida)
+                               (< superficie (- area-padre tolerancia))
+                               (mce:contenida region-conjunta (car par) tolerancia))
+                        (setq admitida T)
+                      )
+                    )
+                  )
+                  (cond
+                    (admitida
+                      ;; Dedup del nivel, igual que una superficie individual.
+                      (foreach par nuevos
+                        (if (and (equal superficie (vla-get-Area (car par)) tolerancia)
+                                 (mce:contenida region-conjunta (car par) tolerancia))
+                          (setq duplicado T)
+                        )
+                      )
+                      (if duplicado
+                        ;; Superficie repetida: se retiran la región y TODAS las
+                        ;; piezas del conjunto juntas, sin dejar piezas sueltas.
+                        (progn
+                          (mce:descartar region-conjunta)
+                          (foreach pieza piezas (mce:descartar pieza))
+                        )
+                        (progn
+                          ;; Un solo contorno lógico: cada pieza nativa se conserva
+                          ;; tal cual (sin Closed2, sin reajuste, sin polilínea) y
+                          ;; la región conjunta queda como padre del nivel
+                          ;; siguiente; se retira al terminar ese nivel posterior.
+                          (foreach pieza piezas (mce:azul pieza capa))
+                          (setq nuevos (cons (list region-conjunta nivel) nuevos)
+                                niveles (max niveles nivel)
+                                compuestos (1+ compuestos))
+                        )
+                      )
+                    )
+                    (T
+                      ;; Igual que la rama individual: bajo la tolerancia o sin
+                      ;; reducción es exclusión ordinaria; con reducción pero sin
+                      ;; contención, incidencia de contención.
+                      (if (and (> superficie tolerancia) menor)
+                        (progn
+                          (setq incompleto T incidencias (1+ incidencias))
+                          (if (not incidencia)
+                            (setq incidencia
+                                  (list "contención"
+                                        (strcat "conjunto de " (itoa (length piezas))
+                                                " piezas nativas de área " (rtos superficie 2 8)
+                                                " sin contención certificada en original y algún padre de área mayor")
+                                        nivel (* signo nivel paso)))
+                          )
+                        )
+                        (setq exclusiones (1+ exclusiones))
+                      )
+                      (mce:descartar region-conjunta)
+                      (foreach pieza piezas (mce:descartar pieza))
                     )
                   )
                 )
-                (mce:descartar fragmento)
+                (progn
+                  ;; Sin región conjunta única: no se adivina propiedad ni se
+                  ;; acepta geometría dudosa. Se informa el motivo medido y se
+                  ;; retiran todas las piezas del conjunto juntas.
+                  (setq incompleto T incidencias (1+ incidencias))
+                  (if (not incidencia)
+                    (setq incidencia
+                          (list "conjunto"
+                                (strcat "prueba conjunta de " (itoa (length piezas))
+                                        " piezas abiertas de la misma llamada Offset: "
+                                        (if motivo-conjunto motivo-conjunto "sin región única"))
+                                nivel (* signo nivel paso)))
+                  )
+                  (foreach pieza piezas (mce:descartar pieza))
+                )
               )
+              (setq abiertos nil)
+            )
+            ((car abiertos)
+              ;; Un solo fragmento abierto no forma un contorno compuesto; se
+              ;; resuelve con la metadata individual, sin llamar a AddRegion
+              ;; sobre una sola pieza ni inventar un grupo.
+              (setq incompleto T incidencias (1+ incidencias))
+              (if (not incidencia-region)
+                (progn
+                  (setq incidencia-region
+                        (list "REGION"
+                              (strcat
+                                (if (caddr (car abiertos)) (caddr (car abiertos))
+                                  "la curva suave no quedó cerrada")
+                                (mce:diagnostico-fragmento
+                                  (car (car abiertos)) (cadr (car abiertos)) (length fragmentos)))
+                              nivel (* signo nivel paso)))
+                  (if (not incidencia)
+                    (setq incidencia incidencia-region
+                          region-en-incidencia T)
+                  )
+                )
+              )
+              (mce:descartar (car (car abiertos)))
+              (setq abiertos nil)
             )
           )
         )
@@ -1083,6 +1196,10 @@
   (princ (strcat "\nAgua: separación " (rtos paso 2 8)
                  "; niveles interiores " (itoa niveles)
                  "; último nivel probado " (itoa nivel-probado) "."))
+  (if (> compuestos 0)
+    (princ (strcat "\n  Contornos compuestos aceptados: " (itoa compuestos)
+                   " (piezas nativas conservadas como un único contorno lógico; la región conjunta solo se usa como padre temporal)."))
+  )
   (if incompleto
     (progn
       (if incidencia
