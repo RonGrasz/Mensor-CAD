@@ -437,11 +437,37 @@
   (setq mce:color nil)
 )
 
-(defun mce:suave (puntos capa / coords matriz obj tangente)
-  ;; Ajuste global, no fillets ni ondas. Closed2 exige continuidad en la unión.
-  (setq coords (apply 'append puntos)
-        matriz (vlax-make-safearray vlax-vbDouble (cons 0 (1- (length coords))))
-        tangente (mapcar '- (cadr puntos) (last puntos)))
+(defun mce:tangente-cierre (puntos tol / d m c)
+  ;; Dirección tangente periódica en el primer punto: P1 - P(n-1). La media de
+  ;; las cuerdas adyacentes fija una magnitud razonable y nunca sobredimensionada.
+  (setq d (mapcar '- (cadr puntos) (last puntos))
+        m (distance '(0.0 0.0 0.0) d))
+  (if (<= m tol)
+    (setq d (mapcar '- (cadr puntos) (car puntos))
+          m (distance '(0.0 0.0 0.0) d))
+  )
+  (if (<= m tol)
+    nil
+    (progn
+      (setq c (/ (+ (distance (car puntos) (cadr puntos))
+                    (distance (last puntos) (car puntos)))
+                 2.0))
+      (list (* (/ (car d) m) c) (* (/ (cadr d) m) c) (* (/ (caddr d) m) c))
+    )
+  )
+)
+
+(defun mce:suave (puntos capa tol / cerrados coords matriz obj tangente)
+  ;; Ajuste global, no fillets ni ondas. El primer punto de ajuste se repite al
+  ;; final para que la SPLINE cierre geométricamente; en el punto común las
+  ;; tangentes coinciden y no son nulas; Closed2 refuerza la continuidad.
+  (setq tangente (mce:tangente-cierre puntos tol))
+  (if (not tangente)
+    (mce:fallar "No se pudo calcular una tangente de cierre no nula.")
+  )
+  (setq cerrados (append puntos (list (car puntos)))
+        coords (apply 'append cerrados)
+        matriz (vlax-make-safearray vlax-vbDouble (cons 0 (1- (length coords)))))
   (vlax-safearray-fill matriz coords)
   (setq obj (mce:registrar
               (vla-AddSpline mce:espacio matriz
@@ -454,17 +480,30 @@
     (mce:fallar "Incompatibilidad: AutoCAD no permite cerrar suavemente la SPLINE con Closed2.")
   )
   (vla-put-Layer obj capa)
+  ;; Sin Update: la escritura de propiedades ActiveX es inmediata y el
+  ;; readback no necesita commit adicional. Evitamos tragar un ESC atrapado.
+  ;; Lectura de vuelta: sin cierre real no se puede validar la REGION temporal.
+  (if (not (vlax-curve-isClosed obj))
+    (mce:fallar "La SPLINE no quedó cerrada tras Closed2; no se puede validar el contorno de agua.")
+  )
   obj
 )
 
-(defun mce:suave-abierta (puntos capa / coords matriz obj)
-  ;; Se suministran tangentes nulas; su compatibilidad requiere prueba en AutoCAD.
+(defun mce:suave-abierta (puntos capa tol / n coords matriz obj inicio fin)
+  ;; Tangentes de extremo explícitas y no nulas; el río debe seguir abierto.
+  (setq n (length puntos)
+        inicio (mapcar '- (cadr puntos) (car puntos))
+        fin (if (> n 2) (mapcar '- (last puntos) (nth (- n 2) puntos)) inicio))
+  (if (or (<= (distance '(0.0 0.0 0.0) inicio) tol)
+          (<= (distance '(0.0 0.0 0.0) fin) tol))
+    (mce:fallar "No se pudo calcular una tangente no nula para el río.")
+  )
   (setq coords (apply 'append puntos)
         matriz (vlax-make-safearray vlax-vbDouble (cons 0 (1- (length coords)))))
   (vlax-safearray-fill matriz coords)
   (setq obj (mce:registrar
               (vla-AddSpline mce:espacio matriz
-                (vlax-3d-point '(0.0 0.0 0.0)) (vlax-3d-point '(0.0 0.0 0.0)))))
+                (vlax-3d-point inicio) (vlax-3d-point fin))))
   (vla-put-Layer obj capa)
   obj
 )
@@ -606,38 +645,61 @@
   )
 )
 
-(defun mce:region-agua (curva / copia resultado regiones region area perimetro longitud valido)
+(defun mce:region-agua (curva / copia resultado regiones region area perimetro
+                         longitud fin motivo ok reg)
+  ;; Devuelve (region motivo): region válida o (nil motivo con la causa medida).
+  ;; region solo se asigna cuando la región es válida; reg es el iterador.
   ;; El núcleo REGION valida la curva FINAL, no solo las cuerdas de entrada.
   ;; Una región única y perímetro completo evitan aceptar lóbulos descartados.
-  (if (vlax-curve-isClosed curva)
+  (if (not (vlax-curve-isClosed curva))
+    (setq motivo "la curva suave no quedó cerrada")
     (progn
       (setq copia (mce:registrar (vla-Copy curva))
             resultado (vl-catch-all-apply 'vla-AddRegion
                         (list mce:espacio (mce:vector-objetos (list copia)))))
       (mce:interrupcion resultado)
-      (if (not (vl-catch-all-error-p resultado))
-        (progn
+      (cond
+        ((vl-catch-all-error-p resultado)
+          (setq motivo (strcat "AddRegion falló: "
+                               (vl-catch-all-error-message resultado))))
+        (T
           (setq regiones (vlax-safearray->list (vlax-variant-value resultado)))
           ;; Registrar TODOS antes de leer propiedades, incluso si se rechazan.
-          (foreach region regiones (mce:registrar region))
-          (if (= (length regiones) 1)
-            (progn
-              (setq region (car regiones) area (vla-get-Area region)
-                    perimetro (vla-get-Perimeter region)
+          (foreach reg regiones (mce:registrar reg))
+          (cond
+            ((/= (length regiones) 1)
+              (setq motivo (strcat "AddRegion produjo " (itoa (length regiones))
+                                   " regiones en lugar de una")))
+            (T
+              (setq area (vla-get-Area (car regiones))
+                    perimetro (vla-get-Perimeter (car regiones))
                     longitud (vlax-curve-getDistAtParam curva (vlax-curve-getEndParam curva))
-                    valido (and (> area 1e-16)
-                                (equal perimetro longitud (max 1e-8 (* longitud 1e-8)))))
+                    fin (max 1e-8 (* longitud 1e-8)))
+              (cond
+                ((<= area 1e-16)
+                  (setq motivo "la región tiene superficie nula"))
+                ((not (equal perimetro longitud fin))
+                  (setq motivo (strcat "el perímetro " (rtos perimetro 2 8)
+                                       " no coincide con la longitud de la curva "
+                                       (rtos longitud 2 8) " (tolerancia " (rtos fin 2 8) ")")))
+                (T (setq ok T region (car regiones)))
+              )
             )
           )
         )
       )
       (mce:descartar copia)
-      (if valido
-        region
-        (progn (foreach region regiones (mce:descartar region)) nil)
+      ;; Todo rechazo devuelve (nil motivo): nunca una región ya borrada.
+      (if (not ok)
+        (progn
+          (foreach reg regiones (mce:descartar reg))
+          (setq region nil)
+          (if (not motivo) (setq motivo "AddRegion no produjo una región válida"))
+        )
       )
     )
   )
+  (list region motivo)
 )
 
 (defun mce:contenida (hija madre tolerancia / resto molde resultado dentro)
@@ -658,10 +720,13 @@
 (defun mce:agua (contorno capa / original area centro medidas paso tolerancia
                   cola nodo curva padre profundidad siguientes signo resultado
                   fragmentos fragmento region superficie aceptadas par duplicado
-                  total niveles intentos incompleto)
-  (setq original (mce:region-agua contorno))
+                  total niveles intentos incompleto analisis)
+  (setq analisis (mce:region-agua contorno)
+        original (car analisis))
   (if (not original)
-    (mce:fallar "El contorno final de agua es inválido, se cruza o no produce una región simple completa.")
+    (mce:fallar
+      (strcat "El contorno final de agua es inválido, se cruza o no produce una región simple completa: "
+              (if (cadr analisis) (cadr analisis) "causa no determinada") "."))
   )
   (setq area (vla-get-Area original) centro (vlax-get original 'Centroid)
         medidas (list area (list (car centro) (cadr centro) (mce:cota contorno)))
@@ -696,7 +761,9 @@
               (mce:fallar "Límite de agua: 4096 curvas devueltas. Se retira la ejecución.")
             )
             (foreach fragmento fragmentos
-              (setq region (mce:region-agua fragmento) duplicado nil)
+              (setq analisis (mce:region-agua fragmento)
+                    region (car analisis)
+                    duplicado nil)
               (if region
                 (progn
                   (setq superficie (vla-get-Area region))
@@ -860,8 +927,8 @@
       )
       (setq capa (mce:capa (nth tipo '("MC-EDIFICACION-1" "MC-EDIFICACION-2" "MC-EDIFICACION-CIRCULAR" "MC-AREA-VERDE" "MC-MASA-AGUA" "MC-RIO")))
             contorno (cond
-                       ((and (= tipo 5) (= forma 1)) (mce:suave-abierta puntos capa))
-                       ((and (= tipo 4) (= forma 1)) (mce:suave puntos capa))
+                       ((and (= tipo 5) (= forma 1)) (mce:suave-abierta puntos capa tol))
+                       ((and (= tipo 4) (= forma 1)) (mce:suave puntos capa tol))
                        (T (mce:poligono puntos capa (/= tipo 5))))
             medidas (cond
                       ((= tipo 5) (mce:rio contorno capa rio total tol))
