@@ -750,9 +750,10 @@
 )
 
 (defun mce:agua (contorno capa / original area centro medidas paso tolerancia
-                  cola nodo curva padre profundidad siguientes signo resultado
-                  fragmentos fragmento region superficie aceptadas par duplicado
-                  total niveles intentos incompleto analisis diagnostico)
+                  padres nivel nuevos par area-padre signo resultado fragmentos
+                  fragmento region motivo superficie admitida menor duplicado
+                  total niveles intentos incompleto analisis diagnostico
+                  nivel-probado incidencia incidencias exclusiones)
   (setq analisis (mce:region-agua contorno)
         original (car analisis)
         diagnostico (caddr analisis))
@@ -764,7 +765,9 @@
   (setq area (vla-get-Area original) centro (vlax-get original 'Centroid)
         medidas (list area (list (car centro) (cadr centro) (mce:cota contorno)))
         paso (* 0.05 (sqrt area)) tolerancia (max 1e-16 (* area 1e-9))
-        cola (list (list contorno original 0)) total 0 niveles 0 intentos 0)
+        padres (list (list original 0)) total 0 niveles 0 intentos 0
+        nivel 1 nivel-probado 0 incompleto nil incidencia nil incidencias 0
+        exclusiones 0)
   ;; Diagnóstico informativo del contorno ORIGINAL: se imprime una sola vez, no
   ;; por fragmento. Solo la SPLINE aporta esta metadata; las polilíneas no.
   (if diagnostico
@@ -777,88 +780,164 @@
              " (informativo: no certifica topología ni ausencia de lóbulos descartados)."))
   )
   (mce:azul contorno capa)
-  ;; Búsqueda por niveles. Cada nodo conserva su región para probar a sus hijos.
-  (while cola
-    (setq siguientes nil)
-    (foreach nodo cola
-      (setq curva (car nodo) padre (cadr nodo) profundidad (caddr nodo)
-            aceptadas nil)
-      (if (>= profundidad 256)
-        (mce:fallar "Límite de agua: 256 niveles; no se garantiza relleno completo. Se retira la ejecución.")
+  ;; Barrido por niveles desde el contorno ORIGINAL: cada nivel calcula ±n·d una
+  ;; sola vez por signo sobre `contorno` (NUNCA sobre la REGION `original`, que
+  ;; no es una curva) y prueba TODOS los fragmentos devueltos contra TODOS los
+  ;; padres retenidos del nivel anterior. Cada distancia es múltiplo exacto del
+  ;; paso y no se acumulan aproximaciones de nivel en nivel. La REGION original
+  ;; vive hasta el final; los padres de un nivel se retiran solo tras probar los
+  ;; dos signos.
+  (while padres
+    (if (> nivel 256)
+      (mce:fallar "Límite de agua: 256 niveles; no se garantiza relleno completo. Se retira la ejecución.")
+    )
+    (setq nivel-probado nivel nuevos nil)
+    (foreach signo '(1.0 -1.0)
+      (setq intentos (1+ intentos))
+      (if (> intentos 2048)
+        (mce:fallar "Límite de agua: 2048 intentos de desfase. Se retira la ejecución.")
       )
-      (foreach signo '(1.0 -1.0)
-        (setq intentos (1+ intentos))
-        (if (> intentos 2048)
-          (mce:fallar "Límite de agua: 2048 intentos de desfase. Se retira la ejecución.")
+      (setq resultado (vl-catch-all-apply 'vla-Offset (list contorno (* signo nivel paso))))
+      (mce:interrupcion resultado)
+      (if (vl-catch-all-error-p resultado)
+        (progn
+          ;; Error nativo: no certifica agotamiento; guardar causa, nivel y signo.
+          (setq incompleto T incidencias (1+ incidencias))
+          (if (not incidencia)
+            (setq incidencia (list "Offset" (vl-catch-all-error-message resultado)
+                                   nivel (* signo nivel paso)))
+          )
         )
-        (setq resultado (vl-catch-all-apply 'vla-Offset (list curva (* signo paso))))
-        (mce:interrupcion resultado)
-        (if (vl-catch-all-error-p resultado)
-          ;; Offset no distingue agotamiento geométrico de incompatibilidad.
-          ;; Conservar lo válido, pero JAMÁS anunciar relleno completo en este caso.
-          (setq incompleto T)
-          (progn
-            (setq fragmentos (vlax-safearray->list (vlax-variant-value resultado)))
-            (foreach fragmento fragmentos (mce:registrar fragmento))
-            (setq total (+ total (length fragmentos)))
-            (if (> total 4096)
-              (mce:fallar "Límite de agua: 4096 curvas devueltas. Se retira la ejecución.")
+        (progn
+          (setq fragmentos (vlax-safearray->list (vlax-variant-value resultado)))
+          (foreach fragmento fragmentos (mce:registrar fragmento))
+          (setq total (+ total (length fragmentos)))
+          (if (> total 4096)
+            (mce:fallar "Límite de agua: 4096 curvas devueltas. Se retira la ejecución.")
+          )
+          (if (not fragmentos)
+            (progn
+              (setq incompleto T incidencias (1+ incidencias))
+              (if (not incidencia)
+                (setq incidencia (list "Offset vacío" "no se devolvió ninguna curva"
+                                       nivel (* signo nivel paso)))
+              )
             )
-            (foreach fragmento fragmentos
-              (setq analisis (mce:region-agua fragmento)
-                    region (car analisis)
-                    duplicado nil)
-              (if region
-                (progn
-                  (setq superficie (vla-get-Area region))
-                  (if (and (> superficie tolerancia)
-                           (< superficie (- (vla-get-Area padre) tolerancia))
-                           (mce:contenida region padre tolerancia)
-                           (mce:contenida region original tolerancia))
-                    (progn
-                      ;; Ambos signos pueden devolver la misma solución: no duplicarla.
-                      (foreach par aceptadas
-                        (if (and (equal superficie (vla-get-Area (cadr par)) tolerancia)
-                                 (mce:contenida region (cadr par) tolerancia))
-                          (setq duplicado T)
-                        )
-                      )
-                      (if (not duplicado)
-                        (progn
-                          (mce:azul fragmento capa)
-                          (setq aceptadas (cons (list fragmento region (1+ profundidad)) aceptadas)
-                                niveles (max niveles (1+ profundidad)))
-                        )
-                      )
-                    )
-                    (progn
-                      (if (and (> superficie tolerancia)
-                               (< superficie (- (vla-get-Area padre) tolerancia)))
-                        (setq incompleto T)
-                      )
-                      (setq duplicado T)
-                    )
-                  )
-                  (if duplicado
-                    (progn (mce:descartar region) (mce:descartar fragmento))
+          )
+          (foreach fragmento fragmentos
+            (setq analisis (mce:region-agua fragmento)
+                  region (car analisis) motivo (cadr analisis)
+                  admitida nil menor nil duplicado nil)
+            (if region
+              (progn
+                (setq superficie (vla-get-Area region))
+                ;; ¿Algún padre es estrictamente mayor dentro de la tolerancia?
+                (foreach par padres
+                  (setq area-padre (vla-get-Area (car par)))
+                  (if (< superficie (- area-padre tolerancia))
+                    (setq menor T)
                   )
                 )
-                (progn (setq incompleto T) (mce:descartar fragmento))
+                ;; Admisible: menor y contenida en un padre Y en el original. La
+                ;; contención se mide por diferencia REGION/Boolean completa.
+                (if (and (> superficie tolerancia) menor
+                         (mce:contenida region original tolerancia))
+                  (foreach par padres
+                    (setq area-padre (vla-get-Area (car par)))
+                    (if (and (not admitida)
+                             (< superficie (- area-padre tolerancia))
+                             (mce:contenida region (car par) tolerancia))
+                      (setq admitida T)
+                    )
+                  )
+                )
+                (if admitida
+                  (progn
+                    ;; Ambos signos pueden devolver la misma solución: dedup
+                    ;; global del nivel por área y contención dentro de la
+                    ;; tolerancia.
+                    (foreach par nuevos
+                      (if (and (equal superficie (vla-get-Area (car par)) tolerancia)
+                               (mce:contenida region (car par) tolerancia))
+                        (setq duplicado T)
+                      )
+                    )
+                    (if duplicado
+                      (progn (mce:descartar region) (mce:descartar fragmento))
+                      (progn
+                        (mce:azul fragmento capa)
+                        (setq nuevos (cons (list region nivel) nuevos)
+                              niveles (max niveles nivel))
+                      )
+                    )
+                  )
+                  (progn
+                    ;; Un candidato que no reduce respecto de ningún padre apunta
+                    ;; hacia fuera: exclusión ordinaria, no fallo del motor.
+                    (if (and (> superficie tolerancia) menor)
+                      (progn
+                        (setq incompleto T incidencias (1+ incidencias))
+                        (if (not incidencia)
+                          (setq incidencia
+                                (list "contención"
+                                      (strcat "candidato de área " (rtos superficie 2 8)
+                                              " sin contención certificada en original y algún padre de área mayor")
+                                      nivel (* signo nivel paso)))
+                        )
+                      )
+                      (setq exclusiones (1+ exclusiones))
+                    )
+                    (mce:descartar region)
+                    (mce:descartar fragmento)
+                  )
+                )
+              )
+              (progn
+                ;; Rechazo de validación nativa/forma: el motivo medido viaja en
+                ;; el segundo elemento de mce:region-agua.
+                (setq incompleto T incidencias (1+ incidencias))
+                (if (not incidencia)
+                  (setq incidencia (list "REGION"
+                                         (if motivo motivo "AddRegion no produjo una región válida")
+                                         nivel (* signo nivel paso)))
+                )
+                (mce:descartar fragmento)
               )
             )
           )
         )
       )
-      (setq siguientes (append aceptadas siguientes))
-      (if (not (eq padre original)) (mce:descartar padre))
     )
-    (setq cola siguientes)
+    ;; Ambos signos ya se probaron: recién ahora se retiran los padres del nivel.
+    ;; La REGION original nunca se retira aquí; vive hasta el final.
+    (foreach par padres
+      (if (not (eq (car par) original)) (mce:descartar (car par)))
+    )
+    (setq padres nuevos)
+    (setq nivel (1+ nivel))
   )
   (mce:descartar original)
-  (princ (strcat "\nAgua: separación " (rtos paso 2 8) "; niveles interiores " (itoa niveles) "."))
+  (princ (strcat "\nAgua: separación " (rtos paso 2 8)
+                 "; niveles interiores " (itoa niveles)
+                 "; último nivel probado " (itoa nivel-probado) "."))
   (if incompleto
-    (princ "\nAviso: Offset falló o devolvió curvas inválidas/no contenidas. Se conserva lo válido; relleno completo NO certificado.")
+    (progn
+      (if incidencia
+        (princ (strcat "\nAviso: " (car incidencia)
+                       " en nivel " (itoa (caddr incidencia))
+                       " (desfase " (rtos (cadddr incidencia) 2 8) "): "
+                       (cadr incidencia)
+                       ". Se conserva lo válido; relleno completo NO certificado."))
+        (princ "\nAviso: se conservó lo válido; relleno completo NO certificado.")
+      )
+      (if (> incidencias 1)
+        (princ (strcat "\n  Incidencias adicionales registradas: " (itoa (1- incidencias)) "."))
+      )
+    )
     (princ "\nBúsqueda interior agotada dentro de la tolerancia geométrica.")
+  )
+  (if (> exclusiones 0)
+    (princ (strcat "\n  Candidatos descartados por área insuficiente o sin reducción: " (itoa exclusiones) "."))
   )
   medidas
 )
