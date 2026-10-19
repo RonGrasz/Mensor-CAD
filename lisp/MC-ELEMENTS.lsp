@@ -2016,8 +2016,10 @@
             (progn (mce:rotular-rio contorno centro contenido (* longitud factor 0.04)
                                    capa tol)
                    nil))
-          ;; Polígonos: rótulo completo dentro del contorno final, con hueco.
-          (T (mce:rotular contorno centro modo contenido (* longitud factor 0.04) capa))))
+          ;; Tag: texto y círculo otro 30 % mayores (62.5 % sobre la base).
+          ;; El ajuste interior sigue aplicándose al conjunto si no cabe.
+          (T (mce:rotular contorno centro modo contenido
+                         (* longitud factor (if (= modo 2) 0.065 0.04)) capa))))
       (if (< tipo 4)
         (mce:trama contorno (nth tipo '("ANSI31" "ANSI37" "ANSI31" "ANSI36"))
                    (* longitud factor 0.02) (= tipo 3) capa hueco)
