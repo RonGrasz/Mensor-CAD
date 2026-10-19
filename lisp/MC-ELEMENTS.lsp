@@ -145,7 +145,7 @@
         (setq mce:rotulo-poligono (get_tile "rotulo"))
       )
       (start_list "rotulo")
-      (add_list "Sin rótulo") (add_list "Texto centrado")
+      (add_list "Sin rótulo") (add_list (if rio "Texto paralelo al río" "Texto centrado"))
       (if (not rio) (add_list "Círculo con tag centrado"))
       (end_list)
       (set_tile "rotulo" (if rio mce:rotulo-rio mce:rotulo-poligono))
@@ -193,7 +193,7 @@
       ": popup_list { key = \"rotulo\"; label = \"Rótulo:\"; }"
       ": edit_box { key = \"contenido\"; label = \"Texto / tag:\"; edit_width = 32; edit_limit = 120; }"
       ": text { label = \"Polígono: rótulo interior con margen y hueco en la trama.\"; }"
-      ": text { label = \"Si no cabe, se reduce; ríos: mitad de longitud.\"; }"
+      ": text { label = \"Si no cabe se reduce; ríos: texto paralelo y por fuera.\"; }"
       ": text { label = \"Río ondulado: separación aproximada y adaptable.\"; }"
       ": text { key = \"aviso\"; width = 64; }"
       "ok_cancel; }")
@@ -1703,6 +1703,178 @@
   texto
 )
 
+(defun mce:rio-marco (original tol / largo tangente norma normal giro)
+  ;; S1–S2 — Marco local en la mitad de la longitud del eje: tangente unitaria XY,
+  ;; normal EXTERIOR automática (+Y si el tramo es horizontal dominante, -X si es
+  ;; vertical dominante; ejes WCS de este repositorio) y giro legible. La normal no
+  ;; depende del sentido de dibujo; el giro se corrige para no quedar boca abajo.
+  (setq largo (vlax-curve-getDistAtParam original (vlax-curve-getEndParam original))
+        tangente (vlax-curve-getFirstDeriv original
+                   (vlax-curve-getParamAtDist original (/ largo 2.0)))
+        norma (distance '(0.0 0.0 0.0) tangente))
+  (if (<= norma tol)
+    (mce:fallar "Rótulo del río: tangente no certificable en la mitad de la longitud.")
+  )
+  (setq normal (if (>= (abs (car tangente)) (abs (cadr tangente)))
+                 (list 0.0 1.0 0.0)
+                 (list -1.0 0.0 0.0))
+        giro (atan (cadr tangente) (car tangente)))
+  (if (> giro (* 0.5 pi)) (setq giro (- giro pi)))
+  ;; El desempate en el límite -90° se incluye: un tramo vertical invertido da el
+  ;; mismo giro que el directo (la normal ya era independiente del sentido).
+  (if (<= giro (* -0.5 pi)) (setq giro (+ giro pi)))
+  (list (list (/ (car tangente) norma) (/ (cadr tangente) norma) 0.0) normal giro)
+)
+
+(defun mce:rio-curvas (original / curvas obj borrado tipo)
+  ;; Instantánea ANTES del TEXT: curvas vivas ya registradas por el generador. No se
+  ;; infiere el conjunto del paso nominal —Ondulada puede reducirlo— ni del sentido de
+  ;; Offset. El estado borrado se consulta PRIMERO: solo un borrado CONFIRMADO permite
+  ;; omitir un recurso (son los intentos descartados del generador). Un estado de
+  ;; borrado desconocido o un tipo ilegible cierran el paso en lugar de omitir en
+  ;; silencio: ESC sigue propagándose por mce:interrupcion antes de cada fallo.
+  (foreach obj mce:objetos
+    (setq borrado (vl-catch-all-apply 'vlax-erased-p (list obj)))
+    (mce:interrupcion borrado)
+    (if (vl-catch-all-error-p borrado)
+      (mce:fallar
+        (strcat "Rótulo del río: no se pudo certificar el estado de borrado de un"
+                " recurso propio; se retira la ejecución sin resultados parciales."))
+    )
+    (if (not borrado)
+      (progn
+        (setq tipo (vl-catch-all-apply 'vla-get-ObjectName (list obj)))
+        (mce:interrupcion tipo)
+        (if (vl-catch-all-error-p tipo)
+          (mce:fallar
+            (strcat "Rótulo del río: no se pudo leer el tipo de un recurso vivo del"
+                    " conjunto; se retira la ejecución sin resultados parciales."))
+        )
+        (if (and (= (type tipo) 'STR) (wcmatch tipo "AcDbPolyline,AcDbSpline"))
+          (setq curvas (cons obj curvas))
+        )
+      )
+    )
+  )
+  ;; Nunca certificar un conjunto vacío ni sin el eje: el rótulo se separa de ESTAS
+  ;; curvas, así que un conjunto incompleto es un fallo, no una aproximación.
+  (if (not curvas)
+    (mce:fallar
+      (strcat "Rótulo del río: no quedó ninguna curva viva certificable para separar el"
+              " rótulo; se retira la ejecución sin resultados parciales."))
+  )
+  (if (not (member original curvas))
+    (mce:fallar
+      (strcat "Rótulo del río: el eje original no figura entre las curvas vivas"
+              " certificadas; se retira la ejecución sin resultados parciales."))
+  )
+  curvas
+)
+
+(defun mce:rio-libre-p (curvas centro tangente semiancho semialto capa
+                        / lado forma esquinas esquina par curva punto delta x y libre)
+  ;; Certificado acotado: el rectángulo ORIENTADO temporal con la tangente —el TEXT ya
+  ;; ampliado por la holgura— no puede intersecar ninguna curva del río, y ninguna curva
+  ;; puede quedar completa dentro de él (un tramo interior no corta ningún borde). Es
+  ;; orientado, no una caja alineada a los ejes, así que en diagonales no infla la
+  ;; separación. La forma se registra ANTES de las consultas nativas: ante error, el
+  ;; rollback la retira.
+  (setq lado (list (- (cadr tangente)) (car tangente)))
+  (foreach par '((1 1) (-1 1) (-1 -1) (1 -1))
+    (setq esquina (list (+ (car centro) (* semiancho (car tangente) (car par))
+                                      (* semialto (car lado) (cadr par)))
+                        (+ (cadr centro) (* semiancho (cadr tangente) (car par))
+                                         (* semialto (cadr lado) (cadr par)))
+                        (caddr centro))
+          esquinas (cons esquina esquinas))
+  )
+  (setq forma (mce:poligono esquinas capa T) libre T)
+  (foreach curva curvas
+    (if (and libre (vlax-invoke forma 'IntersectWith curva 0)) (setq libre nil))
+    (if libre
+      (foreach punto (list (vlax-curve-getStartPoint curva) (vlax-curve-getEndPoint curva))
+        (setq delta (mapcar '- punto centro)
+              x (apply '+ (mapcar '* delta tangente))
+              y (apply '+ (mapcar '* delta lado)))
+        (if (and (<= (abs x) semiancho) (<= (abs y) semialto)) (setq libre nil))
+      )
+    )
+  )
+  (mce:descartar forma)
+  libre
+)
+
+(defun mce:rotular-rio (original centro contenido altura capa tol
+                        / marco tangente normal giro curvas texto caja medida semiancho
+                          semialto ancla holgura limite alcance curva largo i punto
+                          proyeccion destino sonda libre intento)
+  ;; S1–S2 — Rótulo exclusivo de río: UNA línea recta de TEXT, paralela al tramo
+  ;; central y separada por fuera del conjunto REAL de líneas. La altura pedida, la
+  ;; capa, el color y el estilo siguen viniendo de mce:texto-rotulo (firma y cuerpo
+  ;; intactos); aquí solo se agrega una transformación rígida —giro y traslado— en WCS,
+  ;; conservando la Z del eje.
+  (setq marco (mce:rio-marco original tol)
+        tangente (car marco) normal (cadr marco) giro (caddr marco))
+  (setq curvas (mce:rio-curvas original))
+  (setq texto (mce:texto-rotulo centro contenido altura capa)
+        caja (mce:caja texto)                ; rotación 0: caja WCS real del estilo
+        medida (mce:caja-medidas caja)
+        semiancho (car medida) semialto (cadr medida)
+        ;; Centro REAL de la caja horizontal, a la Z del eje: pivote rígido del giro.
+        ancla (list (car (caddr medida)) (cadr (caddr medida)) (caddr centro)))
+  (if (or (<= semiancho tol) (<= semialto tol))
+    (mce:fallar "Rótulo del río: el TEXT no tiene una caja medible a esta precisión.")
+  )
+  ;; Holgura ligera: 0.5 × alto REAL medido. El rectángulo de prueba la incluye en sus
+  ;; cuatro lados, así que la caja del TEXT queda al menos a esa distancia de las curvas.
+  (setq holgura semialto
+        semiancho (+ semiancho holgura)
+        semialto (* 2.0 semialto))
+  ;; Alcance de la caja orientada sobre la normal exterior: proyección exacta del
+  ;; rectángulo, no la diagonal de una caja alineada a los ejes.
+  (setq alcance (+ (* (abs (+ (* (car tangente) (car normal))
+                              (* (cadr tangente) (cadr normal)))) semiancho)
+                   (* (abs (- (* (car tangente) (cadr normal))
+                              (* (cadr tangente) (car normal)))) semialto)))
+  ;; Separación inicial: extensión REAL del conjunto en el sentido de la normal. El
+  ;; muestreo solo propone; el certificado —nunca la estimación— decide la posición.
+  (setq limite 0.0)
+  (foreach curva curvas
+    (setq largo (vlax-curve-getDistAtParam curva (vlax-curve-getEndParam curva)) i 0)
+    (while (<= i 16)
+      (setq punto (vlax-curve-getPointAtDist curva (* largo (/ i 16.0)))
+            proyeccion (+ (* (- (car punto) (car centro)) (car normal))
+                          (* (- (cadr punto) (cadr centro)) (cadr normal))))
+      (if (> proyeccion limite) (setq limite proyeccion))
+      (setq i (1+ i))
+    )
+  )
+  (setq destino (+ limite alcance) intento 0 libre nil)
+  (while (and (not libre) (<= intento 8))
+    (setq sonda (list (+ (car centro) (* destino (car normal)))
+                      (+ (cadr centro) (* destino (cadr normal)))
+                      (caddr centro))
+          libre (mce:rio-libre-p curvas sonda tangente semiancho semialto capa))
+    (if (not libre) (setq destino (+ destino holgura) intento (1+ intento)))
+  )
+  (if (not libre)
+    (mce:fallar (strcat "Rótulo del río: no se halló una posición libre de las líneas"
+                        " del río en 9 intentos con holgura de 0.5 veces el alto; se"
+                        " retira la ejecución sin resultados parciales."))
+  )
+  ;; B1 — Transformación RÍGIDA: la caja horizontal medida gira alrededor de SU centro
+  ;; real (`ancla`) y ese mismo centro se traslada al punto certificado (`sonda`). No se
+  ;; reescribe `TextAlignmentPoint` después: el centro de la caja queda exactamente en
+  ;; `sonda` y el rectángulo certificado contiene la tinta para cualquier estilo.
+  (vla-Rotate texto (vlax-3d-point ancla) giro)
+  (vla-Move texto (vlax-3d-point ancla) (vlax-3d-point sonda))
+  (princ (strcat "\nRío: rótulo paralelo al tramo central, giro "
+                 (rtos (/ (* giro 180.0) pi) 2 1) " grados, separado "
+                 (rtos destino 2 6) " de la mitad del eje; holgura "
+                 (rtos holgura 2 6) "."))
+  texto
+)
+
 (defun mce:rotular (contorno centro modo contenido altura capa
                     / texto region muestras factores factor alto caja semiancho semialto
                       diagonal base margen envuelto ubicacion circulo hueco)
@@ -1839,9 +2011,11 @@
       (setq hueco
         (cond
           ((<= modo 0) nil)
-          ;; Ríos: se conserva la ruta previa, a mitad de longitud y sin tag.
+          ;; Ríos: rótulo recto paralelo al tramo central y por fuera del conjunto real.
           ((= tipo 5)
-            (progn (mce:texto-rotulo centro contenido (* longitud factor 0.04) capa) nil))
+            (progn (mce:rotular-rio contorno centro contenido (* longitud factor 0.04)
+                                   capa tol)
+                   nil))
           ;; Polígonos: rótulo completo dentro del contorno final, con hueco.
           (T (mce:rotular contorno centro modo contenido (* longitud factor 0.04) capa))))
       (if (< tipo 4)
