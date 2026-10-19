@@ -192,7 +192,8 @@
       ": edit_box { key = \"factor\"; label = \"Factor visual positivo:\"; edit_width = 12; }"
       ": popup_list { key = \"rotulo\"; label = \"Rótulo:\"; }"
       ": edit_box { key = \"contenido\"; label = \"Texto / tag:\"; edit_width = 32; edit_limit = 120; }"
-      ": text { label = \"Polígono: centroide real. Río: mitad de longitud.\"; }"
+      ": text { label = \"Polígono: rótulo interior con margen y hueco en la trama.\"; }"
+      ": text { label = \"Si no cabe, se reduce; ríos: mitad de longitud.\"; }"
       ": text { label = \"Río ondulado: separación aproximada y adaptable.\"; }"
       ": text { key = \"aviso\"; width = 64; }"
       "ok_cancel; }")
@@ -1366,10 +1367,307 @@
   dentro
 )
 
-(defun mce:trama (contorno patron escala verde capa / trama)
+;;; --- Rótulo interior (S1–S2): envolvente conservadora, búsqueda acotada y
+;;; --- hueco de trama. La posición se certifica contra la REGION del contorno
+;;; --- FINAL (SPLINE incluida) por diferencia REGION/Boolean; los vértices de
+;;; --- captura y las muestras del contorno solo filtran y ordenan candidatos.
+;;; --- Ríos: sin cambios en esta ruta.
+
+(defun mce:lista-coordenadas (valor / lista)
+  ;; Los métodos ActiveX por referencia pueden entregar un safearray o una
+  ;; variante que lo contiene. Se prueba la forma documentada y después el
+  ;; desempaquetado; un fallo real de ambas aborta con mensaje propio.
+  (setq lista (vl-catch-all-apply 'vlax-safearray->list (list valor)))
+  (if (vl-catch-all-error-p lista)
+    (progn
+      (setq lista (vl-catch-all-apply
+                    '(lambda () (vlax-safearray->list (vlax-variant-value valor)))))
+      (mce:interrupcion lista)
+      (if (vl-catch-all-error-p lista)
+        (mce:fallar "No se pudo leer un extremo de la caja WCS.")
+      )
+    )
+  )
+  lista
+)
+
+(defun mce:caja (obj / caja minimo maximo)
+  ;; GetBoundingBox devuelve extremos WCS alineados a los ejes, no OCS ni UCS.
+  (setq caja (vl-catch-all-apply '(lambda () (vla-GetBoundingBox obj 'minimo 'maximo))))
+  (mce:interrupcion caja)
+  (if (vl-catch-all-error-p caja)
+    (mce:fallar "No se pudo medir la caja WCS de una entidad propia.")
+  )
+  (list (mce:lista-coordenadas minimo) (mce:lista-coordenadas maximo))
+)
+
+(defun mce:caja-medidas (caja)
+  ;; Semiancho, semialto y centro XY de una caja WCS ya medida con mce:caja.
+  (list (/ (- (car (cadr caja)) (car (car caja))) 2.0)
+        (/ (- (cadr (cadr caja)) (cadr (car caja))) 2.0)
+        (list (/ (+ (car (car caja)) (car (cadr caja))) 2.0)
+              (/ (+ (cadr (car caja)) (cadr (cadr caja))) 2.0)))
+)
+
+(defun mce:muestras-contorno (contorno / largo i puntos valores z)
+  ;; Referencia de interiores para filtrar candidatos: en una LWPOLYLINE cerrada
+  ;; son sus vértices EXACTOS (el contorno recto real); en una SPLINE, 129
+  ;; muestras por longitud de la curva FINAL. Ambas son solo heurística de
+  ;; búsqueda: el certificado es la diferencia REGION/Boolean, nunca esta lista ni
+  ;; sus esquinas.
+  (if (= (vla-get-ObjectName contorno) "AcDbPolyline")
+    (progn
+      (setq valores (vlax-get contorno 'Coordinates) z (mce:cota contorno))
+      (while valores
+        (setq puntos (cons (list (car valores) (cadr valores) z) puntos)
+              valores (cddr valores))
+      )
+      (reverse puntos)
+    )
+    (progn
+      (setq largo (vlax-curve-getDistAtParam contorno (vlax-curve-getEndParam contorno))
+            i 0)
+      (while (<= i 128)
+        (setq puntos (cons (vlax-curve-getPointAtDist contorno (* largo (/ i 128.0))) puntos)
+              i (1+ i))
+      )
+      (reverse puntos)
+    )
+  )
+)
+
+(defun mce:alejamiento (punto contorno / cercano)
+  ;; Distancia exacta al contorno final completo, WCS. Ordena candidatos: un
+  ;; punto exterior también está lejos, así que no certifica nada por sí sola.
+  (setq cercano (vlax-curve-getClosestPointTo contorno punto))
+  (distance punto cercano)
+)
+
+(defun mce:holgura (punto muestras contorno radio / d)
+  ;; Filtro barato: interior según el muestreo del contorno y distancia mínima
+  ;; `radio` a la curva final. Devuelve el alejamiento o nil.
+  (setq d (mce:alejamiento punto contorno))
+  (if (and (mce:dentro punto muestras) (>= d radio)) d)
+)
+
+(defun mce:region-rotulo (contorno / copia resultado regiones region)
+  ;; S1 — REGION de referencia del contorno FINAL (LWPOLYLINE o SPLINE) para
+  ;; certificar la posición del rótulo. Reutiliza el patrón nativo de
+  ;; mce:region-agua SIN duplicar ni relajar sus guardas de relleno de agua: aquí
+  ;; solo se exige copia válida, AddRegion sin error, exactamente una región y
+  ;; área positiva. Orden de propiedad igual que mce:region-conjunta: primero se
+  ;; enumeran y registran TODAS las regiones devueltas y solo después se retira la
+  ;; copia, de modo que un fallo de borrado nunca deje regiones fuera del
+  ;; rollback. La región se retira al terminar el rótulo o con mce:limpiar.
+  (setq copia (mce:registrar (vla-Copy contorno))
+        resultado (vl-catch-all-apply 'vla-AddRegion
+                    (list mce:espacio (mce:vector-objetos (list copia)))))
+  (mce:interrupcion resultado)
+  (if (vl-catch-all-error-p resultado)
+    ;; Sin regiones devueltas: se retira la copia y se conserva el diagnóstico.
+    (progn
+      (mce:descartar copia)
+      (mce:fallar
+        (strcat "Rótulo: el contorno final no produce una región de referencia ("
+                (vl-catch-all-error-message resultado) "); se retira la ejecución."))
+    )
+  )
+  ;; B1 — Registrar todas antes de cualquier limpieza que pueda abortar.
+  (setq regiones (vlax-safearray->list (vlax-variant-value resultado)))
+  (foreach region regiones (mce:registrar region))
+  (mce:descartar copia)
+  (if (/= (length regiones) 1)
+    (progn
+      (foreach region regiones (mce:descartar region))
+      (mce:fallar "Rótulo: el contorno final no produce una única región; se retira la ejecución.")
+    )
+  )
+  (if (not (> (vla-get-Area (car regiones)) 1e-16))
+    (progn
+      (mce:descartar (car regiones))
+      (mce:fallar "Rótulo: la región de referencia tiene superficie nula; se retira la ejecución.")
+    )
+  )
+  (car regiones)
+)
+
+(defun mce:disco-region (centro radio / circulo copia resultado regiones region)
+  ;; Disco temporal de certificación: círculo propio, copia y AddRegion. Ambas
+  ;; formas nativas se registran al crearse y se retiran aquí; la REGION
+  ;; devuelta queda registrada para que la retire quien la pidió.
+  (setq circulo (mce:registrar (vla-AddCircle mce:espacio (vlax-3d-point centro) radio))
+        copia (mce:registrar (vla-Copy circulo))
+        resultado (vl-catch-all-apply 'vla-AddRegion
+                    (list mce:espacio (mce:vector-objetos (list copia)))))
+  (mce:interrupcion resultado)
+  (if (vl-catch-all-error-p resultado)
+    (progn
+      (mce:descartar circulo)
+      (mce:descartar copia)
+      (mce:fallar "Rótulo: AddRegion no pudo construir el disco de certificación; se retira la ejecución.")
+    )
+  )
+  (setq regiones (vlax-safearray->list (vlax-variant-value resultado)))
+  (foreach region regiones (mce:registrar region))
+  (mce:descartar circulo)
+  (mce:descartar copia)
+  (if (/= (length regiones) 1)
+    (progn
+      (foreach region regiones (mce:descartar region))
+      (mce:fallar "Rótulo: el disco de certificación no produjo una única región; se retira la ejecución.")
+    )
+  )
+  (car regiones)
+)
+
+(defun mce:libre (centro radio region / disco tolerancia dentro)
+  ;; Certificado exacto de una posición: la REGION del disco debe quedar
+  ;; contenida en la REGION del contorno final, medida por diferencia
+  ;; REGION/Boolean sobre copias completas (mce:contenida), no por muestras.
+  (setq disco (mce:disco-region centro radio)
+        tolerancia (max 1e-12 (* 1e-6 pi radio radio))
+        dentro (mce:contenida disco region tolerancia))
+  (mce:descartar disco)
+  dentro
+)
+
+(defun mce:envolvente-dentro-p (centro radio muestras / i angulo valido)
+  ;; Pre-filtro barato ANTES del Boolean: el centro y 8 puntos del borde de la
+  ;; envolvente deben quedar interiores según el muestreo del contorno. No
+  ;; certifica nada; solo evita llevar a la diferencia REGION/Boolean un disco
+  ;; completamente exterior, que no puede certificar contención. Un disco que
+  ;; corta el borde sí se lleva: el Boolean lo rechaza por superficie restante.
+  (setq valido (mce:dentro centro muestras) i 0)
+  (while (and valido (< i 8))
+    (setq angulo (* i (/ pi 4.0))
+          valido (mce:dentro (list (+ (car centro) (* radio (cos angulo)))
+                                   (+ (cadr centro) (* radio (sin angulo)))) muestras)
+          i (1+ i))
+  )
+  valido
+)
+
+(defun mce:certificar (candidatos radio muestras region limite / ubicado)
+  ;; Acotado: solo las posiciones mejor ordenadas se prueban por Boolean contra
+  ;; la región final; la primera contenida gana y las demás no se evalúan.
+  (while (and candidatos (not ubicado) (> limite 0))
+    (if (and (mce:envolvente-dentro-p (car candidatos) radio muestras)
+             (mce:libre (car candidatos) radio region))
+      (setq ubicado (car candidatos))
+    )
+    (setq candidatos (cdr candidatos) limite (1- limite))
+  )
+  ubicado
+)
+
+(defun mce:candidatos-rotulo (contorno muestras z radio
+                              / xmin xmax ymin ymax paso-x paso-y i j p d lista holgado
+                                refinados)
+  ;; Rejilla 7×7 de nodos interiores de la caja de muestras y refinamiento 5×5
+  ;; de media celda alrededor del nodo más holgado. Cada nodo pasa el filtro
+  ;; barato de mce:holgura; el orden final es por alejamiento descendente.
+  (setq xmin (apply 'min (mapcar 'car muestras)) xmax (apply 'max (mapcar 'car muestras))
+        ymin (apply 'min (mapcar 'cadr muestras)) ymax (apply 'max (mapcar 'cadr muestras))
+        paso-x (/ (- xmax xmin) 8.0) paso-y (/ (- ymax ymin) 8.0) i 1)
+  (while (< i 8)
+    (setq j 1)
+    (while (< j 8)
+      (setq p (list (+ xmin (* i paso-x)) (+ ymin (* j paso-y)) z))
+      (if (setq d (mce:holgura p muestras contorno radio))
+        (setq lista (cons (list p d) lista)
+              holgado (if (or (not holgado) (> d (cadr holgado))) (list p d) holgado))
+      )
+      (setq j (1+ j))
+    )
+    (setq i (1+ i))
+  )
+  (if holgado
+    (progn
+      (setq i -2)
+      (while (<= i 2)
+        (setq j -2)
+        (while (<= j 2)
+          (setq p (list (+ (car (car holgado)) (* i paso-x 0.5))
+                        (+ (cadr (car holgado)) (* j paso-y 0.5)) z))
+          (if (setq d (mce:holgura p muestras contorno radio))
+            (setq refinados (cons (list p d) refinados)))
+          (setq j (1+ j))
+        )
+        (setq i (1+ i))
+      )
+    )
+  )
+  (mapcar 'car (vl-sort (append refinados lista) '(lambda (a b) (> (cadr a) (cadr b)))))
+)
+
+(defun mce:ubicar-rotulo (contorno centro muestras region radio z / ubicado)
+  ;; Orden de búsqueda: centroide real primero; después la rejilla acotada. Como
+  ;; máximo se certifican el centroide y 4 posiciones de rejilla por tamaño (5 en
+  ;; total): la distancia al contorno final solo filtra y ordena, la diferencia
+  ;; REGION/Boolean decide.
+  (if (and (mce:holgura centro muestras contorno radio)
+           (mce:envolvente-dentro-p centro radio muestras)
+           (mce:libre centro radio region))
+    centro
+    (mce:certificar (mce:candidatos-rotulo contorno muestras z radio) radio muestras region 4)
+  )
+)
+
+(defun mce:centrar-texto (texto ancla destino / caja centro desplazamiento)
+  ;; Justificación media-centro y rotación 0: se corrige el punto de alineación
+  ;; una sola vez para que el centro de la caja WCS real coincida con `destino`.
+  ;; Devuelve la caja WCS definitiva, que es la que se certifica.
+  (setq caja (mce:caja texto) centro (caddr (mce:caja-medidas caja)))
+  (setq desplazamiento (list (- (car destino) (car centro)) (- (cadr destino) (cadr centro))))
+  (vla-put-TextAlignmentPoint texto
+    (vlax-3d-point (list (+ (car ancla) (car desplazamiento))
+                         (+ (cadr ancla) (cadr desplazamiento))
+                         (caddr destino))))
+  (mce:caja texto)
+)
+
+(defun mce:forma-hueco (hueco capa / centro forma)
+  ;; Contorno temporal no asociativo que despeja la trama alrededor del rótulo:
+  ;; círculo para el tag y rectángulo para el texto. Se registra al crearse y se
+  ;; retira después de Evaluate; en error lo retira mce:limpiar.
+  (setq centro (cadr hueco))
+  (if (= (car hueco) "circulo")
+    (progn
+      (setq forma (mce:registrar (vla-AddCircle mce:espacio (vlax-3d-point centro) (caddr hueco))))
+      (vla-put-Layer forma capa)
+      (vla-put-Color forma 256)
+      forma
+    )
+    (mce:poligono
+      (list (list (- (car centro) (caddr hueco)) (- (cadr centro) (cadddr hueco)) (caddr centro))
+            (list (+ (car centro) (caddr hueco)) (- (cadr centro) (cadddr hueco)) (caddr centro))
+            (list (+ (car centro) (caddr hueco)) (+ (cadr centro) (cadddr hueco)) (caddr centro))
+            (list (- (car centro) (caddr hueco)) (+ (cadr centro) (cadddr hueco)) (caddr centro)))
+      capa T)
+  )
+)
+
+(defun mce:trama (contorno patron escala verde capa hueco / trama sombra)
   (setq trama (mce:registrar (vla-AddHatch mce:espacio 1 patron :vlax-false)))
+  ;; 1 = ANSI predefinido, como el resto del proyecto (el 0 del ejemplo de
+  ;; Autodesk selecciona un patrón definido por el usuario y no aplica aquí).
   ;; AutoCAD exige el bucle exterior antes de consultar/modificar el HATCH.
   (vla-AppendOuterLoop trama (mce:vector-objetos (list contorno)))
+  (if hueco
+    (progn
+      ;; S1 — Hueco interior: bucle no asociativo temporal que se retira tras
+      ;; Evaluate. HatchStyle 0 es el estilo "normal" (islas alternadas), así
+      ;; que el rótulo queda despejado sin máscaras ni cambios en el resto del
+      ;; dibujo; los desfases de agua no pasan por esta ruta.
+      (vla-put-HatchStyle trama 0)
+      (setq sombra (mce:forma-hueco hueco capa))
+      (if (vl-catch-all-error-p
+            (vl-catch-all-apply 'vla-AppendInnerLoop
+              (list trama (mce:vector-objetos (list sombra)))))
+        (mce:fallar "No se pudo añadir el hueco interior de la trama; se retira la ejecución.")
+      )
+    )
+  )
   (vla-put-Layer trama capa)
   (vla-put-PatternAngle trama 0.0)
   (vla-put-PatternScale trama escala)
@@ -1383,36 +1681,100 @@
     (vla-put-Color trama 256)
   )
   (vla-Evaluate trama)
+  ;; Normal: el hueco ya está evaluado y la forma temporal no se conserva.
+  (if sombra (mce:descartar sombra))
   trama
 )
 
-(defun mce:rotular (centro modo contenido altura capa / circulo texto ancho alto caja radio)
+(defun mce:texto-rotulo (centro contenido altura capa / texto)
+  ;; TEXT simple, horizontal, centrado medio en WCS; no se generan códigos MTEXT.
+  ;; Ruta compartida por ríos y polígonos: mismos atributos y mismas capas.
+  (setq texto (mce:registrar (vla-AddText mce:espacio contenido (vlax-3d-point centro) altura)))
+  (vla-put-StyleName texto (getvar "TEXTSTYLE"))
+  (vla-put-Height texto altura)
+  (vla-put-Layer texto capa)
+  (vla-put-Color texto 256)
+  (vla-put-Rotation texto 0.0)
+  ;; Booleanos documentados: texto legible aunque el estilo esté invertido.
+  (vla-put-Backward texto :vlax-false)
+  (vla-put-UpsideDown texto :vlax-false)
+  (vla-put-Alignment texto 10)
+  (vla-put-TextAlignmentPoint texto (vlax-3d-point centro))
+  texto
+)
+
+(defun mce:rotular (contorno centro modo contenido altura capa
+                    / texto region muestras factores factor alto caja semiancho semialto
+                      diagonal base margen envuelto ubicacion circulo hueco)
+  ;; S1–S2 — Coloca el rótulo COMPLETO dentro del contorno FINAL: primero el
+  ;; tamaño pedido y, solo si no cabe, reubicándolo y reduciendo texto y círculo
+  ;; con el MISMO factor (proporciones conservadas). Envolvente conservadora: el
+  ;; texto se inscribe en su círculo circunscripto y el tag usa 0.6·diagonal
+  ;; (> 0.5), así que un disco certificado contiene texto, círculo y margen
+  ;; aunque el estilo tenga ancho u oblicuidad distintos. El margen libre es el
+  ;; 20 % de esa base. Devuelve el hueco de trama o nil.
   (if (> modo 0)
     (progn
-      ;; TEXT simple, centrado medio en WCS; no se generan códigos MTEXT.
-      (setq texto (mce:registrar (vla-AddText mce:espacio contenido (vlax-3d-point centro) altura)))
-      (vla-put-StyleName texto (getvar "TEXTSTYLE"))
-      (vla-put-Height texto altura)
-      (vla-put-Layer texto capa)
-      (vla-put-Color texto 256)
-      (vla-put-Rotation texto 0.0)
-      ;; Booleanos documentados: texto legible aunque el estilo esté invertido.
-      (vla-put-Backward texto :vlax-false)
-      (vla-put-UpsideDown texto :vlax-false)
-      (vla-put-Alignment texto 10)
-      (vla-put-TextAlignmentPoint texto (vlax-3d-point centro))
+      (setq region (mce:region-rotulo contorno)
+            muestras (mce:muestras-contorno contorno)
+            texto (mce:texto-rotulo centro contenido altura capa)
+            factores '(1.0 0.9 0.8 0.7 0.6 0.5 0.4 0.3 0.25))
+      (while (and factores (not ubicacion))
+        (setq factor (car factores) factores (cdr factores) alto (* altura factor))
+        (vla-put-Height texto alto)
+        (vla-put-TextAlignmentPoint texto (vlax-3d-point centro))
+        ;; Caja WCS REAL del TEXT: incluye estilo, ancho, oblicuidad y altura fija.
+        (setq caja (mce:caja texto)
+              semiancho (/ (- (car (cadr caja)) (car (car caja))) 2.0)
+              semialto (/ (- (cadr (cadr caja)) (cadr (car caja))) 2.0)
+              diagonal (* 2.0 (sqrt (+ (* semiancho semiancho) (* semialto semialto))))
+              base (if (= modo 2) (max (* alto 1.5) (* 0.6 diagonal)) (/ diagonal 2.0))
+              margen (* 0.2 base)
+              envuelto (if (= modo 2)
+                         (+ base margen)
+                         (sqrt (+ (* (+ semiancho margen) (+ semiancho margen))
+                                  (* (+ semialto margen) (+ semialto margen))))))
+        (setq ubicacion (mce:ubicar-rotulo contorno centro muestras region envuelto (caddr centro)))
+        (if ubicacion
+          (progn
+            (setq caja (mce:centrar-texto texto centro ubicacion)
+                  semiancho (/ (- (car (cadr caja)) (car (car caja))) 2.0)
+                  semialto (/ (- (cadr (cadr caja)) (cadr (car caja))) 2.0))
+            ;; Certificado final sobre la caja definitiva: si el estilo redondea
+            ;; distinto al medir, esta posición no se acepta y se prueba el
+            ;; siguiente tamaño.
+            (if (> (sqrt (+ (* semiancho semiancho) (* semialto semialto))) (* 1.001 base))
+              (setq ubicacion nil)
+            )
+          )
+        )
+      )
+      (if (not ubicacion)
+        (mce:fallar
+          (strcat "Rótulo: el texto y el círculo no caben completos dentro del contorno final"
+                  " ni al 25 % del tamaño pedido (con la altura que el estilo permita);"
+                  " se retira la ejecución sin resultados parciales."))
+      )
+      (if (< factor 1.0)
+        (princ (strcat "\nRótulo: reducido al " (rtos (* 100.0 factor) 2 0)
+                       " % del tamaño pedido para quedar completo dentro del contorno con margen."))
+      )
+      (if (not (equal (list (car ubicacion) (cadr ubicacion))
+                      (list (car centro) (cadr centro)) 1e-8))
+        (princ "\nRótulo: reubicado en el interior certificado; el centroide real no admitía la envolvente completa.")
+      )
       (if (= modo 2)
         (progn
-          (setq caja (textbox (entget (vlax-vla-object->ename texto))))
-          (if (not caja) (mce:fallar "No se pudo medir el tag."))
-          (setq ancho (- (caadr caja) (caar caja))
-                alto (- (cadadr caja) (cadar caja))
-                radio (max (* altura 1.5) (* 0.6 (sqrt (+ (* ancho ancho) (* alto alto))))))
-          (setq circulo (mce:registrar (vla-AddCircle mce:espacio (vlax-3d-point centro) radio)))
+          (setq circulo (mce:registrar (vla-AddCircle mce:espacio (vlax-3d-point ubicacion) base)))
           (vla-put-Layer circulo capa)
           (vla-put-Color circulo 256)
         )
       )
+      (setq hueco (if (= modo 2)
+                     (list "circulo" ubicacion (+ base margen))
+                     (list "rect" ubicacion (+ semiancho margen) (+ semialto margen))))
+      (mce:descartar region)
+      hueco
     )
   )
 )
@@ -1421,7 +1783,7 @@
                        mce:archivo mce:dcl-ruta mce:dcl-id mce:variables mce:color
                        mce:undo mce:motivo mce:opciones mce:vista tipo factor modo contenido
                        puntos tol capa contorno medidas longitud centro forma rio total grupo-previo
-                       mce:ui-rio mce:rotulo-poligono mce:rotulo-rio)
+                       hueco mce:ui-rio mce:rotulo-poligono mce:rotulo-rio)
   (defun *error* (mensaje)
     (mce:limpiar T)
     (princ (strcat "\nMCELEMENTS: " (if mce:motivo mce:motivo mensaje)))
@@ -1471,19 +1833,21 @@
                       (T (mce:medidas contorno)))
             longitud (if (= tipo 5) (car medidas) (sqrt (car medidas))) centro (cadr medidas))
       (if (<= longitud tol) (mce:fallar "Figura degenerada para la precisión del dibujo."))
+      ;; S1–S2 — Rótulo antes de la trama: el hueco interior necesita su tamaño
+      ;; final ya medido y certificado. Sin rótulo (modo 0) no se crea nada y la
+      ;; trama conserva exactamente el resultado anterior.
+      (setq hueco
+        (cond
+          ((<= modo 0) nil)
+          ;; Ríos: se conserva la ruta previa, a mitad de longitud y sin tag.
+          ((= tipo 5)
+            (progn (mce:texto-rotulo centro contenido (* longitud factor 0.04) capa) nil))
+          ;; Polígonos: rótulo completo dentro del contorno final, con hueco.
+          (T (mce:rotular contorno centro modo contenido (* longitud factor 0.04) capa))))
       (if (< tipo 4)
         (mce:trama contorno (nth tipo '("ANSI31" "ANSI37" "ANSI31" "ANSI36"))
-                   (* longitud factor 0.02) (= tipo 3) capa)
+                   (* longitud factor 0.02) (= tipo 3) capa hueco)
       )
-      (if (and (> modo 0) (/= tipo 5))
-        (if (= tipo 4)
-          (princ "\nRótulo en el centroide real del contorno final; en un cóncavo puede quedar fuera.")
-          (if (not (mce:dentro centro puntos))
-            (princ "\nAviso: el centroide real queda fuera del contorno; se conserva esa posición.")
-          )
-        )
-      )
-      (mce:rotular centro modo contenido (* longitud factor 0.04) capa)
       (mce:limpiar nil)
       (princ "\nMCELEMENTS: estructura creada.")
     )
