@@ -32,6 +32,23 @@
       (if (and (not (vl-catch-all-error-p result)) (numberp result))
         result))))
 
+;;; TrueColor RGB: seis digitos hexadecimales, con # inicial opcional.
+;;; Devuelve nil si es invalido; 0 (negro) es un color valido.
+(defun mcimport:hex-color (s / i code digit value valid)
+  (setq s (strcase (mcimport:trim s)))
+  (if (= (substr s 1 1) "#") (setq s (substr s 2)))
+  (setq i 1 value 0 valid (= (strlen s) 6))
+  (while (and valid (<= i 6))
+    (setq code (ascii (substr s i 1))
+          digit (cond
+                  ((and (>= code 48) (<= code 57)) (- code 48))
+                  ((and (>= code 65) (<= code 70)) (- code 55))))
+    (if (null digit)
+      (setq valid nil)
+      (setq value (+ (* value 16) digit)))
+    (setq i (1+ i)))
+  (if valid value))
+
 ;;; CSV de una linea, con campos vacios, comas entre comillas y "".
 ;;; Devuelve una lista de campos o un mensaje de error.
 (defun mcimport:csv (line / i n ch field fields state err)
@@ -129,10 +146,12 @@
         ((not records) (list nil "El archivo no contiene puntos."))
         (t (list (reverse records) nil))))))
 
-;;; Entidades independientes en WCS y en la capa actual.
+;;; Entidades independientes en WCS, en la capa actual y con el color elegido.
+;;; El mismo color se aplica al simbolo y a todas sus etiquetas.
 ;;; La lista de limpieza pertenece solo a la invocacion actual.
 (defun mcimport:make (data / ent)
-  (if (not (entmake (append data (list (cons 8 mcimport:layer)))))
+  (if (not (entmake (append data (list (cons 8 mcimport:layer))
+                           mcimport:color-data)))
     (mcimport:fail "No se pudo crear una entidad de la importacion."))
   (setq ent (entlast)
         mcimport:created (cons ent mcimport:created)
@@ -265,6 +284,11 @@
           ": text { label = \"No cambia el estilo de los puntos existentes.\"; }"
           ": text { label = \"Simbolo y etiquetas: un grupo independiente por punto.\"; }"
           "}"
+          ": boxed_column { label = \"Color del simbolo y las etiquetas\";"
+          ": popup_list { key = \"color\"; label = \"Color:\"; edit_width = 24; }"
+          ": edit_box { key = \"hex\"; label = \"HEX (#RRGGBB):\"; edit_width = 12; edit_limit = 32; }"
+          ": text { label = \"Elija Personalizado HEX para ingresar un color RGB.\"; }"
+          "}"
           ": boxed_column { label = \"Etiquetas y tamano (unidades del dibujo)\";"
           ": toggle { key = \"showp\"; label = \"Colocar numero de punto\"; }"
           ": toggle { key = \"showd\"; label = \"Colocar descripcion\"; }"
@@ -281,14 +305,21 @@
         mcimport:format-index (atoi (get_tile "format"))
         mcimport:mode-index (atoi (get_tile "mode"))
         mcimport:showp (get_tile "showp") mcimport:showd (get_tile "showd")
+        mcimport:color-index (atoi (get_tile "color"))
+        mcimport:hex-raw (get_tile "hex")
         mcimport:size-raw (get_tile "size")))
 
-(defun mcimport:accept (/ ext size mode)
+(defun mcimport:color-controls ()
+  (mode_tile "hex" (if (= (atoi (get_tile "color")) 8) 0 1)))
+
+(defun mcimport:accept (/ ext size mode rgb)
   (mcimport:save-dialog)
   (setq mcimport:path (mcimport:trim mcimport:path)
         ext (vl-filename-extension mcimport:path)
         size (mcimport:number mcimport:size-raw)
-        mode (nth mcimport:mode-index mcimport:modes))
+        mode (nth mcimport:mode-index mcimport:modes)
+        rgb (if (= mcimport:color-index 8)
+              (mcimport:hex-color mcimport:hex-raw)))
   (cond
     ((or (null ext) (not (member (strcase ext) '(".TXT" ".CSV"))))
      (set_tile "error" "Seleccione un archivo .txt o .csv."))
@@ -298,7 +329,17 @@
      (set_tile "error" "La altura / radio debe ser un numero positivo."))
     ((and (= mode 1) (= mcimport:showp "0") (= mcimport:showd "0"))
      (set_tile "error" "El tipo invisible necesita al menos una etiqueta."))
-    (t (setq mcimport:size size) (done_dialog 1))))
+    ((and (= mcimport:color-index 8) (null rgb))
+     (set_tile "error" "HEX invalido: use seis digitos 0-9/A-F, con # opcional."))
+    (t
+     ;; DXF 420 guarda RRGGBB; tiene prioridad sobre el indice ACI 62.
+     (setq mcimport:size size
+           mcimport:color-data
+             (if (= mcimport:color-index 8)
+               (list '(62 . 256) (cons 420 rgb))
+               (list (cons 62 (if (= mcimport:color-index 0)
+                               256 mcimport:color-index)))))
+     (done_dialog 1))))
 
 (defun mcimport:dialog (/ result picked names outer base)
   (setq names nil)
@@ -311,6 +352,14 @@
       (mcimport:fail "No se pudo abrir el dialogo MCIMPORT."))
     (start_list "format") (mapcar 'add_list mcimport:formats) (end_list)
     (start_list "mode") (mapcar 'add_list (reverse names)) (end_list)
+    (start_list "color")
+    (mapcar 'add_list '("Por capa" "Rojo" "Amarillo" "Verde" "Cian" "Azul"
+                       "Magenta" "Blanco / negro (ACI 7)" "Personalizado HEX"))
+    (end_list)
+    (set_tile "color" (itoa mcimport:color-index))
+    (set_tile "hex" mcimport:hex-raw)
+    (mcimport:color-controls)
+    (action_tile "color" "(mcimport:color-controls)")
     (set_tile "path" mcimport:path)
     (set_tile "format" (itoa mcimport:format-index))
     (set_tile "mode" (itoa mcimport:mode-index))
@@ -390,6 +439,7 @@
                      mcimport:path mcimport:formats mcimport:modes
                      mcimport:format-index mcimport:mode-index mcimport:showp
                      mcimport:showd mcimport:size-raw mcimport:size
+                     mcimport:color-index mcimport:hex-raw mcimport:color-data
                      mcimport:layer mcimport:style result records record p labelpos
                      mode labels zoom-result layer-data)
   (setq mcimport:old-osmode (getvar "OSMODE")
@@ -406,7 +456,8 @@
                             "EN" "NE" "END" "NED" "ENZD" "NEZD" "PEND" "PNED")
         mcimport:modes '(0 1 2 3 4 32 33 34 35 36 64 65 66 67 68 96 97 98 99 100)
         mcimport:path "" mcimport:format-index 5 mcimport:mode-index 7
-        mcimport:showp "1" mcimport:showd "1" mcimport:size-raw "1.0")
+        mcimport:showp "1" mcimport:showd "1" mcimport:size-raw "1.0"
+        mcimport:color-index 2 mcimport:hex-raw "#FF0000")
   (setvar "CMDECHO" 0)
   (setq mcimport:dcl-path (vl-filename-mktemp "MC-IMPORT-" nil ".dcl"))
   (if (not (mcimport:write-dcl mcimport:dcl-path))
