@@ -7,8 +7,10 @@
 ;;; de la colindancia en el exterior. La fuente nunca se modifica.
 ;;;
 ;;; Geometría explícita en la capa y el estilo de texto actuales.
-;;; Sin reactores, sin archivos .lin, sin recursos globales y sin
-;;; dependencia de otros comandos del proyecto.
+;;; Un GROUP seleccionable por aplicación, solo para el patrón;
+;;; las dos etiquetas permanecen independientes.
+;;; Sin reactores, sin archivos .lin y sin dependencia de otros comandos
+;;; del proyecto; no se crean capas, estilos ni bloques.
 ;;;
 ;;; Requiere AutoCAD 64-bit con ActiveX/VLA. El dibujo se interpreta
 ;;; en metros. Por defecto, D es la mayor dimensión XY de la fuente:
@@ -67,6 +69,7 @@
           "    : button { key = \"deshacer\"; label = \"Deshacer última aplicación\"; }"
           "  }"
           "  : text { key = \"estado\"; width = 66; }"
+          "  : text { label = \"Patrón agrupado; etiquetas sueltas (PICKSTYLE = 1 o 3).\"; }"
           "  : text { label = \"Aceptar conserva lo dibujado; Cancelar o ESC descarta la ejecución.\"; }"
           "  : row {"
           "    : button { key = \"accept\"; label = \"Aceptar\"; is_default = true; }"
@@ -1085,22 +1088,61 @@
     (if (not (mccolind:borrar obj)) (setq vivos (cons obj vivos))))
   vivos)
 
-;; Aplica el recorrido elegido: patrón, etiquetas y registro de sesión.
+;; Un grupo para el patrón de la aplicación, antes de crear etiquetas.
+;; No incluye la fuente, las etiquetas ni otras aplicaciones.
+;; Registrar antes de añadir miembros para limpiar también fallos parciales.
+(defun mccolind:agrupar (/ grupos dic base nombre sufijo objetos ent datos)
+  (if mccolind-actual
+    (progn
+      (setq grupos (vla-get-Groups mccolind-doc)
+            dic (cdr (assoc -1 (dictsearch (namedobjdict) "ACAD_GROUP")))
+            base (strcat "MCCOLIND_" (vla-get-Handle (car mccolind-actual)))
+            nombre base sufijo 0)
+      (while (and dic (dictsearch dic nombre))
+        (setq sufijo (1+ sufijo) nombre (strcat base "_" (itoa sufijo))))
+      (setq objetos (vlax-make-safearray vlax-vbObject
+                      (cons 0 (1- (length mccolind-actual)))))
+      (vlax-safearray-fill objetos mccolind-actual)
+      (setq mccolind-grupo-actual (vla-Add grupos nombre))
+      (vla-AppendItems mccolind-grupo-actual (vlax-make-variant objetos))
+      ;; AcadGroup no expone Selectable en ActiveX: usar DXF 71.
+      (setq ent (vlax-vla-object->ename mccolind-grupo-actual)
+            datos (entget ent))
+      (if (not (equal (assoc 71 datos) '(71 . 1)))
+        (progn
+          (if (or (not (assoc 71 datos))
+                  (not (entmod (subst '(71 . 1) (assoc 71 datos) datos))))
+            (mccolind:fallar "No se pudo activar la selección del grupo de colindancia."))
+          (if (not (equal (assoc 71 (entget ent)) '(71 . 1)))
+            (mccolind:fallar "El grupo de colindancia no quedó seleccionable.")))))))
+
+;; Retira primero la definición GROUP y luego sus entidades. Un fallo
+;; en cualquiera conserva su referencia; no se pierde un grupo vacío.
+(defun mccolind:borrar-resultado (objs grupo / pendiente)
+  (setq pendiente (if (and grupo (not (mccolind:borrar grupo))) grupo nil))
+  (list (mccolind:borrar-lote objs) pendiente))
+
+;; Agrupa solo el patrón; las etiquetas se crean después, pero quedan
+;; registradas junto con él para cancelar o deshacer toda la aplicación.
 (defun mccolind:aplicar-ruta (ruta / puntos sentido lado)
   (setq puntos (car ruta)
         sentido (nth 3 ruta)
         lado (* mccolind-lado-canonico sentido)
         mccolind-actual nil
+        mccolind-grupo-actual nil
         mccolind-cuenta 0)
   (mccolind:patron-ruta puntos sentido)
+  (mccolind:agrupar)
   (mccolind:etiquetas-ruta puntos lado)
   (setq mccolind-sesion
         (cons (list mccolind-estilo
                     (reverse mccolind-actual)
                     (mccolind:intervalos (nth 1 ruta) (nth 2 ruta))
-                    (1+ mccolind-aplicaciones))
+                    (1+ mccolind-aplicaciones)
+                    mccolind-grupo-actual)
               mccolind-sesion)
         mccolind-aplicaciones (1+ mccolind-aplicaciones)
+        mccolind-grupo-actual nil
         mccolind-actual nil
         mccolind-cuenta 0)
   (princ (strcat "\nMCCOLIND: aplicación " (itoa mccolind-aplicaciones)
@@ -1111,21 +1153,24 @@
 ;; Deshacer última aplicación: retira solo sus entidades y libera su
 ;; tramo en el registro de solapes de la sesión. Si alguna entidad
 ;; sobrevive, no se libera ni el registro ni el tramo.
-(defun mccolind:deshacer-ultima (/ ultima vivos)
+(defun mccolind:deshacer-ultima (/ ultima resultado vivos grupo)
   (if (null mccolind-sesion)
     (alert "No hay aplicaciones que deshacer en esta ejecución.")
     (progn
       (setq ultima (car mccolind-sesion)
-            vivos (mccolind:borrar-lote (cadr ultima)))
+            resultado (mccolind:borrar-resultado (cadr ultima) (nth 4 ultima))
+            vivos (car resultado)
+            grupo (cadr resultado))
       (cond
-        (vivos
+        ((or vivos grupo)
          ;; Quedan entidades: se conserva el registro y su tramo sigue
          ;; ocupado, para no perder geometría creada por la ejecución.
          (setq mccolind-sesion
-               (cons (list (nth 0 ultima) vivos (nth 2 ultima) (nth 3 ultima))
+               (cons (list (nth 0 ultima) vivos (nth 2 ultima) (nth 3 ultima) grupo)
                      (cdr mccolind-sesion)))
          (princ (strcat "\nAVISO: AutoCAD no retiró " (itoa (length vivos))
-                        " entidad(es) de la aplicación " (itoa (nth 3 ultima))
+                        " entidad(es) y " (if grupo "1" "0")
+                        " grupo(s) de la aplicación " (itoa (nth 3 ultima))
                         "; se conserva su registro y su tramo sigue ocupado.")))
         (T
          (setq mccolind-sesion (cdr mccolind-sesion))
@@ -1134,9 +1179,10 @@
                         " entidades). Quedan " (itoa (length mccolind-sesion))
                         " aplicación(es) retenida(s) en esta ejecución.")))))))
 
-(defun mccolind:limpiar (/ r fallos previo vivos conservar)
+(defun mccolind:limpiar (/ r fallos previo vivos conservar resultado grupo)
   (setq fallos 0)
   (setq mccolind-vivos 0
+        mccolind-grupos-vivos 0
         mccolind-undo-fallo nil)
   (vl-catch-all-apply '(lambda () (done_dialog 0)) nil)
   (if (and mccolind-id (>= mccolind-id 0))
@@ -1151,16 +1197,22 @@
   ;; las entidades que sobreviven no se pierden de vista.
   (if (not mccolind-completado)
     (progn
-      (setq vivos (mccolind:borrar-lote mccolind-actual)
+      (setq resultado (mccolind:borrar-resultado mccolind-actual mccolind-grupo-actual)
+            vivos (car resultado)
+            mccolind-grupo-actual (cadr resultado)
             mccolind-actual (if vivos (reverse vivos) nil)
-            mccolind-vivos (length vivos))
+            mccolind-vivos (length vivos)
+            mccolind-grupos-vivos (if mccolind-grupo-actual 1 0))
       (setq conservar nil)
       (foreach previo mccolind-sesion
-        (setq vivos (mccolind:borrar-lote (cadr previo)))
-        (if vivos
-          (setq conservar (cons (list (nth 0 previo) vivos (nth 2 previo) (nth 3 previo))
+        (setq resultado (mccolind:borrar-resultado (cadr previo) (nth 4 previo))
+              vivos (car resultado)
+              grupo (cadr resultado))
+        (if (or vivos grupo)
+          (setq conservar (cons (list (nth 0 previo) vivos (nth 2 previo) (nth 3 previo) grupo)
                                 conservar)))
-        (setq mccolind-vivos (+ mccolind-vivos (length vivos))))
+        (setq mccolind-vivos (+ mccolind-vivos (length vivos))
+              mccolind-grupos-vivos (+ mccolind-grupos-vivos (if grupo 1 0))))
       (setq mccolind-sesion (reverse conservar))))
   (foreach previo mccolind-entorno
     (setq r (vl-catch-all-apply 'setvar (list (car previo) (cdr previo))))
@@ -1175,6 +1227,9 @@
   (if (> mccolind-vivos 0)
     (princ (strcat "\nAVISO: quedaron " (itoa mccolind-vivos)
                    " entidad(es) de esta ejecución que AutoCAD no retiró; el registro se conserva.")))
+  (if (> mccolind-grupos-vivos 0)
+    (princ (strcat "\nAVISO: quedaron " (itoa mccolind-grupos-vivos)
+                   " grupo(s) de esta ejecución que AutoCAD no retiró; el registro se conserva.")))
   (if mccolind-undo-fallo
     (princ "\nAVISO: AutoCAD no pudo cerrar la marca de deshacer; el UNDO único no está garantizado."))
   T)
@@ -1373,6 +1428,7 @@
 
 (defun C:MCCOLIND (/ *error* seleccion continuar estado aviso r
                      mccolind-fuente mccolind-undo-fallo mccolind-vivos
+                     mccolind-grupo-actual mccolind-grupos-vivos
                      mccolind-doc mccolind-entorno mccolind-undo mccolind-msg
                      mccolind-completado mccolind-abortado
                      mccolind-ruta mccolind-id mccolind-capa mccolind-espacio
@@ -1394,10 +1450,11 @@
     (cond
       (mccolind-msg (princ (strcat "\nMCCOLIND: " mccolind-msg)))
       ((member (strcase (if msg msg "")) '("FUNCTION CANCELLED" "QUIT / EXIT ABORT" ""))
-       (if (and mccolind-vivos (> mccolind-vivos 0))
+       (if (or (> mccolind-vivos 0) (> mccolind-grupos-vivos 0))
          (princ (strcat "\nMCCOLIND cancelado, pero AutoCAD no retiró "
-                        (itoa mccolind-vivos)
-                        " entidad(es). Revise el dibujo antes de continuar."))
+                        (itoa mccolind-vivos) " entidad(es) y "
+                        (itoa mccolind-grupos-vivos)
+                        " grupo(s). Revise el dibujo antes de continuar."))
          (princ "\nMCCOLIND cancelado. No se conserva ningún resultado parcial.")))
       (T (princ (strcat "\nMCCOLIND error: " (if msg msg "")))))
     (princ))
@@ -1411,6 +1468,7 @@
         mccolind-completado nil
         mccolind-abortado nil
         mccolind-undo nil
+        mccolind-grupo-actual nil
         mccolind-actual nil
         mccolind-sesion nil
         mccolind-aplicaciones 0
@@ -1518,11 +1576,14 @@
                      " aplicación(es) retenida(s)."))
       (if mccolind-undo-fallo
         (princ " AutoCAD no cerró la marca de deshacer; el UNDO único no está garantizado.")
-        (princ " Un solo UNDO retira este resultado; la fuente quedó intacta.")))
-    (if (> mccolind-vivos 0)
+        (princ " Un solo UNDO retira este resultado; la fuente quedó intacta."))
+      (if (and mccolind-sesion (= 0 (logand 1 (getvar "PICKSTYLE"))))
+        (princ "\nPara seleccionar el patrón completo, active grupos con PICKSTYLE = 1 o 3 (Ctrl+H); las etiquetas quedan sueltas.")))
+    (if (or (> mccolind-vivos 0) (> mccolind-grupos-vivos 0))
       (princ (strcat "\nMCCOLIND: ejecución descartada, pero AutoCAD no retiró "
-                     (itoa mccolind-vivos)
-                     " entidad(es); revíselas en el dibujo y bórrelas manualmente si procede."))
+                     (itoa mccolind-vivos) " entidad(es) y "
+                     (itoa mccolind-grupos-vivos)
+                     " grupo(s); revíselos en el dibujo y bórrelos manualmente si procede."))
       (princ "\nMCCOLIND: no se conservó ningún resultado de esta ejecución.")))
   (princ))
 
