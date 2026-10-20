@@ -56,7 +56,21 @@ Genera dos tablas a partir de una polilínea cerrada:
 1. **Tabla de coordenadas georreferenciadas** — ESTE (X) y NORTE (Y) por vértice, con posibilidad de invertir el orden de columnas.
 2. **Cuadro de rumbos y distancias** — rumbo en formato `N DD° MM' SS" E` y distancia en metros por tramo.
 
-Numera automáticamente los vértices en el dibujo y permite elegir el vértice de origen, la dirección de recorrido (horaria/antihoraria) y la precisión decimal.
+Numera automáticamente los vértices en el dibujo y permite elegir el vértice de origen, la dirección de recorrido (**horaria por defecto**, con opción antihoraria) y la precisión decimal.
+
+**Etiquetas como MCVERTEX.** Mantiene un círculo en cada vértice y coloca el texto `PREFIJO-n` después del círculo, paralelo al segmento de salida, por fuera del contorno y sin quedar boca abajo. La altura es `radio × 0.9` y la separación mínima respecto de todos los círculos y tramos es `radio × 0.35`. Mide la caja real mediante `textbox` con el mismo estilo, ancho y oblicuo que tendrá el TEXT final. Conserva el prefijo, radio y estilo (*Fuente*) elegidos en MCTABLE, la capa verde `MCTABLE-LABELS` y la numeración del recorrido de las tablas; no cambia `TEXTSTYLE` ni requiere cargar MC-VERTEX.
+
+La búsqueda usa las mismas 8 × 8 posiciones candidatas de MCVERTEX. Si no encuentra una posición exterior segura o no puede medir el texto, **omite esa etiqueta con un aviso identificatorio**, conservando el círculo y los demás resultados. La comprobación usa las cuerdas entre vértices, no la curva real de los arcos/bulges, y no comprueba colisiones entre etiquetas. Las anotaciones se calculan en WCS y conservan la elevación; requieren una polilínea horizontal con normal `+Z`. En fuentes inclinadas o con normal `−Z` se omiten las anotaciones con aviso, sin impedir las tablas ni modificar su cálculo anterior. Si falla la creación de una anotación, se retiran las anotaciones de ese lote y se aborta antes de crear tablas; ESC durante ese lote también las retira.
+
+**Cambio aceptado tras pruebas manuales positivas en AutoCAD.** El usuario confirmó «Los test manuales son positivos» para las etiquetas equivalentes a MCVERTEX y el recorrido horario predeterminado. La confirmación es general: no acredita individualmente todos los escenarios de la lista siguiente. No hay runner automatizado; las comprobaciones estructurales del agente no sustituyen la ejecución en AutoCAD.
+
+**Lista conservada para futuras regresiones** (las casillas no representan resultados individuales confirmados):
+
+- [ ] Cargar solo MC-TABLE con `APPLOAD` y comparar con MCVERTEX sobre el mismo contorno, radio y prefijo, usando recorrido horario desde el mismo origen y el mismo estilo en *Fuente* y `TEXTSTYLE`: mismas cajas, orientación y separación.
+- [ ] Repetir MCTABLE en sentido antihorario y cambiando el origen: etiquetas exteriores y legibles, numeradas conforme a las filas de ambas tablas. Verificar también orden X/Y, decimales, rumbos y distancias sin cambios.
+- [ ] Probar diagonales, contornos cóncavos L/U, vértices próximos, prefijo largo y estilos con ancho/oblicuo: sin invasión del contorno ni de los círculos; si no cabe, aviso con el identificador y círculo conservado.
+- [ ] UCS rotado y elevación distinta de cero: círculos y textos sobre los vértices fuente, sin cambiar `TEXTSTYLE`. Fuente inclinada o normal `−Z`: aviso sin anotaciones.
+- [ ] Cancelar durante la anotación en un DWG de prueba: retirar solo ese lote parcial y restaurar `OSMODE`, `CMDECHO` y `BLIPMODE`, conservando la geometría preexistente. Cancelar antes de anotar no crea etiquetas; después de terminar el lote mantiene las anotaciones, como antes.
 
 ### MCVECTOR — Anotador de Rumbos y Distancias
 

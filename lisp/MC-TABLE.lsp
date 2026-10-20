@@ -20,7 +20,7 @@
       (write-line "    label = \"Dirección de Recorrido\";" f)
       (write-line "    key = \"grp_dir\";" f)
       (write-line "    : radio_button { label = \"Antihoraria (CCW) \"; key = \"rb_ccw\"; value = \"0\"; }" f)
-      (write-line "    : radio_button { label = \"Horaria (CW)\"; key = \"rb_cw\"; value = \"1\"; }" f)
+      (write-line "    : radio_button { label = \"Horaria (CW) [predeterminado]\"; key = \"rb_cw\"; value = \"1\"; }" f)
       (write-line "  }" f)
       (write-line "" f)
       (write-line "  : boxed_radio_column {" f)
@@ -50,6 +50,8 @@
       (write-line "      : text { label = \"Fuente:\"; }" f)
       (write-line "      : edit_box { key = \"txt_fuente_tag\"; value = \"Standard\"; width = 24; edit_width = 16; }" f)
       (write-line "    }" f)
+      (write-line "    : text { label = \"Etiquetas exteriores y legibles, como MCVERTEX.\"; }" f)
+      (write-line "    : text { label = \"Si no hay espacio seguro, se omite el texto con aviso.\"; }" f)
       (write-line "  }" f)
       (write-line "" f)
       (write-line "  : boxed_column {" f)
@@ -203,46 +205,359 @@
 ;; SECCIÓN 4: COLOCACIÓN DE ETIQUETAS DE VÉRTICES
 ;; ============================================================
 
-(defun MCTABLE:label-vertices (vlist layer-name prefijo radio fuente /
-                                 i n pt pt-next ang perp-ang tag-lbl text-height ins-pt-text)
-  (setq i 1
-        n (length vlist))
-  (foreach pt vlist
-    (setq pt-next     (if (= i n) (nth 0 vlist) (nth i vlist))
-          ang         (angle pt pt-next)
-          perp-ang    (+ ang (/ pi 2.0))
-          tag-lbl     (strcat prefijo "-" (itoa i))
-          text-height (* radio 0.8)
-          ins-pt-text (polar pt perp-ang (+ radio (* text-height 0.2)))
-    )
-    ;; Circulo exacto en el vertice
-    (entmake
-      (list
-        '(0 . "CIRCLE")
-        (cons 8  layer-name)
-        (cons 10 pt)
-        (cons 40 radio)
-      )
-    )
-    ;; Tag de texto alineado paralelo al segmento siguiente
-    (entmake
-      (list
-        '(0 . "TEXT")
-        (cons 8  layer-name)
-        (cons 10 ins-pt-text)
-        (cons 11 ins-pt-text)
-        (cons 40 text-height)
-        (cons 1  tag-lbl)
-        (cons 7  fuente)
-        (cons 50 ang)
-        '(72 . 1)
-        '(73 . 1)
-      )
-    )
-    (setq i (1+ i))
-  )
-  (princ (strcat "\n  " (itoa (1- i)) " vértices etiquetados (círculo + tag rotado)."))
-)
+;; Motor de colocación equivalente a MC-VERTEX, independiente de su carga.
+;; TEXTBOX y TEXT usan la fuente elegida en MCTABLE, sin cambiar TEXTSTYLE.
+;; El borde y los centros se reciben en WCS horizontal, con su elevación.
+
+(defun MCTABLE:label-pt-en-poligono (pt verts / n i j inside x y xi yi xj yj)
+  (setq n (length verts)
+        i 0
+        inside nil
+        x (car pt)
+        y (cadr pt))
+  (while (< i n)
+    (setq xi (car (nth i verts))
+          yi (cadr (nth i verts))
+          j  (rem (1+ i) n)
+          xj (car (nth j verts))
+          yj (cadr (nth j verts)))
+    (if (and (or (and (> yi y) (<= yj y)) (and (> yj y) (<= yi y)))
+             (< x (+ xi (/ (* (- xj xi) (- y yi)) (- yj yi)))))
+      (setq inside (not inside)))
+    (setq i (1+ i)))
+  inside)
+
+(defun MCTABLE:label-angulo (p1 p2 / dx dy a)
+  (setq dx (- (car p2) (car p1))
+        dy (- (cadr p2) (cadr p1)))
+  (if (and (zerop dx) (zerop dy))
+    0.0
+    (progn
+      (setq a (atan dy dx))
+      (if (< a 0.0) (setq a (+ a (* 2.0 pi))))
+      a)))
+
+(defun MCTABLE:label-normalizar-angulo (ang / r flip)
+  (setq r ang
+        flip nil)
+  (if (and (>= r (/ pi 2.0)) (< r (/ (* 3.0 pi) 2.0)))
+    (progn (setq r (- r pi) flip T))
+    (if (>= r (/ (* 3.0 pi) 2.0))
+      (setq r (- r (* 2.0 pi)))))
+  (list r flip))
+
+(defun MCTABLE:label-clamp (x lo hi)
+  (cond ((< x lo) lo) ((> x hi) hi) (T x)))
+
+(defun MCTABLE:label-orient (p q r)
+  (- (* (- (car q) (car p)) (- (cadr r) (cadr p)))
+     (* (- (cadr q) (cadr p)) (- (car r) (car p)))))
+
+(defun MCTABLE:label-en-segmento (p q r / eps)
+  (setq eps 1e-9)
+  (and (>= (car q) (- (min (car p) (car r)) eps))
+       (<= (car q) (+ (max (car p) (car r)) eps))
+       (>= (cadr q) (- (min (cadr p) (cadr r)) eps))
+       (<= (cadr q) (+ (max (cadr p) (cadr r)) eps))))
+
+(defun MCTABLE:label-seg-inters (p1 p2 p3 p4 / d1 d2 d3 d4 eps)
+  (setq eps 1e-9
+        d1 (MCTABLE:label-orient p1 p2 p3)
+        d2 (MCTABLE:label-orient p1 p2 p4)
+        d3 (MCTABLE:label-orient p3 p4 p1)
+        d4 (MCTABLE:label-orient p3 p4 p2))
+  (cond
+    ;; Contacto colineal: el extremo colineal debe caer dentro del otro.
+    ((and (< (abs d1) eps) (MCTABLE:label-en-segmento p1 p3 p2)) T)
+    ((and (< (abs d2) eps) (MCTABLE:label-en-segmento p1 p4 p2)) T)
+    ((and (< (abs d3) eps) (MCTABLE:label-en-segmento p3 p1 p4)) T)
+    ((and (< (abs d4) eps) (MCTABLE:label-en-segmento p3 p2 p4)) T)
+    ;; Cruce propio (signos estrictamente opuestos en ambas rectas).
+    ((and (< (* d1 d2) 0.0) (< (* d3 d4) 0.0)) T)
+    (T nil)))
+
+(defun MCTABLE:label-dist-punto-seg (p a b / dx dy l2 par q)
+  (setq dx (- (car b) (car a))
+        dy (- (cadr b) (cadr a))
+        l2 (+ (* dx dx) (* dy dy)))
+  (if (< l2 1e-18)
+    (MCTABLE:distance-2d p a)
+    (progn
+      (setq par (/ (+ (* (- (car p) (car a)) dx)
+                      (* (- (cadr p) (cadr a)) dy))
+                   l2))
+      (if (< par 0.0) (setq par 0.0))
+      (if (> par 1.0) (setq par 1.0))
+      (setq q (list (+ (car a) (* par dx)) (+ (cadr a) (* par dy))))
+      (MCTABLE:distance-2d p q))))
+
+(defun MCTABLE:label-recto-local (rect p / ox oy e1 e2)
+  (setq ox (- (car p) (car (nth 0 rect)))
+        oy (- (cadr p) (cadr (nth 0 rect)))
+        e1 (nth 1 rect)
+        e2 (nth 2 rect))
+  (list (+ (* ox (car e1)) (* oy (cadr e1)))
+        (+ (* ox (car e2)) (* oy (cadr e2)))))
+
+(defun MCTABLE:label-recto-esquinas (rect / o e1 e2 lx ly)
+  (setq o  (nth 0 rect)
+        e1 (nth 1 rect)
+        e2 (nth 2 rect)
+        lx (nth 3 rect)
+        ly (nth 4 rect))
+  (list o
+        (list (+ (car o) (* lx (car e1))) (+ (cadr o) (* lx (cadr e1))))
+        (list (+ (car o) (* lx (car e1)) (* ly (car e2)))
+              (+ (cadr o) (* lx (cadr e1)) (* ly (cadr e2))))
+        (list (+ (car o) (* ly (car e2))) (+ (cadr o) (* ly (cadr e2))))))
+
+(defun MCTABLE:label-punto-en-recto (rect p / l eps)
+  (setq l (MCTABLE:label-recto-local rect p)
+        eps 1e-9)
+  (and (>= (car l) (- eps)) (<= (car l) (+ (nth 3 rect) eps))
+       (>= (cadr l) (- eps)) (<= (cadr l) (+ (nth 4 rect) eps))))
+
+(defun MCTABLE:label-dist-punto-recto (rect p / l cx cy o e1 e2)
+  (setq l  (MCTABLE:label-recto-local rect p)
+        cx (MCTABLE:label-clamp (car l) 0.0 (nth 3 rect))
+        cy (MCTABLE:label-clamp (cadr l) 0.0 (nth 4 rect))
+        o  (nth 0 rect)
+        e1 (nth 1 rect)
+        e2 (nth 2 rect))
+  (MCTABLE:distance-2d p (list (+ (car o) (* cx (car e1)) (* cy (car e2)))
+                           (+ (cadr o) (* cx (cadr e1)) (* cy (cadr e2))))))
+
+(defun MCTABLE:label-recto-seg-inters (rect a b / esq res i)
+  (setq esq (MCTABLE:label-recto-esquinas rect)
+        res nil
+        i 0)
+  (while (and (not res) (< i 4))
+    (if (MCTABLE:label-seg-inters (nth i esq) (nth (rem (1+ i) 4) esq) a b)
+      (setq res T))
+    (setq i (1+ i)))
+  res)
+
+(defun MCTABLE:label-dist-recto-seg (rect a b / d esq i)
+  (if (MCTABLE:label-recto-seg-inters rect a b)
+    0.0
+    (progn
+      (setq d (min (MCTABLE:label-dist-punto-recto rect a)
+                   (MCTABLE:label-dist-punto-recto rect b))
+            esq (MCTABLE:label-recto-esquinas rect)
+            i 0)
+      (while (< i 4)
+        (setq d (min d (MCTABLE:label-dist-punto-seg (nth i esq) a b)))
+        (setq i (1+ i)))
+      d)))
+
+(defun MCTABLE:label-recto-fuera-poligono (rect borde / esq fuera i n)
+  (setq esq (MCTABLE:label-recto-esquinas rect)
+        fuera T
+        n (length borde)
+        i 0)
+  (while (and fuera (< i 4))
+    (if (MCTABLE:label-pt-en-poligono (nth i esq) borde) (setq fuera nil))
+    (setq i (1+ i)))
+  (setq i 0)
+  (while (and fuera (< i n))
+    (if (MCTABLE:label-punto-en-recto rect (nth i borde)) (setq fuera nil))
+    (setq i (1+ i)))
+  (setq i 0)
+  (while (and fuera (< i n))
+    (if (MCTABLE:label-recto-seg-inters rect
+                                   (nth i borde)
+                                   (nth (rem (1+ i) n) borde))
+      (setq fuera nil))
+    (setq i (1+ i)))
+  fuera)
+
+(defun MCTABLE:label-recto-claro (rect borde abierto claro / n res i b distancia holgura)
+  (setq n (length borde)
+        res T
+        i 0
+        ;; La holgura nunca consume un margen positivo, aunque sea diminuto.
+        holgura (min 1e-9 (* claro 1e-6)))
+  (while (and res (< i n))
+    (setq b (if (and abierto (= i (1- n))) nil (nth (rem (1+ i) n) borde)))
+    (if b
+      (progn
+        (setq distancia (MCTABLE:label-dist-recto-seg rect (nth i borde) b))
+        (if (or (<= distancia 0.0) (< distancia (- claro holgura)))
+          (setq res nil))))
+    (setq i (1+ i)))
+  res)
+
+(defun MCTABLE:label-recto-libre-circulos (rect circulos env gap / res d c)
+  (setq res T)
+  (foreach c circulos
+    (if res
+      (progn
+        (setq d (MCTABLE:label-dist-punto-recto rect c))
+        (if (< d (+ env gap)) (setq res nil)))))
+  res)
+
+(defun MCTABLE:label-recto-candidato (ins rot x1 y1 x2 y2 / cosr sinr e1 e2)
+  (setq cosr (cos rot)
+        sinr (sin rot)
+        e1 (list cosr sinr)
+        e2 (list (- sinr) cosr))
+  (list (list (+ (car ins) (* x1 (car e1)) (* y1 (car e2)))
+              (+ (cadr ins) (* x1 (cadr e1)) (* y1 (cadr e2))))
+        e1 e2 (- x2 x1) (- y2 y1)))
+
+(defun MCTABLE:label-proyecciones-caja (rot u nor x1 y1 x2 y2
+                                   / cosr sinr c mU mN rx ry pu pn)
+  (setq cosr (cos rot)
+        sinr (sin rot)
+        mU 1.0e308
+        mN 1.0e308)
+  (foreach c (list (list x1 y1) (list x2 y1) (list x2 y2) (list x1 y2))
+    (setq rx (- (* (car c) cosr) (* (cadr c) sinr))
+          ry (+ (* (car c) sinr) (* (cadr c) cosr))
+          pu (+ (* rx (car u)) (* ry (cadr u)))
+          pn (+ (* rx (car nor)) (* ry (cadr nor))))
+    (if (< pu mU) (setq mU pu))
+    (if (< pn mN) (setq mN pn)))
+  (list mU mN))
+
+(defun MCTABLE:label-estilo-texto (fuente / st w o)
+  (setq st (tblsearch "STYLE" fuente))
+  (setq w (if (and st (assoc 41 st)) (cdr (assoc 41 st)) 1.0)
+        o (if (and st (assoc 51 st)) (cdr (assoc 51 st)) 0.0))
+  (if (< w 1e-6) (setq w 1.0))
+  (cons w o))
+
+(defun MCTABLE:label-medir-texto (texto th fuente / ef w o tb p1 p2)
+  (setq ef (MCTABLE:label-estilo-texto fuente)
+        w  (car ef)
+        o  (cdr ef))
+  (setq tb (vl-catch-all-apply
+             'textbox
+             (list (list '(0 . "TEXT")
+                         (cons 1 texto)
+                         (cons 7 fuente)
+                         (cons 40 th)
+                         (cons 41 w)
+                         (cons 51 o)
+                         (cons 71 0)
+                         (cons 72 0)
+                         (cons 73 0)
+                         (cons 10 '(0.0 0.0 0.0))
+                         (cons 11 '(0.0 0.0 0.0))))))
+  (if (or (vl-catch-all-error-p tb) (null tb) (< (length tb) 2))
+    nil
+    (progn
+      (setq p1 (car tb)
+            p2 (cadr tb))
+      (list (min (car p1) (car p2)) (min (cadr p1) (cadr p2))
+            (max (car p1) (car p2)) (max (cadr p1) (cadr p2))))))
+
+(defun MCTABLE:label-normal-exterior (ang hay-pol borde / area)
+  (if hay-pol
+    (progn
+      (setq area (MCTABLE:signed-area borde))
+      (if (< area 0.0)
+        (list (- (sin ang)) (cos ang))
+        (list (sin ang) (- (cos ang)))))
+    (list (- (sin ang)) (cos ang))))
+
+(defun MCTABLE:label-etiqueta-valida (rect borde abierto circulos env gap claro hay-pol)
+  (and (if hay-pol (MCTABLE:label-recto-fuera-poligono rect borde) T)
+       (MCTABLE:label-recto-claro rect borde abierto claro)
+       (MCTABLE:label-recto-libre-circulos rect circulos env gap)))
+
+;; Convierte solo la copia para anotaciones; las tablas mantienen sus datos.
+;; Como MCVERTEX, el motor exterior requiere una fuente horizontal +Z.
+(defun MCTABLE:label-wcs (ent verts / ed normal elev)
+  (setq ed (entget ent)
+        normal (cdr (assoc 210 ed))
+        elev (cdr (assoc 38 ed)))
+  (if (null normal) (setq normal '(0.0 0.0 1.0)))
+  (if (null elev) (setq elev 0.0))
+  (if (equal normal '(0.0 0.0 1.0) 1e-6)
+    (mapcar '(lambda (pt) (trans (list (car pt) (cadr pt) elev) ent 0)) verts)
+    nil))
+
+;; ENTDEL alterna borrado/restauración: nunca repetirlo sobre una borrada.
+;; La lista puede conservarse si ESC interrumpe el rollback; el segundo
+;; pase desde *error* solo retira las entidades que todavía están activas.
+(defun MCTABLE:label-delete (ent)
+  (if (and ent (entget ent)) (entdel ent))
+  nil)
+
+;; LABEL-CREATED es local al comando: *error* puede limpiar ante ESC.
+(defun MCTABLE:label-create (data / antes nuevo)
+  (setq antes (entlast))
+  (entmake data)
+  (setq nuevo (entlast))
+  (if (equal antes nuevo)
+    nil
+    (progn
+      (setq label-created (cons nuevo label-created))
+      nuevo)))
+
+(defun MCTABLE:label-vertices (vlist layer-name prefijo radio fuente borde
+                             / n i v ang u nor th gap claro paso ja jb a0 b0 a b
+                               ins rect texto caja x1 y1 x2 y2 rot proy ef hallado fallo e)
+  (setq n (length vlist) i 0 fallo nil label-created nil
+        th (* radio 0.9) gap (* radio 0.35) claro (* radio 0.35)
+        paso (* radio 0.5))
+  (while (and (< i n) (not fallo))
+    (setq v (nth i vlist)
+          texto (strcat prefijo "-" (itoa (1+ i))))
+    (if (not (MCTABLE:label-create
+               (list '(0 . "CIRCLE") (cons 8 layer-name)
+                     (cons 10 v) (cons 40 radio) '(210 0.0 0.0 1.0))))
+      (setq fallo T))
+    (if (and (not fallo) (>= n 2))
+      (progn
+        (setq ang (MCTABLE:label-angulo v (nth (rem (1+ i) n) vlist))
+              u (list (cos ang) (sin ang))
+              nor (MCTABLE:label-normal-exterior ang T borde)
+              caja (MCTABLE:label-medir-texto texto th fuente))
+        (if (null caja)
+          (princ (strcat "\nMCTABLE: textbox no disponible para \"" texto
+                         "\"; etiqueta omitida en el vértice " (itoa (1+ i)) "."))
+          (progn
+            (setq x1 (nth 0 caja) y1 (nth 1 caja)
+                  x2 (nth 2 caja) y2 (nth 3 caja)
+                  rot (car (MCTABLE:label-normalizar-angulo ang))
+                  proy (MCTABLE:label-proyecciones-caja rot u nor x1 y1 x2 y2)
+                  a0 (- (+ radio gap) (car proy))
+                  b0 (- gap (cadr proy))
+                  jb 0 hallado nil)
+            ;; Mismo orden de búsqueda 8x8: exterior mínimo, luego salida.
+            (while (and (not hallado) (< jb 8))
+              (setq b (+ b0 (* jb paso)) ja 0)
+              (while (and (not hallado) (< ja 8))
+                (setq a (+ a0 (* ja paso))
+                      ins (list (+ (car v) (* a (car u)) (* b (car nor)))
+                                (+ (cadr v) (* a (cadr u)) (* b (cadr nor)))
+                                (caddr v))
+                      rect (MCTABLE:label-recto-candidato ins rot x1 y1 x2 y2))
+                (if (MCTABLE:label-etiqueta-valida rect borde nil vlist radio gap claro T)
+                  (setq hallado T))
+                (setq ja (1+ ja)))
+              (setq jb (1+ jb)))
+            (if (not hallado)
+              (princ (strcat "\nMCTABLE: sin posición exterior válida para \"" texto
+                             "\" en el vértice " (itoa (1+ i)) "; etiqueta omitida."))
+              (progn
+                (setq ef (MCTABLE:label-estilo-texto fuente))
+                (if (not (MCTABLE:label-create
+                           (list '(0 . "TEXT") (cons 8 layer-name) (cons 7 fuente)
+                                 (cons 40 th) (cons 41 (car ef)) (cons 51 (cdr ef))
+                                 '(71 . 0) (cons 1 texto) (cons 10 ins) (cons 11 ins)
+                                 (cons 50 rot) '(72 . 0) '(73 . 0) '(210 0.0 0.0 1.0))))
+                  (setq fallo T))))))))
+    (setq i (1+ i)))
+  (if (< n 2)
+    (princ "\nMCTABLE: un solo vértice; no hay dirección definida y se omite la etiqueta."))
+  (if fallo
+    (foreach e label-created (MCTABLE:label-delete e))
+    (princ (strcat "\n  " (itoa n) " vértices procesados (círculo + etiqueta exterior segura).")))
+  (setq label-created nil)
+  (not fallo))
 
 ;; ============================================================
 ;; SECCIÓN 5: CREACIÓN DE TABLAS CON PROTECCIÓN ACTIVEX
@@ -401,12 +716,15 @@
   opt-cw opt-yx decimals origin-idx ordered-verts
   ins-pt ins-pt2 lyr-etiq click-pt dlg-result start-pt
   lyr-data lyr-ent lyr-ed
-  tag-prefix circle-rad tag-font
+  tag-prefix circle-rad tag-font label-verts label-border label-created e
 )
 
   (defun *error* (msg)
     (vl-catch-all-apply
       '(lambda ()
+         (foreach e label-created
+           (vl-catch-all-apply 'MCTABLE:label-delete (list e)))
+         (setq label-created nil)
          (if old-osmode   (setvar "OSMODE"   old-osmode))
          (if old-cmdecho  (setvar "CMDECHO"  old-cmdecho))
          (if old-blipmode (setvar "BLIPMODE" old-blipmode))
@@ -464,7 +782,7 @@
   (setq vertices (MCTABLE:clean-vertices vertices))
   (princ (strcat "\n  Vértices Únicos Encontrados: " (itoa (length vertices))))
 
-  (setq opt-cw     nil
+  (setq opt-cw     T
         opt-yx     nil
         decimals   2
         origin-idx 0
@@ -484,7 +802,8 @@
     (progn (unload_dialog dcl-id) (if (findfile dcl-file) (vl-file-delete dcl-file)) (exit))
   )
 
-  (set_tile "rb_ccw"  "1")
+  (set_tile "rb_ccw"  "0")
+  (set_tile "rb_cw"   "1")
   (set_tile "eb_dec"  "2")
   (set_tile "txt_prefijo_tag"   "E")
   (set_tile "txt_radio_vertice" "1.0")
@@ -589,7 +908,15 @@
   )
 
   (princ "\nDibujando numeración de vértices...")
-  (MCTABLE:label-vertices ordered-verts lyr-etiq tag-prefix circle-rad tag-font)
+  (setq label-verts (MCTABLE:label-wcs ent ordered-verts)
+        label-border (MCTABLE:label-wcs ent
+                       (MCTABLE:reverse-if-needed (MCTABLE:get-vertices ent) (not opt-cw))))
+  (if label-verts
+    (if (not (MCTABLE:label-vertices label-verts lyr-etiq tag-prefix circle-rad tag-font label-border))
+      (progn
+        (princ "\nMCTABLE: falló la creación de anotaciones; se revirtieron las creadas.")
+        (exit)))
+    (princ "\nMCTABLE: etiquetas omitidas; se requiere una polilínea horizontal con normal +Z."))
 
   (setvar "OSMODE" 0)
   (setq ins-pt (getpoint "\nIndique el punto de inserción para la TABLA DE COORDENADAS: "))
