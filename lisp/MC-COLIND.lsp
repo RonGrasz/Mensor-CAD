@@ -552,7 +552,7 @@
     "Franja hacia el interior del recorrido."
     "Franja centrada en el lindero."
     "Franja hacia el exterior del recorrido."
-    "Franja centrada: X a 75 grados del lindero."
+    "Franja centrada: X contiguas a 30 grados del lindero."
     "Franja centrada con zigzag continuo."))
 
 ;; Extensión absoluta del patrón a cada lado: (interior . exterior).
@@ -700,14 +700,12 @@
          (mccolind:linea (mccolind:fram p u n (- c du) o1)
                          (mccolind:fram p u n (+ c du) o2)))
        (setq k (1- k))))
-    ;; Malla: conservar la proyección de cada X a 75°: franja*cot(75°).
-    ;; DU se fija antes de ampliar el paso: en automático hay huecos;
-    ;; en manual las X siguen contiguas. No cambia el tamaño ni el ángulo.
+    ;; Malla: X a 30° del lindero; proyección longitudinal F*sqrt(3).
+    ;; Paso igual a esa proyección: extremos contiguos en ambos modos,
+    ;; sin huecos ni cambios en el ancho de franja.
     ((= estilo 5)
-     (setq paso (* f (/ (cos (* pi (/ 75.0 180.0)))
-                        (sin (* pi (/ 75.0 180.0)))))
+     (setq paso (* f (sqrt 3.0))
            du (/ paso 2.0))
-     (if (= mccolind-automatico "1") (setq paso (* paso 1.5)))
      (setq k (mccolind:n-marcas largo paso))
      (while (>= k 0)
        (setq c (* (+ k 0.5) paso))
