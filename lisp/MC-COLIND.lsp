@@ -548,7 +548,7 @@
 
 (defun mccolind:descripciones ()
   '("Marcas X sobre el lindero, sin franja."
-    "Puntos sobre el lindero, sin franja."
+    "Raya–punto sobre el lindero, sin desplazamiento."
     "Franja hacia el interior del recorrido."
     "Franja centrada en el lindero."
     "Franja hacia el exterior del recorrido."
@@ -648,6 +648,38 @@
         pts (cons (mccolind:fram p u n largo off) pts))
   (mccolind:polilinea (reverse pts)))
 
+;; Lindero: raya–punto explícito sobre la posición real del límite.
+;; La fuente no se toca y el desplazamiento es cero. Cada periodo dibuja
+;; una raya de 0,6 del paso y un punto circular centrado a 0,8 del paso.
+;; El usuario gestiona la estética de la superposición con la fuente.
+;; Las marcas incompletas se omiten. El tipo de línea de estas
+;; entidades se fija localmente en Continuous para que una capa actual no
+;; continua no vuelva a segmentar la raya ni el círculo.
+(defun mccolind:lindero (p u n largo / f paso off radio k s0 s1 c obj)
+  (setq f mccolind-franja
+        paso mccolind-paso
+        off 0.0
+        radio (min (* 0.08 f) (* 0.05 paso))
+        k (mccolind:n-marcas largo paso))
+  (while (>= k 0)
+    (setq s0 (* k paso)
+          s1 (+ s0 (* 0.6 paso))
+          c (+ s0 (* 0.8 paso)))
+    ;; Solo la raya completa del periodo entra en el tramo elegido.
+    (if (and (>= s0 (- mccolind-eps)) (<= s1 (+ largo mccolind-eps)))
+      (progn
+        (setq obj (mccolind:linea (mccolind:fram p u n s0 off)
+                                  (mccolind:fram p u n s1 off)))
+        (vla-put-Linetype obj "Continuous")))
+    ;; El punto es un círculo pequeño, no un POINT nativo dependiente de PDMODE.
+    (if (and (>= (- c radio) (- mccolind-eps))
+             (<= (+ c radio) (+ largo mccolind-eps)))
+      (progn
+        (setq obj (mccolind:circulo (mccolind:fram p u n c off) radio))
+        (vla-put-Linetype obj "Continuous")))
+    (setq k (1- k)))
+  T)
+
 ;; Patrón de un tramo recto. Tamaño y paso constantes; las marcas que no
 ;; caben completas en el tramo se omiten para no prolongar el patrón en
 ;; las esquinas. Las diagonales de pared forman 30° con la perpendicular.
@@ -679,14 +711,8 @@
            (mccolind:linea (mccolind:fram p u n (- c f2) f2)
                            (mccolind:fram p u n (+ c f2) (- f2)))))
        (setq k (1- k))))
-    ;; Lindero: puntos sobre el lindero.
-    ((= estilo 1)
-     (setq k (mccolind:n-marcas largo paso))
-     (while (>= k 0)
-       (setq c (* (+ k 0.5) paso))
-       (if (and (>= (- c f2) (- mccolind-eps)) (<= (+ c f2) (+ largo mccolind-eps)))
-         (mccolind:circulo (mccolind:fram p u n c 0.0) f2))
-       (setq k (1- k))))
+    ;; Lindero: raya–punto sobre el límite, sin desplazamiento.
+    ((= estilo 1) (mccolind:lindero p u n largo))
     ;; Paredes: diagonales a 30° de la perpendicular al lindero.
     ((member estilo '(2 3 4))
      (setq o1 (cond ((= estilo 2) 0.0) ((= estilo 3) (- f2)) (T 0.0))
