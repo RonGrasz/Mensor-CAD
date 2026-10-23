@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<!--
+Advertencia: no edite el contenido de este archivo.
+Si intenta editar el archivo mediante un editor XML, puede perder
+las funciones de personalización y migración. Si necesita cambiar
+información en el archivo de personalización, use el cuadro de diálogo
+Personalizar interfaz de usuario del producto.
+Para acceder a dicho cuadro de diálogo, haga clic en el menú Herr.,
+vaya al panel de personalización, seleccione el botón de interfaz del
+usuario, o bien escriba IUP en la línea de comando.
+-->
+<MenuGroup xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Name="MENSORCAD">
+  <MacroGroup Name="NUEVOGRUPO">
+    <MenuMacro UID="MMU_241_916E0">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_00CF6">MC IMPORT</Name>
+        <Command>^C^CMCIMPORT</Command>
+        <HelpString xlate="true" UID="XLS_241_C34F7">Importacion de puntos TXT/CSV</HelpString>
+        <SmallImage Name="mcimport16.png" />
+        <LargeImage Name="mcimport32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_368D7">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_DCB07">MC EXPORTEX</Name>
+        <Command>^C^CMCEXPORTEX</Command>
+        <SmallImage Name="mcexportex16.png" />
+        <LargeImage Name="mcexportex32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_BDC0A">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_A5D9A">MC AREA</Name>
+        <Command>^C^CMCAREA</Command>
+        <HelpString xlate="true" UID="XLS_241_090DB">Calculadora de Áreas Catastrales</HelpString>
+        <SmallImage Name="mcarea16.png" />
+        <LargeImage Name="mcarea32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_D195A">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_1904E">MC TRANSFORM</Name>
+        <Command>^C^CMCTRANSFORM</Command>
+        <HelpString xlate="true" UID="XLS_241_BE6AA">escala un contorno al área indicada</HelpString>
+        <SmallImage Name="mctransform16.png" />
+        <LargeImage Name="mctransform32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_52CBF">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_0AF0B">MC SUBDIV</Name>
+        <Command>^C^CMCSUBDIV</Command>
+        <HelpString xlate="true" UID="XLS_241_9AD35">subdivisión por área, porcentaje o partes iguales</HelpString>
+        <SmallImage Name="mcsubdiv16.png" />
+        <LargeImage Name="mcsubdiv32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_94EA6">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_2546A">MC TABLE</Name>
+        <Command>^C^CMCTABLE</Command>
+        <HelpString xlate="true" UID="XLS_241_A39E9">Tabla de Coordenadas UTM, Rumbos y Distancias</HelpString>
+        <SmallImage Name="mctable16.png" />
+        <LargeImage Name="mctable32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_9DAFA">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_10C20">MC COORD</Name>
+        <Command>^C^CMCCOORD</Command>
+        <HelpString xlate="true" UID="XLS_241_ED76A">Coordenadas UTM vinculada a un punto</HelpString>
+        <SmallImage Name="mccoord16.png" />
+        <LargeImage Name="mccoord32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_BB101">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_5AB4A">MC VECTOR</Name>
+        <Command>^C^CMCVECTOR</Command>
+        <HelpString xlate="true" UID="XLS_241_9DB77">Anotador de Rumbos y Distancias Topograficos</HelpString>
+        <SmallImage Name="mcvector16.png" />
+        <LargeImage Name="mcvector32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_92350">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_3C0C3">MC VERTEX</Name>
+        <Command>^C^CMCVERTEX</Command>
+        <HelpString xlate="true" UID="XLS_241_6F134">Símbolos y etiquetas de vértices</HelpString>
+        <SmallImage Name="mcvertex16.png" />
+        <LargeImage Name="mcvertex32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_73A32">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_BDEED">MC COLIND</Name>
+        <Command>^C^CMCCOLIND</Command>
+        <HelpString xlate="true" UID="XLS_241_0B10B">Simbología y etiquetas de colindancias</HelpString>
+        <SmallImage Name="mccolind16.png" />
+        <LargeImage Name="mccolind32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_A9713">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_3EEE7">MC ELEMENTS</Name>
+        <Command>^C^CMCELEMENTS</Command>
+        <HelpString xlate="true" UID="XLS_241_A6E82">Edificaciones, vegetación, masas de agua y ríos</HelpString>
+        <SmallImage Name="mcelements16.png" />
+        <LargeImage Name="mcelements32.png" />
+      </Macro>
+    </MenuMacro>
+    <MenuMacro UID="MMU_241_559DE">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_2CFEB">MC FIX</Name>
+        <Command>^C^CMCFIX</Command>
+        <HelpString xlate="true" UID="XLS_241_3EFBE">convierte POLYLINE compatibles a LWPOLYLINE</HelpString>
+        <SmallImage Name="mcfix16.png" />
+        <LargeImage Name="mcfix32.png" />
+      </Macro>
+    </MenuMacro>
+  </MacroGroup>
+</MenuGroup>

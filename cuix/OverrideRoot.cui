@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!--
+Advertencia: no edite el contenido de este archivo.
+Si intenta editar el archivo mediante un editor XML, puede perder
+las funciones de personalización y migración. Si necesita cambiar
+información en el archivo de personalización, use el cuadro de diálogo
+Personalizar interfaz de usuario del producto.
+Para acceder a dicho cuadro de diálogo, haga clic en el menú Herr.,
+vaya al panel de personalización, seleccione el botón de interfaz del
+usuario, o bien escriba IUP en la línea de comando.
+-->
+<OverrideRoot xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
