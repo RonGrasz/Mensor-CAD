@@ -50,8 +50,6 @@
       (write-line "      : text { label = \"Fuente:\"; }" f)
       (write-line "      : edit_box { key = \"txt_fuente_tag\"; value = \"Standard\"; width = 24; edit_width = 16; }" f)
       (write-line "    }" f)
-      (write-line "    : text { label = \"Etiquetas exteriores y legibles, como MCVERTEX.\"; }" f)
-      (write-line "    : text { label = \"Si no hay espacio seguro, se omite el texto con aviso.\"; }" f)
       (write-line "  }" f)
       (write-line "" f)
       (write-line "  : boxed_column {" f)

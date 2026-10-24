@@ -192,9 +192,6 @@
       ": edit_box { key = \"factor\"; label = \"Factor visual positivo:\"; edit_width = 12; }"
       ": popup_list { key = \"rotulo\"; label = \"Rótulo:\"; }"
       ": edit_box { key = \"contenido\"; label = \"Texto / tag:\"; edit_width = 32; edit_limit = 120; }"
-      ": text { label = \"Polígono: rótulo interior con margen y hueco en la trama.\"; }"
-      ": text { label = \"Si no cabe se reduce; ríos: texto paralelo y por fuera.\"; }"
-      ": text { label = \"Río ondulado: separación aproximada y adaptable.\"; }"
       ": text { key = \"aviso\"; width = 64; }"
       "ok_cancel; }")
     (write-line linea mce:archivo)

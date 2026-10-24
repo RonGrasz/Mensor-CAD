@@ -50,9 +50,6 @@
           "    : edit_box { key = \"repeticion\"; label = \"Repetición del patrón en mm:\"; edit_width = 12; }"
           "    : edit_box { key = \"franja\"; label = \"Ancho total de franja en mm:\"; edit_width = 12; }"
           "    : edit_box { key = \"separacion\"; label = \"Separación libre texto/patrón en mm:\"; edit_width = 12; }"
-          "    : text { key = \"medidas\"; width = 66; }"
-          "    : text { key = \"medidas2\"; width = 66; }"
-          "    : text { key = \"medidas3\"; width = 66; }"
           "  }"
           "  : boxed_column {"
           "    label = \"Estilo de colindancia\";"
@@ -62,15 +59,11 @@
           "  : boxed_column {"
           "    label = \"Etiquetas del recorrido\";"
           "    : edit_box { key = \"nombre\"; label = \"Colindancia exterior:\"; edit_width = 32; }"
-          "    : text { label = \"El nombre del estilo se rotula en el interior.\"; }"
           "  }"
           "  : row {"
           "    : button { key = \"aplicar\"; label = \"Aplicar a dos puntos...\"; }"
           "    : button { key = \"deshacer\"; label = \"Deshacer última aplicación\"; }"
           "  }"
-          "  : text { key = \"estado\"; width = 66; }"
-          "  : text { label = \"Patrón agrupado; etiquetas sueltas (PICKSTYLE = 1 o 3).\"; }"
-          "  : text { label = \"Aceptar conserva lo dibujado; Cancelar o ESC descarta la ejecución.\"; }"
           "  : row {"
           "    : button { key = \"accept\"; label = \"Aceptar\"; is_default = true; }"
           "    : button { key = \"cancel\"; label = \"Cancelar\"; is_cancel = true; }"
@@ -1260,7 +1253,7 @@
 
 ;; Perfil en metros: (altura interior, altura exterior, paso normal,
 ;; ancho de franja, holgura interior, holgura exterior). Sin modificar
-;; campos ni recursos globales; también sirve para el resumen del DCL.
+;; campos ni recursos globales.
 (defun mccolind:perfil-medidas (/ h k fijo)
   (if (= mccolind-automatico "1")
     (progn
@@ -1325,33 +1318,6 @@
      "El nombre de la colindancia no debe superar 200 caracteres.")
     (T (mccolind:calcular-medidas) nil)))
 
-(defun mccolind:resumen-medidas (/ perfil)
-  (if (and (/= mccolind-automatico "1")
-           (or (null (mccolind:positivo mccolind-escala-raw))
-               (null (mccolind:positivo mccolind-texto-raw))
-               (null (mccolind:positivo mccolind-paso-raw))
-               (null (mccolind:positivo mccolind-franja-raw))
-               (null (mccolind:positivo mccolind-sep-raw))))
-    (list "Medidas: complete números positivos para ver la conversión." "" "")
-    (progn
-      (setq perfil (mccolind:perfil-medidas))
-      (list
-        (strcat (if (= mccolind-automatico "1")
-                  (strcat "D=" (rtos mccolind-dimension 2 3) " m. ")
-                  "Manual. ")
-                "Texto int./ext.: " (rtos (nth 0 perfil) 2 3) " / "
-                (rtos (nth 1 perfil) 2 3) " m.")
-        (strcat "Paso normal: " (rtos (nth 2 perfil) 2 3)
-                " m; franja: " (rtos (nth 3 perfil) 2 3) " m.")
-        (strcat "Separación libre int./ext.: " (rtos (nth 4 perfil) 2 3)
-                " / " (rtos (nth 5 perfil) 2 3) " m.")))))
-
-(defun mccolind:resumen-sesion ()
-  (if (null mccolind-sesion)
-    "Sin aplicaciones en esta ejecución."
-    (strcat "Aplicaciones en esta ejecución: " (itoa (length mccolind-sesion))
-            ". Última: " (nth (car (car mccolind-sesion)) (mccolind:nombres)) ".")))
-
 (defun mccolind:guardar-dlg ()
   (setq mccolind-automatico (get_tile "automatico")
         mccolind-escala-raw (get_tile "escala")
@@ -1364,15 +1330,10 @@
   (if (or (< mccolind-estilo 0) (> mccolind-estilo 6)) (setq mccolind-estilo 0))
   T)
 
-(defun mccolind:actualizar-dlg (/ resumen)
+(defun mccolind:actualizar-dlg ()
   (foreach clave '("escala" "texto" "repeticion" "franja" "separacion")
     (mode_tile clave (if (= mccolind-automatico "1") 1 0)))
   (set_tile "lado" (nth mccolind-estilo (mccolind:descripciones)))
-  (setq resumen (mccolind:resumen-medidas))
-  (set_tile "medidas" (nth 0 resumen))
-  (set_tile "medidas2" (nth 1 resumen))
-  (set_tile "medidas3" (nth 2 resumen))
-  (set_tile "estado" (mccolind:resumen-sesion))
   T)
 
 ;; Los campos crudos se conservan al reabrir el diálogo, incluso si son

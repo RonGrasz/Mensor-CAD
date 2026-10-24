@@ -89,8 +89,6 @@
           "    }"
           "    : edit_box { key = \"eb_inicio\"; label = \"Número inicial:\"; value = \"1\"; edit_width = 12; }"
           "    : edit_box { key = \"eb_omitir\"; label = \"Vértices a omitir entre puntos:\"; value = \"0\"; edit_width = 12; }"
-          "    : text { label = \"Desde 5 vértices: 0 = todos; 3 = posiciones 1, 5, 9, 13...\"; }"
-          "    : text { label = \"Omitir puntos no renumera los vértices.\"; }"
           "  }"
           "  : boxed_column {"
           "    label = \"Símbolo del vértice\";"
@@ -98,7 +96,6 @@
           "      : popup_list { key = \"pl_simbolo\"; label = \"Tipo:\"; edit_width = 30; }"
           "      : image { key = \"preview\"; width = 10; height = 4; fixed_width = true; fixed_height = true; color = -2; }"
           "    }"
-          "    : text { label = \"20 estilos; predeterminado: círculo sin marca. No toca PDMODE/PDSIZE.\"; }"
           "  }"
           "  ok_cancel;"
           "}"))
