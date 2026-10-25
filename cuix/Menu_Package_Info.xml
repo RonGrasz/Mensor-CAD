@@ -1,26 +1,26 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <MenuPackageParts>
-  <PartData PartData_Name="/Header.cui" PartData_Modified="2026-10-23T12:12:32.0768418-04:00" />
-  <PartData PartData_Name="/WorkspaceRoot.cui" PartData_Modified="2026-10-23T12:12:32.0768418-04:00" />
-  <PartData PartData_Name="/MenuGroup.cui" PartData_Modified="2026-10-23T12:12:32.0778378-04:00" />
-  <PartData PartData_Name="/AcceleratorRoot.cui" PartData_Modified="2026-10-23T12:12:32.0778378-04:00" />
-  <PartData PartData_Name="/OverrideRoot.cui" PartData_Modified="2026-10-23T12:12:32.0778378-04:00" />
-  <PartData PartData_Name="/MouseButtonRoot.cui" PartData_Modified="2026-10-23T12:12:32.0778378-04:00" />
-  <PartData PartData_Name="/PopMenuRoot.cui" PartData_Modified="2026-10-23T12:12:32.0788369-04:00" />
-  <PartData PartData_Name="/ToolbarRoot.cui" PartData_Modified="2026-10-23T12:12:32.0788369-04:00" />
-  <PartData PartData_Name="/DoubleClickRoot.cui" PartData_Modified="2026-10-23T12:12:32.0788369-04:00" />
-  <PartData PartData_Name="/QuickPropertiesRoot.cui" PartData_Modified="2026-10-23T12:12:32.0788369-04:00" />
-  <PartData PartData_Name="/RolloverTooltipRoot.cui" PartData_Modified="2026-10-23T12:12:32.0798348-04:00" />
-  <PartData PartData_Name="/RibbonRoot.cui" PartData_Modified="2026-10-23T12:12:32.0798348-04:00" />
-  <PartData PartData_Name="/QuickAccessToolbarRoot.cui" PartData_Modified="2026-10-23T12:12:32.0798348-04:00" />
-  <PartData PartData_Name="/ToolPanelRoot.cui" PartData_Modified="2026-10-23T12:12:32.0798348-04:00" />
-  <PartData PartData_Name="/PanelSetRoot.cui" PartData_Modified="2026-10-23T12:12:32.0798348-04:00" />
-  <PartData PartData_Name="/ScreenMenuRoot.cui" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
-  <PartData PartData_Name="/ImageMenuRoot.cui" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
-  <PartData PartData_Name="/TabletMenuRoot.cui" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
-  <PartData PartData_Name="/DigitizerButtonRoot.cui" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
-  <PartData PartData_Name="/LSPFiles.cui" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
-  <PartData PartData_Name="/VirtualMNRRoot" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
+  <PartData PartData_Name="/Header.cui" PartData_Modified="2026-10-25T15:32:04.9423018-04:00" />
+  <PartData PartData_Name="/WorkspaceRoot.cui" PartData_Modified="2026-10-25T15:32:04.9423018-04:00" />
+  <PartData PartData_Name="/MenuGroup.cui" PartData_Modified="2026-10-25T15:32:04.9433087-04:00" />
+  <PartData PartData_Name="/AcceleratorRoot.cui" PartData_Modified="2026-10-25T15:32:04.9433087-04:00" />
+  <PartData PartData_Name="/OverrideRoot.cui" PartData_Modified="2026-10-25T15:32:04.9433087-04:00" />
+  <PartData PartData_Name="/MouseButtonRoot.cui" PartData_Modified="2026-10-25T15:32:04.9433087-04:00" />
+  <PartData PartData_Name="/PopMenuRoot.cui" PartData_Modified="2026-10-25T15:32:04.9442993-04:00" />
+  <PartData PartData_Name="/ToolbarRoot.cui" PartData_Modified="2026-10-25T15:32:04.9576085-04:00" />
+  <PartData PartData_Name="/DoubleClickRoot.cui" PartData_Modified="2026-10-25T15:32:04.9600850-04:00" />
+  <PartData PartData_Name="/QuickPropertiesRoot.cui" PartData_Modified="2026-10-25T15:32:04.9600850-04:00" />
+  <PartData PartData_Name="/RolloverTooltipRoot.cui" PartData_Modified="2026-10-25T15:32:04.9600850-04:00" />
+  <PartData PartData_Name="/RibbonRoot.cui" PartData_Modified="2026-10-25T15:32:04.9600850-04:00" />
+  <PartData PartData_Name="/QuickAccessToolbarRoot.cui" PartData_Modified="2026-10-25T15:32:04.9608243-04:00" />
+  <PartData PartData_Name="/ToolPanelRoot.cui" PartData_Modified="2026-10-25T15:32:04.9608243-04:00" />
+  <PartData PartData_Name="/PanelSetRoot.cui" PartData_Modified="2026-10-25T15:32:04.9613429-04:00" />
+  <PartData PartData_Name="/ScreenMenuRoot.cui" PartData_Modified="2026-10-25T15:32:04.9613429-04:00" />
+  <PartData PartData_Name="/ImageMenuRoot.cui" PartData_Modified="2026-10-25T15:32:04.9613429-04:00" />
+  <PartData PartData_Name="/TabletMenuRoot.cui" PartData_Modified="2026-10-25T15:32:04.9613429-04:00" />
+  <PartData PartData_Name="/DigitizerButtonRoot.cui" PartData_Modified="2026-10-25T15:32:04.9623474-04:00" />
+  <PartData PartData_Name="/LSPFiles.cui" PartData_Modified="2026-10-25T15:32:04.9623474-04:00" />
+  <PartData PartData_Name="/VirtualMNRRoot" PartData_Modified="2026-10-25T15:32:04.9623474-04:00" />
   <PartData PartData_Name="/mcvertex32.png" PartData_Modified="2026-10-23T12:12:32.0808349-04:00" />
   <PartData PartData_Name="/mcfix32.png" PartData_Modified="2026-10-23T12:12:32.0818392-04:00" />
   <PartData PartData_Name="/mctransform32.png" PartData_Modified="2026-10-23T12:12:32.0818392-04:00" />

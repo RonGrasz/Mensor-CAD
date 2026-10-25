@@ -10,5 +10,5 @@ vaya al panel de personalización, seleccione el botón de interfaz del
 usuario, o bien escriba IUP en la línea de comando.
 -->
 <PanelSetRoot xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <PanelSet UID="PSTU_241_1799A" />
+  <PanelSet UID="PSTU_241_F8E8C" />
 </PanelSetRoot>

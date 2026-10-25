@@ -17,7 +17,7 @@
     (progn (alert "ERROR: No se pudo crear el archivo DCL temporal.") nil)
     (progn
       (write-line "mcarea_dialog : dialog {" f)
-      (write-line "  label = \"Comando MCAREA - Cálculo de Áreas\";" f)
+      (write-line "  label = \"Area\";" f)
       (write-line "  : row {" f)
       ;; Columna Izquierda: Método de Cálculo
       (write-line "    : boxed_radio_column {" f)

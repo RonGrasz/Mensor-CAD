@@ -10,127 +10,127 @@ vaya al panel de personalización, seleccione el botón de interfaz del
 usuario, o bien escriba IUP en la línea de comando.
 -->
 <TabletMenuRoot xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_1AB1F">
+  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_D70E3">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>Alternate Menú de tablero 1</Alias>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_DBA07">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_CDE99">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_BF20E">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_6DD0C">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_08CC2">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_EED91">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_DC0D1">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_8AF3A">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_BD8EB">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_2519D">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_20FD2">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_8A78C">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_1D2FB">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_12C46">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_96A26">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_B75C9">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_FCA0B">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_6E9B0">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
   </TabletMenu>
-  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_A44B6">
+  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_CAD29">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>Alternate Menú de tablero 2</Alias>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_0E7DD">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_FF287">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_4EE2D">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_8B9CA">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_9D086">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_DB249">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_4EBD1">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_E2EFE">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_FF9F9">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_3F9B5">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_F802A">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_B6F74">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_3BB92">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_B1000">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_356D5">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_13F4A">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_0FB36">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_E7C34">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
   </TabletMenu>
-  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_7B265">
+  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_DCD50">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>Alternate Menú de tablero 3</Alias>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_338BD">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_1B252">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_97AD1">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_01062">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_6CCB4">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_7ADE6">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_05CAE">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_760A2">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_3CB30">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_C0248">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_E9E99">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_F89C6">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_863AE">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_18B08">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_8A159">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_30142">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_06B16">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_EC9BD">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
   </TabletMenu>
-  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_D3FBA">
+  <TabletMenu TabletArea="9" Rows="3" Columns="3" UID="TMU_241_E1E53">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>Alternate Menú de tablero 4</Alias>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_477ED">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_743FA">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_1807A">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_7DFAC">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_D9FBA">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_C1351">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_9014F">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_8CFC0">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_3CAF8">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_EB489">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_BD618">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_F25FF">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_32F6A">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_7FD68">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_F40CD">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_F883E">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
-    <TabletMenuItem BlankLine="true" UID="TMIU_241_6F922">
+    <TabletMenuItem BlankLine="true" UID="TMIU_241_8486A">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </TabletMenuItem>
   </TabletMenu>

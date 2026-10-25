@@ -13,109 +13,122 @@ usuario, o bien escriba IUP en la línea de comando.
   <PopMenu hasDiesel="false" UID="PMU_241_F1B96">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>POP16</Alias>
-    <Name xlate="true" UID="XLS_241_DA720">Mensor CAD</Name>
-    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_A44B4">
+    <Name xlate="true" UID="XLS_241_B9F9E">Mensor CAD</Name>
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_8A4BE">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </PopMenuItem>
-    <PopMenuRef pUID="PMU_241_50737" UID="PMRU_241_9D70F">
+    <PopMenuRef pUID="PMU_241_50737" UID="PMRU_241_C1C00">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </PopMenuRef>
-    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_01A4F">
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_A20F9">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_B28E4">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_B3BE6">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_9B94A" xlate="true">Area</NameRef>
+      <NameRef UID="XLS_241_C43E5" xlate="true">Area</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_BDC0A" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_D5A42">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_7DE44">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_3877C" xlate="true">Reducir/Aumentar area</NameRef>
+      <NameRef UID="XLS_241_92DF1" xlate="true">Reducir/Aumentar area</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_D195A" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_8228C">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_6CEFF">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_AED8F" xlate="true">Subdividir</NameRef>
+      <NameRef UID="XLS_241_E6203" xlate="true">Subdividir</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_52CBF" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_29482">
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_EAE8D">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_8ED8D">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_CEF56">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_AB8E6" xlate="true">Tabla de Coordenadas</NameRef>
+      <NameRef UID="XLS_241_A684B" xlate="true">Tabla de Coordenadas</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_94EA6" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_54527">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_88EEB">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_B1284" xlate="true">Coordenadas de Vértice</NameRef>
+      <NameRef UID="XLS_241_3F045" xlate="true">Coordenadas de Vértice</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_9DAFA" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_5062C">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_18DD8">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_A743B" xlate="true">Rumbo y Distancia</NameRef>
+      <NameRef UID="XLS_241_1506C" xlate="true">Rumbo y Distancia</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_BB101" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_4FEC7">
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_56056">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_0E43B">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_70BE6">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_9B6A0" xlate="true">Etiqueta de Vértice</NameRef>
+      <NameRef UID="XLS_241_E0A82" xlate="true">Etiqueta de Vértice</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_92350" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_12885">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_B45F4">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_B405B" xlate="true">Estilo de Colindancia</NameRef>
+      <NameRef UID="XLS_241_8E6EE" xlate="true">Estilo de Colindancia</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_73A32" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_8C7AB">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_59432">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_9409D" xlate="true">Estructuras</NameRef>
+      <NameRef UID="XLS_241_BEEE9" xlate="true">Estructuras</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_A9713" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_790DD">
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_67320">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_02AC1">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_B9BFE">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_D3DF2" xlate="true">Optimizar Polilíneas</NameRef>
+      <NameRef UID="XLS_241_3E13B" xlate="true">Optimizar Polilíneas</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_559DE" />
       </MenuItem>
     </PopMenuItem>
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_5D83A">
+      <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+    </PopMenuItem>
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_7173B">
+      <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+      <NameRef UID="XLS_241_418F5" xlate="true">Acerca de MensorCAD</NameRef>
+      <MenuItem>
+        <MacroRef MenuMacroID="MMU_241_10231" />
+      </MenuItem>
+    </PopMenuItem>
+    <PopMenuItem IsSeparator="true" hasDiesel="false" UID="PMIU_241_6E78B">
+      <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+    </PopMenuItem>
   </PopMenu>
   <PopMenu hasDiesel="false" UID="PMU_241_50737">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-    <Name xlate="true" UID="XLS_241_70751">Puntos</Name>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_BF9FC">
+    <Name xlate="true" UID="XLS_241_DF4FC">Puntos</Name>
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_8C903">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_0844E" xlate="true">Importar puntos</NameRef>
+      <NameRef UID="XLS_241_02930" xlate="true">Importar puntos</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_916E0" />
       </MenuItem>
     </PopMenuItem>
-    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_31D12">
+    <PopMenuItem IsSeparator="false" hasDiesel="false" UID="PMIU_241_D9E87">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
-      <NameRef UID="XLS_241_510B4" xlate="true">Exportar puntos</NameRef>
+      <NameRef UID="XLS_241_32910" xlate="true">Exportar puntos</NameRef>
       <MenuItem>
         <MacroRef MenuMacroID="MMU_241_368D7" />
       </MenuItem>

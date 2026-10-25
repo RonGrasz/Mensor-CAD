@@ -10,31 +10,31 @@ vaya al panel de personalización, seleccione el botón de interfaz del
 usuario, o bien escriba IUP en la línea de comando.
 -->
 <DigitizerButtonRoot xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ButtonGroup UID="BGU_241_CEFD5">
+  <ButtonGroup UID="BGU_241_45E1D">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>ALTERNATE BUTTONS1</Alias>
-    <ButtonItem BlankLine="true" UID="BIU_241_E64BD">
+    <ButtonItem BlankLine="true" UID="BIU_241_7D591">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </ButtonItem>
   </ButtonGroup>
-  <ButtonGroup UID="BGU_241_FC0F4">
+  <ButtonGroup UID="BGU_241_63D8D">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>ALTERNATE BUTTONS2</Alias>
-    <ButtonItem BlankLine="true" UID="BIU_241_383FA">
+    <ButtonItem BlankLine="true" UID="BIU_241_1F6C2">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </ButtonItem>
   </ButtonGroup>
-  <ButtonGroup UID="BGU_241_09EE1">
+  <ButtonGroup UID="BGU_241_57509">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>ALTERNATE BUTTONS3</Alias>
-    <ButtonItem BlankLine="true" UID="BIU_241_7CEC7">
+    <ButtonItem BlankLine="true" UID="BIU_241_A9D13">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </ButtonItem>
   </ButtonGroup>
-  <ButtonGroup UID="BGU_241_BA016">
+  <ButtonGroup UID="BGU_241_6F9B4">
     <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     <Alias>ALTERNATE BUTTONS4</Alias>
-    <ButtonItem BlankLine="true" UID="BIU_241_E298B">
+    <ButtonItem BlankLine="true" UID="BIU_241_5C2B3">
       <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
     </ButtonItem>
   </ButtonGroup>

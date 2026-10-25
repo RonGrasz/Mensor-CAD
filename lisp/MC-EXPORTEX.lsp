@@ -152,7 +152,7 @@
   (foreach linea
     '(
       "extract_coords_dlg : dialog {"
-      "  label = \"Extractor de Coordenadas\";"
+      "  label = \"Exportar puntos\";"
       "  width = 54;"
       "  : boxed_radio_column {"
       "    label = \"Modo de Operación\";"

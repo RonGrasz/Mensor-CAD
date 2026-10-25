@@ -142,5 +142,16 @@ usuario, o bien escriba IUP en la línea de comando.
         <LargeImage Name="mcfix32.png" />
       </Macro>
     </MenuMacro>
+    <MenuMacro UID="MMU_241_10231">
+      <Macro type="Any">
+        <Revision MajorVersion="16" MinorVersion="2" UserVersion="1" />
+        <ModifiedRev MajorVersion="24" MinorVersion="1" UserVersion="1" />
+        <Name xlate="true" UID="XLS_241_DB6B2">MC HELP</Name>
+        <Command>^C^CMCHELP</Command>
+        <HelpString xlate="true" UID="XLS_241_D7EF0">Acerca de la herramienta MensorCAD</HelpString>
+        <SmallImage Name="" />
+        <LargeImage Name="" />
+      </Macro>
+    </MenuMacro>
   </MacroGroup>
 </MenuGroup>

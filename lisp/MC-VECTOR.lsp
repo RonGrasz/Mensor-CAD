@@ -162,7 +162,7 @@
     (progn
       (write-line "// MCVECTOR.DCL - generado por mcvector.lsp" fh)
       (write-line "mcvector_dlg : dialog {" fh)
-      (write-line "  label = \"MCVECTOR - Anotar Rumbos y Distancias\";" fh)
+      (write-line "  label = \"Rumbo y Distancia\";" fh)
       (write-line "  : column {" fh)
       (write-line "    : boxed_radio_column {" fh)
       (write-line "      label = \"Metodo de Seleccion\";" fh)

@@ -38,7 +38,7 @@
     nil
     (progn
       (setq lineas
-        '("mccolind_dlg : dialog { label = \"MCCOLIND - Simbología de colindancias\";"
+        '("mccolind_dlg : dialog { label = \"Estilo de Colindancia\";"
           "  width = 68;"
           "  : text { key = \"fuente\"; width = 66; }"
           "  : boxed_column {"

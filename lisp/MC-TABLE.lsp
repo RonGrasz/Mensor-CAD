@@ -13,7 +13,7 @@
     (progn (princ "\nError: No se pudo crear el archivo DCL temporal.") nil)
     (progn
       (write-line "mctable_dlg : dialog {" f)
-      (write-line "  label = \"Configuración de Coordenadas UTM\";" f)
+      (write-line "  label = \"Tabla de Coordenadas\";" f)
       (write-line "  width = 52;" f)
       (write-line "" f)
       (write-line "  : boxed_radio_column {" f)

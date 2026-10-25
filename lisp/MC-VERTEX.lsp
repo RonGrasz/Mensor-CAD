@@ -52,7 +52,7 @@
     (progn
       (setq lineas
         '("mcvertex_dlg : dialog {"
-          "  label = \"MCVERTEX - Símbolos y etiquetas de vértices\";"
+          "  label = \"Etiqueta de Vértice\";"
           "  width = 60;"
           "  : boxed_radio_column {"
           "    label = \"Tipo de fuente\";"

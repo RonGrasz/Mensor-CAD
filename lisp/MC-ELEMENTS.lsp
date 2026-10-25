@@ -184,7 +184,7 @@
         mce:archivo (open mce:dcl-ruta "w"))
   (if (not mce:archivo) (mce:fallar "No se pudo crear el DCL temporal."))
   (foreach linea
-    '("mce_dialog : dialog { label = \"MCELEMENTS — Estructuras\";"
+    '("mce_dialog : dialog { label = \"Estructuras\";"
       ": popup_list { key = \"tipo\"; label = \"Estructura:\"; width = 40; }"
       ": popup_list { key = \"agua\"; label = \"Forma del agua:\"; }"
       ": popup_list { key = \"rio\"; label = \"Río desde:\"; }"

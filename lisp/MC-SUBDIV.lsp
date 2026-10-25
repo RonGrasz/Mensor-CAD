@@ -487,7 +487,7 @@
   (setq mcsdiv-archivo (open ruta "w"))
   (if (null mcsdiv-archivo) (mcsdiv:fallar "No se pudo escribir el DCL temporal."))
   (foreach linea
-    '("mcsdiv_dlg : dialog { label = \"MCSUBDIV - Subdividir por superficie\";"
+    '("mcsdiv_dlg : dialog { label = \"Subdividir\";"
       " : text { key = \"total\"; width = 58; }"
       " : boxed_column { label = \"Método\";"
       "  : popup_list { key = \"metodo\"; label = \"Subdividir por:\"; edit_width = 25; }"

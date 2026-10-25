@@ -24,9 +24,29 @@ Cargar cada script manualmente con `APPLOAD`, o añadir la carpeta `lisp/` a las
 (load "MC-FIX.lsp" "\nError al cargar MC-FIX")
 (load "MC-COLIND.lsp" "\nError al cargar MC-COLIND")
 (load "MC-ELEMENTS.lsp" "\nError al cargar MC-ELEMENTS")
+(load "MC-HELP.lsp" "\nError al cargar MC-HELP")
 ```
 
 ## Comandos
+
+### MCHELP — Acerca de MensorCAD
+
+Cargar `lisp/MC-HELP.lsp` con `APPLOAD` y ejecutar `MCHELP`. No requiere cargar otros scripts.
+
+Abre un diálogo titulado **MensorCAD™**, con una descripción breve, la versión **v0.1.0**, el autor **Ronny Garcia Guzman** y el repositorio <https://github.com/RonGrasz/Mensor-CAD>. La versión es una etiqueta informativa del script; no se consulta Git ni se requiere conexión para mostrar el diálogo.
+
+- **Abrir repositorio:** cierra el diálogo e intenta abrir la URL en el navegador predeterminado de Windows. Requiere conexión para consultar GitHub; si la llamada de apertura falla, muestra la URL para abrirla manualmente.
+- **Cerrar**, **Esc** o la **X** de la ventana: cierra el diálogo sin abrir el navegador.
+
+No modifica el dibujo ni las variables de sistema. El archivo DCL temporal se elimina al terminar, también ante cancelación o error.
+
+**Verificación manual pendiente en AutoCAD:**
+
+- [ ] Cargar solo `MC-HELP.lsp`: aparece `MCHELP cargado. Escriba MCHELP para iniciar.`.
+- [ ] Ejecutar `MCHELP`: comprobar título exacto `MensorCAD™` (incluido el símbolo ™), descripción, `Versión: v0.1.0`, autor y URL completos y legibles. La visualización de Unicode depende de la versión y codificación de AutoCAD.
+- [ ] Probar **Cerrar**, **Esc** y **X**; volver a ejecutar el comando después de cada cierre. No debe abrirse el navegador ni cambiar el dibujo o sus variables.
+- [ ] Probar **Abrir repositorio**: se cierra el diálogo y el navegador abre la URL indicada. Si Windows rechaza la llamada, se informa la URL; que el proceso arranque no garantiza que la página termine de cargar.
+- [ ] Comprobar que no quedan archivos `mchelp_*.dcl` nuevos en la carpeta temporal tras cerrar o cancelar. En un entorno de prueba sin permisos para escribir temporales, comprobar el aviso de error y que una ejecución posterior funciona al restaurar los permisos.
 
 ### MCAREA — Cálculo de Áreas Catastrales
 

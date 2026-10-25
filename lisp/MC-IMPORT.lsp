@@ -270,7 +270,7 @@
   (if mcimport:dcl-file
     (progn
       (setq lines
-        '("mcimport_dialog : dialog { label = \"MCIMPORT - Importar puntos\";"
+        '("mcimport_dialog : dialog { label = \"Importar puntos\";"
           ": column {"
           ": boxed_column { label = \"Archivo TXT / CSV separado por comas\";"
           ": edit_box { key = \"path\"; label = \"Archivo:\"; edit_width = 52; edit_limit = 2048; }"
