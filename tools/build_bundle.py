@@ -213,8 +213,10 @@ def validar_manifiesto(ruta: Path, version: str, nombres_lisp: list[str]) -> Non
                 NOMBRE_PRODUCTO, nombre
             )
         )
-    if not raiz.get("AppVersion"):
-        raise ErrorConstruccion("PackageContents.xml debe declarar AppVersion")
+    if not (raiz.get("Version") or raiz.get("AppVersion")):
+        raise ErrorConstruccion(
+            "PackageContents.xml debe declarar Version o AppVersion"
+        )
     for atributo in ("Version", "AppVersion"):
         declarada = raiz.get(atributo)
         if declarada is None:

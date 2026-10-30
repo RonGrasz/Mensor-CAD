@@ -252,6 +252,27 @@ class InventarioDeSalida(CasoBase):
         self.assertFalse(standalone.is_symlink())
         self.assertEqual(standalone.read_bytes(), fuentes.install_script.read_bytes())
 
+    def test_acepta_manifiesto_con_solo_version_coincidente(self):
+        fuentes = self.fuentes()
+        xml = fuentes.package_contents.read_text(encoding="utf-8").replace(
+            'AppVersion="0.1.0" ', ""
+        )
+        fuentes.package_contents.write_text(xml, encoding="utf-8")
+        self.construir(fuentes)
+
+        zip_salida = fuentes.salida / ZIP_SALIDA
+        with self.leer_zip(zip_salida) as zf:
+            self.assertEqual(zf.read(RAIZ_BUNDLE + "PackageContents.xml"), xml.encode("utf-8"))
+            self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
+        self.assertEqual(
+            (fuentes.salida / SIDECAR).read_text(encoding="utf-8"),
+            "{}  {}\n".format(sha256_archivo(zip_salida), ZIP_SALIDA),
+        )
+        self.assertEqual(
+            (fuentes.salida / RUTA_SCRIPT_STANDALONE).read_bytes(),
+            fuentes.install_script.read_bytes(),
+        )
+
     def test_manifiesto_publico_no_impone_minimo_ni_locale(self):
         raiz = ElementTree.fromstring((RAIZ_REPO / "PackageContents.xml").read_bytes())
         prohibidos = {"seriesmin", "seriesmax", "supportedlocales"}
@@ -413,7 +434,23 @@ class Rechazos(CasoBase):
             resultado,
             fuentes.salida,
             previos,
-            "ERROR: PackageContents.xml debe declarar AppVersion\n",
+            "ERROR: PackageContents.xml debe declarar Version o AppVersion\n",
+        )
+
+    def test_rechaza_solo_version_incompatible(self):
+        fuentes = self.fuentes()
+        xml = fuentes.package_contents.read_text(encoding="utf-8")
+        fuentes.package_contents.write_text(
+            xml.replace('AppVersion="0.1.0" ', "").replace('Version="0.1.0"', 'Version="0.0.9"'),
+            encoding="utf-8",
+        )
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assert_rechazo_exacto(
+            resultado,
+            fuentes.salida,
+            previos,
+            "ERROR: la versión del manifiesto (0.0.9) no coincide con --version (0.1.0)\n",
         )
 
     def test_rechaza_module_name_lisp_absoluto(self):
