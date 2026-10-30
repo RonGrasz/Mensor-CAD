@@ -268,6 +268,13 @@ def validar_manifiesto(ruta: Path, version: str, nombres_lisp: list[str]) -> Non
             raise ErrorConstruccion(
                 "ModuleName no reconocido en PackageContents.xml: {}".format(modulo_normalizado)
             )
+        esperado_lisp = RUTA_LISP + "/" + posixpath.basename(modulo_normalizado)
+        if modulo_normalizado != esperado_lisp:
+            raise ErrorConstruccion(
+                "el LISP debe declararse como ./{}, no {}".format(
+                    esperado_lisp, modulo_normalizado
+                )
+            )
         if entrada.get("LoadOnAutoCADStartup") is not None:
             raise ErrorConstruccion(
                 "LoadOnAutoCADStartup no está permitido en las entradas LISP ({})".format(

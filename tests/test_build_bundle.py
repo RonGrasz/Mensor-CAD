@@ -479,6 +479,25 @@ class Rechazos(CasoBase):
             "ERROR: ModuleName absoluto no permitido: {!r}\n".format(valor),
         )
 
+    def test_rechaza_module_name_lisp_anidado(self):
+        fuentes = self.fuentes()
+        self.reemplazar_modulo(
+            fuentes, "./Contents/Lisp/MC-AREA.lsp", "./Contents/Lisp/sub/MC-AREA.lsp"
+        )
+        previos = self.preparar_salida_previa(fuentes)
+        previos[RUTA_SCRIPT_STANDALONE] = b"SCRIPT-PREVIO\n"
+        (fuentes.salida / RUTA_SCRIPT_STANDALONE).write_bytes(
+            previos[RUTA_SCRIPT_STANDALONE]
+        )
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assert_rechazo_exacto(
+            resultado,
+            fuentes.salida,
+            previos,
+            "ERROR: el LISP debe declararse como ./Contents/Lisp/MC-AREA.lsp, "
+            "no Contents/Lisp/sub/MC-AREA.lsp\n",
+        )
+
     def test_rechaza_module_name_con_unidad_windows_y_unc(self):
         valores = ("C:/Contents/UI/MensorCAD.cuix", "\\\\srv\\cup\\Contents\\UI\\MensorCAD.cuix")
         for indice, valor in enumerate(valores):
