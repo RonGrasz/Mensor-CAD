@@ -18,6 +18,8 @@ BAT = ROOT / "Instalar.bat"
 WINDOWS_TESTS = ROOT / "tests" / "Test-Installer.ps1"
 DOCS = ROOT / "docs" / "local-installer.md"
 
+REMOTE_SECTION_MARKER = "# Entrada remota: descarga y verificacion de releases de GitHub"
+
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
@@ -31,6 +33,7 @@ class InstallerStructureTests(unittest.TestCase):
         cls.windows_tests = read_text(WINDOWS_TESTS)
         cls.docs = read_text(DOCS)
         cls.top_param_block = cls._top_param_block(cls.installer)
+        cls.local_branch, _, cls.remote_branch = cls.installer.partition(REMOTE_SECTION_MARKER)
 
     @staticmethod
     def _top_param_block(text: str) -> str:
@@ -44,11 +47,11 @@ class InstallerStructureTests(unittest.TestCase):
 
     def test_public_switches_are_limited_to_documented_interface(self) -> None:
         block = self.top_param_block
-        for switch in ("$Uninstall", "$NoAnimation", "$Help"):
+        for switch in ("$Uninstall", "$NoAnimation", "$Help", "$FromRelease", "$Version"):
             self.assertIn(switch, block)
         self.assertNotIn("Destination", block)
         self.assertNotIn("SourceRoot", block)
-        self.assertNotIn("FromRelease", block)
+        self.assertNotIn("Url", block)
 
     def test_destination_is_fixed_program_files_bundle(self) -> None:
         text = self.installer
@@ -251,7 +254,8 @@ class InstallerStructureTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.installer)
             self.assertNotIn(forbidden, self.bat)
 
-    def test_no_download_or_install_tooling_in_local_installer(self) -> None:
+    def test_local_branch_stays_offline_while_remote_branch_is_explicit(self) -> None:
+        self.assertTrue(self.remote_branch.strip(), "debe existir la seccion remota marcada")
         for forbidden in (
             "Invoke-WebRequest",
             "Start-BitsTransfer",
@@ -261,7 +265,10 @@ class InstallerStructureTests(unittest.TestCase):
             "curl ",
             "wget ",
         ):
-            self.assertNotIn(forbidden, self.installer)
+            self.assertNotIn(forbidden, self.local_branch, f"la rama local no debe descargar: {forbidden}")
+        self.assertIn("Invoke-WebRequest", self.remote_branch, "la descarga debe vivir en la rama remota explícita")
+        cli = self.installer[self.installer.index("function Invoke-MensorCadCli") :]
+        self.assertIn("if ($FromRelease)", cli, "la rama remota solo se activa con -FromRelease")
 
     def test_animation_is_real_and_has_fallbacks(self) -> None:
         for fragment in (
@@ -271,7 +278,22 @@ class InstallerStructureTests(unittest.TestCase):
             "Write-MensorCadProgress",
         ):
             self.assertIn(fragment, self.installer)
-        self.assertNotIn("Start-Sleep", self.installer, "la animacion no debe simularse con esperas falsas")
+        # La animacion no se simula con esperas falsas: no existe Start-Sleep y
+        # la unica espera remota es una espera del sistema sobre un proceso real.
+        self.assertNotIn("Start-Sleep", self.installer, "la espera no debe usar demoras artificiales")
+        wait_body = self.installer[self.installer.index("function Wait-MensorCadRemoteChild") :]
+        wait_body = wait_body[: wait_body.index("\nfunction ")]
+        self.assertLess(
+            wait_body.index("while (-not $Process.HasExited)"),
+            wait_body.index("$Process.WaitForExit($IntervalMilliseconds)"),
+            "la espera con timeout solo ocurre dentro del bucle del proceso vivo",
+        )
+        self.assertLess(
+            wait_body.index("$Process.WaitForExit($IntervalMilliseconds)"),
+            wait_body.index("$Process.WaitForExit()"),
+            "no debe haber esperas despues de que el hijo termina",
+        )
+        self.assertNotIn("Start-Sleep", wait_body)
 
     def test_errors_go_to_stderr_and_exit_codes_are_clean(self) -> None:
         self.assertIn("[Console]::Error.WriteLine", self.installer)

@@ -6,8 +6,9 @@ actualizar o desinstalar sin tocar archivos ajenos. Se ejecuta desde el paquete
 extraído y no descarga nada.
 
 > Estado de esta unidad: instalación local y desinstalación. La entrada remota
-> `-FromRelease` / `-Version` se integra en una unidad posterior y reutiliza el
-> mismo motor de instalación.
+> `-FromRelease` / `-Version` ya está implementada en el mismo script, pero no
+> estará operativa hasta que un humano publique los assets del release. Ver
+> `docs/remote-installer.md`.
 
 ## Ruta rápida
 
@@ -59,6 +60,8 @@ en un host de 64 bits usa `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershe
 | `-Uninstall` | Desinstala únicamente la copia propia de MensorCAD. |
 | `-NoAnimation` | Desactiva colores y animaciones. |
 | `-Help` | Muestra la ayuda y sale con código `0`. |
+| `-FromRelease` | Instala desde el último release de GitHub (ver `docs/remote-installer.md`). |
+| `-Version` | Fija un tag concreto del release; requiere `-FromRelease`. |
 | `-ElevatedProcess` | Reservado para la relanzada interna de UAC. No evita comprobaciones. |
 
 También se desactiva la animación automáticamente cuando la salida está
@@ -230,10 +233,15 @@ caso define las funciones y retorna sin ejecutar la interfaz ni escribir nada.
 mismo; la entrada pública valida el host de 64 bits antes de llamarlo. La
 elevación y el destino fijo siguen siendo responsabilidad de la entrada pública.
 
-La entrada remota añadirá `-FromRelease` y `-Version`, descargará y verificará
-el ZIP sin administrador y llamará a este mismo motor sobre la carpeta extraída.
-Ese comando no estará operativo hasta que exista un release con los assets
-correspondientes.
+La entrada remota reutiliza este mismo motor: descarga y verifica el ZIP sin
+administrador, extrae el paquete en una carpeta temporal propia y ejecuta el
+`Install-MensorCAD.ps1` incluido en el paquete extraído. Ese hijo aplica las
+mismas validaciones, el destino fijo y la elevación UAC descritas aquí. El
+detalle de descarga, integridad y límites del ZIP vive en
+`docs/remote-installer.md`.
+
+El comando remoto no está disponible todavía: requiere que un humano publique
+los assets del release.
 
 ## Pruebas y verificación
 
@@ -241,6 +249,7 @@ correspondientes.
 |--------|-------|--------|
 | Estructura del instalador, BAT y documentación | `python3 -m unittest discover -s tests -p 'test_installer_structure.py' -v` | Se ejecuta en Linux. No demuestra comportamiento funcional. |
 | Instalación, actualización, desinstalación, rollback, rechazos y flags | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1` | Requiere Windows PowerShell 5.1. Usa destinos temporales aislados. |
+| Entrada remota | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1` | Requiere Windows PowerShell 5.1. Red y proceso hijo simulados. |
 
 Las pruebas de Windows nunca escriben en Program Files ni abren AutoCAD. Los
 casos que necesitan symlinks/junctions se omiten si el entorno no permite
@@ -273,8 +282,10 @@ español. `Instalar.bat` conserva el mismo código y no oculta el fallo.
 
 ## Fuera de alcance de esta unidad
 
-- Descarga remota, resolución de releases y `-FromRelease` / `-Version`.
 - Publicación de releases o cambios de CI.
-- Firma de ejecutables.
+- Firma de ejecutables o certificados de editor.
 - Cambios en LISP, CUIX o en el contenido del bundle.
 - Cierre automático de AutoCAD.
+
+La descarga remota se documenta en `docs/remote-installer.md`; este documento
+cubre solo el motor y la entrada local.

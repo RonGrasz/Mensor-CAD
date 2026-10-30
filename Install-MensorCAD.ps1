@@ -22,6 +22,16 @@
 .PARAMETER Help
     Muestra la ayuda y sale con codigo 0.
 
+.PARAMETER Version
+    Fija un tag concreto de la release de GitHub. Requiere -FromRelease. Si se
+    omite se resuelve la ultima release publicada una sola vez.
+
+.PARAMETER FromRelease
+    Descarga el paquete MensorCAD-Windows.zip desde el repositorio fijo
+    RonGrasz/Mensor-CAD, verifica su SHA-256, inspecciona el ZIP y ejecuta el
+    instalador incluido en el paquete extraido. Reutiliza el motor local, el
+    destino fijo y la elevacion UAC.
+
 .PARAMETER ElevatedProcess
     Reservado. Lo usa la relanzada elevada para no repetir el banner. No evita
     ninguna comprobacion de administrador.
@@ -31,6 +41,8 @@ param(
     [switch]$Uninstall,
     [switch]$NoAnimation,
     [switch]$Help,
+    [string]$Version,
+    [switch]$FromRelease,
     [switch]$ElevatedProcess
 )
 
@@ -78,6 +90,17 @@ function Test-MensorCadOutputRedirected {
     catch {
         return $true
     }
+}
+
+function Get-MensorCadPowerShellPath {
+    $powerShellPath = 'powershell.exe'
+    if (-not [string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+        $candidatePath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            $powerShellPath = $candidatePath
+        }
+    }
+    return $powerShellPath
 }
 
 function Test-MensorCadAdministrator {
@@ -895,10 +918,13 @@ function Write-MensorCadUsage {
     Write-Host '  Instalar.bat [-NoAnimation]'
     Write-Host '  Instalar.bat -Uninstall [-NoAnimation]'
     Write-Host '  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-MensorCAD.ps1 [-Uninstall] [-NoAnimation] [-Help]'
+    Write-Host '  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-MensorCAD.ps1 -FromRelease [-Version <tag>] [-NoAnimation]'
     Write-Host ''
     Write-Host 'Opciones:'
     Write-Host '  -Uninstall    Desinstala la copia propia de MensorCAD.'
     Write-Host '  -NoAnimation  Desactiva colores y animaciones.'
+    Write-Host '  -FromRelease  Instala desde el ultimo release publicado en GitHub.'
+    Write-Host '  -Version      Fija un tag concreto de la release (requiere -FromRelease).'
     Write-Host '  -Help         Muestra esta ayuda.'
     Write-Host ''
     Write-Host 'Destino fijo:'
@@ -906,17 +932,546 @@ function Write-MensorCadUsage {
     Write-Host ''
     Write-Host 'Requiere Windows de 64 bits y PowerShell de 64 bits.'
     Write-Host 'La instalacion y la desinstalacion requieren permisos de administrador (UAC).'
+    Write-Host 'La instalacion remota requiere un release publicado por un humano con los assets.'
+    Write-Host 'SHA-256 detecta corrupcion; no autentica al publicador. Confie en el repositorio.'
+}
+
+# ---------------------------------------------------------------------------
+# Entrada remota: descarga y verificacion de releases de GitHub
+# ---------------------------------------------------------------------------
+# La descarga vive solo en esta seccion. La rama local (-Uninstall, sin
+# opciones) no toca la red. El ZIP se verifica con SHA-256 y se inspecciona
+# antes de extraer; despues se ejecuta el mismo instalador extraido, que
+# reutiliza el motor local, el destino fijo y la elevacion UAC.
+
+$script:MensorCadReleaseRepository = 'RonGrasz/Mensor-CAD'
+$script:MensorCadReleaseHost = 'https://github.com'
+$script:MensorCadReleaseApiHost = 'https://api.github.com'
+$script:MensorCadReleaseZipAssetName = 'MensorCAD-Windows.zip'
+$script:MensorCadReleaseChecksumAssetName = 'MensorCAD-Windows.zip.sha256'
+$script:MensorCadReleaseInstallerAssetName = 'Install-MensorCAD.ps1'
+$script:MensorCadRemoteWorkspacePrefix = 'mensorcad-remote-'
+$script:MensorCadReleaseTagPattern = '^v?\d+\.\d+(\.\d+)*([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$'
+$script:MensorCadReleaseLispPattern = '^MensorCAD\.bundle/Contents/Lisp/[^/]+\.lsp$'
+$script:MensorCadRemoteMaxEntries = 512
+$script:MensorCadRemoteMaxUncompressedBytes = 268435456
+$script:MensorCadRemoteWaitIntervalMilliseconds = 200
+$script:MensorCadRemoteChildActivityMessage = 'Instalando con el instalador incluido en el paquete'
+$script:MensorCadReleaseFixedFiles = @(
+    'MensorCAD.bundle/PackageContents.xml',
+    'MensorCAD.bundle/Contents/UI/MensorCAD.cuix',
+    'Install-MensorCAD.ps1',
+    'Instalar.bat',
+    'LICENSE',
+    'bundle.sha256'
+)
+$script:MensorCadReleaseAllowedDirectories = @(
+    'MensorCAD.bundle',
+    'MensorCAD.bundle/Contents',
+    'MensorCAD.bundle/Contents/Lisp',
+    'MensorCAD.bundle/Contents/UI'
+)
+
+function Get-MensorCadArgumentError {
+    param(
+        [switch]$Uninstall,
+        [switch]$FromRelease,
+        [string]$Version,
+        [bool]$VersionSpecified
+    )
+    if ($FromRelease -and $Uninstall) {
+        return 'Las opciones -FromRelease y -Uninstall no se pueden combinar. No se descargo nada ni se modifico el destino.'
+    }
+    if ($VersionSpecified -and -not $FromRelease) {
+        return 'La opcion -Version solo es valida junto con -FromRelease. No se descargo nada ni se modifico el destino.'
+    }
+    if ($FromRelease -and $VersionSpecified -and [string]::IsNullOrWhiteSpace($Version)) {
+        return 'La opcion -Version requiere un valor, por ejemplo -Version v1.2.3. No se descargo nada ni se modifico el destino.'
+    }
+    if ($FromRelease -and $VersionSpecified -and ($Version -notmatch $script:MensorCadReleaseTagPattern)) {
+        return ("La version indicada no es valida: '" + $Version + "'. Use un tag como v1.2.3. No se descargo nada ni se modifico el destino.")
+    }
+    return $null
+}
+
+function Get-MensorCadRemoteTempRoot {
+    return [System.IO.Path]::GetTempPath()
+}
+
+# Costuras de red: toda descarga pasa por estas dos funciones.
+function Get-MensorCadRemoteText {
+    param([string]$Uri)
+    $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 60
+    return [string]$response.Content
+}
+
+function Save-MensorCadRemoteFile {
+    param([string]$Uri, [string]$DestinationPath)
+    $parent = Split-Path -Parent $DestinationPath
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        $null = New-Item -ItemType Directory -Path $parent -Force
+    }
+    $null = Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $DestinationPath -TimeoutSec 300
+    return $DestinationPath
+}
+
+function Assert-MensorCadReleaseTag {
+    param([string]$Tag)
+    if ([string]::IsNullOrWhiteSpace($Tag)) {
+        throw 'La version de la release esta vacia. Use un tag como v1.2.3. No se descargo nada ni se modifico el destino.'
+    }
+    if ($Tag -notmatch $script:MensorCadReleaseTagPattern) {
+        throw ("La version indicada no es valida: '" + $Tag + "'. Use un tag como v1.2.3. No se descargo nada ni se modifico el destino.")
+    }
+}
+
+function Get-MensorCadReleaseAssetUri {
+    param([string]$Tag, [string]$AssetName)
+    return ($script:MensorCadReleaseHost + '/' + $script:MensorCadReleaseRepository + '/releases/download/' + $Tag + '/' + $AssetName)
+}
+
+function Resolve-MensorCadReleaseTag {
+    param([string]$Version)
+    if (-not [string]::IsNullOrWhiteSpace($Version)) {
+        Assert-MensorCadReleaseTag -Tag $Version
+        return $Version
+    }
+    $uri = $script:MensorCadReleaseApiHost + '/repos/' + $script:MensorCadReleaseRepository + '/releases/latest'
+    try {
+        $json = Get-MensorCadRemoteText -Uri $uri
+    }
+    catch {
+        throw ('No se pudo consultar la ultima release en GitHub: ' + $_.Exception.Message + ' No se descargo ni se modifico nada.')
+    }
+    $release = $null
+    try {
+        $release = $json | ConvertFrom-Json
+    }
+    catch {
+        throw 'La respuesta de GitHub no contiene JSON valido. No se descargo ni se modifico nada.'
+    }
+    if ($null -eq $release) {
+        throw 'La respuesta de GitHub no contiene una release utilizable. No se descargo ni se modifico nada.'
+    }
+    $tagProperty = $release.PSObject.Properties['tag_name']
+    $tag = ''
+    if ($null -ne $tagProperty) {
+        $tag = [string]$tagProperty.Value
+    }
+    if ([string]::IsNullOrWhiteSpace($tag)) {
+        throw 'La release mas reciente no tiene un tag utilizable. No se descargo ni se modifico nada.'
+    }
+    Assert-MensorCadReleaseTag -Tag $tag
+    $assetNames = @()
+    $assetsProperty = $release.PSObject.Properties['assets']
+    if ($null -ne $assetsProperty) {
+        foreach ($asset in @($assetsProperty.Value)) {
+            if ($null -eq $asset) { continue }
+            $nameProperty = $asset.PSObject.Properties['name']
+            if ($null -ne $nameProperty -and -not [string]::IsNullOrWhiteSpace([string]$nameProperty.Value)) {
+                $assetNames += [string]$nameProperty.Value
+            }
+        }
+    }
+    foreach ($requiredAsset in @($script:MensorCadReleaseZipAssetName, $script:MensorCadReleaseChecksumAssetName)) {
+        if (-not ($assetNames -contains $requiredAsset)) {
+            throw ("La release '" + $tag + "' no publica el asset '" + $requiredAsset + "'. No se descargo ni se modifico nada.")
+        }
+    }
+    return $tag
+}
+
+function Read-MensorCadReleaseChecksum {
+    param([string]$SidecarPath)
+    if (-not (Test-Path -LiteralPath $SidecarPath -PathType Leaf)) {
+        throw "No se descargo el archivo de verificacion '$SidecarPath'. No se extrajo nada ni se modifico el destino."
+    }
+    if (Test-MensorCadReparsePoint -Path $SidecarPath) {
+        throw "El archivo de verificacion '$SidecarPath' es un punto de reanalisis y se rechazo."
+    }
+    $lines = @()
+    foreach ($line in [System.IO.File]::ReadAllLines($SidecarPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) { $lines += $line.Trim() }
+    }
+    if ($lines.Count -ne 1) {
+        throw 'El archivo .sha256 de la release no tiene el formato esperado. No se extrajo nada ni se modifico el destino.'
+    }
+    $match = [regex]::Match($lines[0], '^([0-9a-fA-F]{64})(?:\s+\*?(.+))?$')
+    if (-not $match.Success) {
+        throw 'El archivo .sha256 de la release no contiene un SHA-256 valido. No se extrajo nada ni se modifico el destino.'
+    }
+    $fileName = $match.Groups[2].Value
+    if (-not [string]::IsNullOrWhiteSpace($fileName) -and $fileName -ine $script:MensorCadReleaseZipAssetName) {
+        throw ("El archivo .sha256 corresponde a '" + $fileName + "' y no a '" + $script:MensorCadReleaseZipAssetName + "'. No se extrajo nada ni se modifico el destino.")
+    }
+    return $match.Groups[1].Value.ToLowerInvariant()
+}
+
+function Assert-MensorCadReleaseArchiveHash {
+    param([string]$ArchivePath, [string]$SidecarPath)
+    if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+        throw "No se descargo el paquete '$ArchivePath'. No se extrajo nada ni se modifico el destino."
+    }
+    $expectedHash = Read-MensorCadReleaseChecksum -SidecarPath $SidecarPath
+    $actualHash = Get-MensorCadFileHash -Path $ArchivePath
+    if ($actualHash -ne $expectedHash) {
+        throw 'El SHA-256 del ZIP descargado no coincide con el archivo .sha256 de la release. No se extrajo nada ni se modifico el destino.'
+    }
+    return $actualHash
+}
+
+function Assert-MensorCadArchiveEntryName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        throw 'El ZIP contiene una entrada sin nombre. No se extrajo nada ni se modifico el destino.'
+    }
+    if ($Name.Contains('\')) {
+        throw ("El ZIP contiene una entrada con barras invertidas: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+    }
+    if ($Name.StartsWith('/')) {
+        throw ("El ZIP contiene una entrada con ruta absoluta o UNC: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+    }
+    if ($Name -match '^[A-Za-z]:') {
+        throw ("El ZIP contiene una entrada con unidad de disco: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+    }
+    $isDirectory = $Name.EndsWith('/')
+    $path = $Name
+    if ($isDirectory) { $path = $Name.Substring(0, $Name.Length - 1) }
+    $segments = $path.Split('/')
+    foreach ($segment in $segments) {
+        if ($segment.Length -eq 0) {
+            throw ("El ZIP contiene una entrada con un segmento vacio: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+        }
+        if ($segment -eq '.' -or $segment -eq '..') {
+            throw ("El ZIP contiene una entrada con un segmento no permitido ('" + $segment + "'): '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+        }
+        if ($segment.Contains(':')) {
+            throw ("El ZIP contiene una entrada con flujo alternativo (ADS): '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+        }
+        if ($segment.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+            throw ("El ZIP contiene una entrada con caracteres no validos: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+        }
+        if ($segment.EndsWith('.') -or $segment.EndsWith(' ')) {
+            throw ("El ZIP contiene una entrada con un segmento que termina en punto o espacio: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+        }
+        $baseName = ($segment -split '\.')[0]
+        if ($baseName -match '^(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            throw ("El ZIP contiene un nombre reservado de Windows: '" + $Name + "'. No se extrajo nada ni se modifico el destino.")
+        }
+    }
+    return [pscustomobject]@{ Name = $Name; RelativePath = $path; IsDirectory = $isDirectory }
+}
+
+function Get-MensorCadReleaseArchiveEntries {
+    param([string]$ArchivePath)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+    if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+        throw "No existe el paquete descargado '$ArchivePath'."
+    }
+    if (Test-MensorCadReparsePoint -Path $ArchivePath) {
+        throw "El paquete descargado '$ArchivePath' es un punto de reanalisis y se rechazo."
+    }
+    $fileMap = @{}
+    $files = New-Object 'System.Collections.Generic.List[object]'
+    $directories = New-Object 'System.Collections.Generic.List[string]'
+    $duplicates = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    $seenFiles = @{}
+    $seenDirectories = @{}
+    $totalBytes = [long]0
+    $archive = $null
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        if ($archive.Entries.Count -gt $script:MensorCadRemoteMaxEntries) {
+            throw ("El ZIP contiene demasiadas entradas ({0}). No se extrajo nada ni se modifico el destino." -f $archive.Entries.Count)
+        }
+        foreach ($entry in $archive.Entries) {
+            $validated = Assert-MensorCadArchiveEntryName -Name $entry.FullName
+            $mode = ($entry.ExternalAttributes -shr 16) -band 0xFFFF
+            if (($mode -band 0xF000) -eq 0xA000) {
+                throw ("El ZIP contiene un enlace (punto de reanalisis) y se rechazo: '" + $entry.FullName + "'. No se extrajo nada ni se modifico el destino.")
+            }
+            if ($validated.IsDirectory -and $entry.Length -ne 0) {
+                throw ("El ZIP contiene un directorio con contenido: '" + $entry.FullName + "'. No se extrajo nada ni se modifico el destino.")
+            }
+            if ((-not $validated.IsDirectory) -and ($mode -band 0xF000) -eq 0x4000) {
+                throw ("El ZIP contiene una entrada de directorio sin barra final: '" + $entry.FullName + "'. No se extrajo nada ni se modifico el destino.")
+            }
+            $key = $validated.RelativePath.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) {
+                $duplicates.Add($validated.RelativePath)
+                continue
+            }
+            $seen[$key] = $true
+            if ($validated.IsDirectory) {
+                if (-not ($script:MensorCadReleaseAllowedDirectories -ccontains $validated.RelativePath)) {
+                    throw ("El ZIP contiene un directorio fuera del paquete distribuido: '" + $validated.RelativePath + "'. No se extrajo nada ni se modifico el destino.")
+                }
+                if ($seenFiles.ContainsKey($key)) {
+                    throw ("El ZIP contiene un archivo y un directorio con la misma ruta: '" + $validated.RelativePath + "'.")
+                }
+                $seenDirectories[$key] = $true
+                $directories.Add($validated.RelativePath)
+                $fileMap[$entry.FullName] = $validated
+            }
+            else {
+                $allowed = ($script:MensorCadReleaseFixedFiles -ccontains $validated.RelativePath) -or ($validated.RelativePath -cmatch $script:MensorCadReleaseLispPattern)
+                if (-not $allowed) {
+                    throw ("El ZIP contiene una entrada fuera del paquete distribuido: '" + $validated.RelativePath + "'. No se extrajo nada ni se modifico el destino.")
+                }
+                if ($seenDirectories.ContainsKey($key)) {
+                    throw ("El ZIP contiene un archivo y un directorio con la misma ruta: '" + $validated.RelativePath + "'.")
+                }
+                $seenFiles[$key] = $true
+                $totalBytes += [long]$entry.Length
+                $files.Add([pscustomobject]@{ FullName = $entry.FullName; RelativePath = $validated.RelativePath; Length = [long]$entry.Length })
+                $fileMap[$entry.FullName] = $validated
+            }
+        }
+    }
+    finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+    if ($duplicates.Count -gt 0) {
+        throw ("El ZIP contiene una entrada duplicada (sin distinguir mayusculas): '" + $duplicates[0] + "'. No se extrajo nada ni se modifico el destino.")
+    }
+    if ($totalBytes -gt $script:MensorCadRemoteMaxUncompressedBytes) {
+        throw ("El ZIP descomprimido supera el limite permitido ({0} bytes). No se extrajo nada ni se modifico el destino." -f $totalBytes)
+    }
+    foreach ($required in $script:MensorCadReleaseFixedFiles) {
+        $found = $false
+        foreach ($fileEntry in $files) {
+            if ($fileEntry.RelativePath -ceq $required) {
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) {
+            throw ("El ZIP no contiene la entrada obligatoria '" + $required + "'. No se extrajo nada ni se modifico el destino.")
+        }
+    }
+    $lispCount = 0
+    foreach ($fileEntry in $files) {
+        if ($fileEntry.RelativePath -cmatch $script:MensorCadReleaseLispPattern) { $lispCount++ }
+    }
+    if ($lispCount -eq 0) {
+        throw 'El ZIP no contiene ningun archivo Contents/Lisp/*.lsp. No se extrajo nada ni se modifico el destino.'
+    }
+    return [pscustomobject]@{
+        FileMap = $fileMap
+        Files = $files
+        Directories = $directories
+        Duplicates = $duplicates
+        TotalBytes = $totalBytes
+    }
+}
+
+function Expand-MensorCadReleaseArchive {
+    param(
+        [string]$ArchivePath,
+        [string]$DestinationRoot,
+        [object]$Entries,
+        [string]$TrustedBoundary
+    )
+    Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+    if (Test-Path -LiteralPath $DestinationRoot) {
+        throw "La carpeta de extraccion '$DestinationRoot' ya existe y se rechazo."
+    }
+    $null = New-Item -ItemType Directory -Path $DestinationRoot
+    Assert-MensorCadNoReparseInPath -Path $DestinationRoot -Boundary $TrustedBoundary
+    $destinationFull = [System.IO.Path]::GetFullPath($DestinationRoot)
+    if (-not $destinationFull.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+        $destinationFull += [string][System.IO.Path]::DirectorySeparatorChar
+    }
+    $archive = $null
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        foreach ($entry in $archive.Entries) {
+            if (-not $Entries.FileMap.ContainsKey($entry.FullName)) {
+                throw ("El ZIP cambio entre la validacion y la extraccion: '" + $entry.FullName + "'.")
+            }
+            $validated = $Entries.FileMap[$entry.FullName]
+            $targetPath = Join-Path -Path $DestinationRoot -ChildPath ($validated.RelativePath.Replace('/', '\'))
+            $targetFull = [System.IO.Path]::GetFullPath($targetPath)
+            if (-not $targetFull.StartsWith($destinationFull, [StringComparison]::OrdinalIgnoreCase)) {
+                throw ("La entrada '" + $validated.RelativePath + "' intentaria escribir fuera de la carpeta de extraccion.")
+            }
+            if ($validated.IsDirectory) {
+                if (-not (Test-Path -LiteralPath $targetFull -PathType Container)) {
+                    $null = New-Item -ItemType Directory -Path $targetFull -Force
+                }
+                continue
+            }
+            $targetParent = Split-Path -Parent $targetFull
+            if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
+                $null = New-Item -ItemType Directory -Path $targetParent -Force
+            }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetFull, $false)
+        }
+    }
+    finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+    $tree = Get-MensorCadDirectoryTree -RootPath $DestinationRoot
+    if ($tree.Files.Count -ne $Entries.Files.Count) {
+        throw 'La extraccion del ZIP no contiene todos los archivos declarados.'
+    }
+    return $DestinationRoot
+}
+
+# Espera activa: se reutiliza el renderizador local para pintar actividad
+# mientras el proceso hijo real (incluida la espera de UAC) sigue vivo. No hay
+# demoras despues de que el hijo termina: el sondeo solo existe dentro del bucle.
+function Wait-MensorCadRemoteChild {
+    param(
+        [Parameter(Mandatory = $true)]$Process,
+        [string]$Message = $script:MensorCadRemoteChildActivityMessage,
+        [int]$IntervalMilliseconds = $script:MensorCadRemoteWaitIntervalMilliseconds
+    )
+    if ($IntervalMilliseconds -lt 50) {
+        $IntervalMilliseconds = 50
+    }
+    if ($script:MensorCadPlainMode) {
+        Write-MensorCadInfo $Message
+    }
+    while (-not $Process.HasExited) {
+        if (-not $script:MensorCadPlainMode) {
+            Write-MensorCadActivity -Message $Message
+        }
+        # Espera del sistema con timeout: vuelve de inmediato cuando el proceso
+        # termina, asi que no existe ningun retardo decorativo posterior.
+        $null = $Process.WaitForExit($IntervalMilliseconds)
+    }
+    $Process.WaitForExit()
+    Complete-MensorCadActivity
+}
+
+function Invoke-MensorCadRemoteChild {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$StdOutPath,
+        [Parameter(Mandatory = $true)][string]$StdErrPath
+    )
+    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+        throw ("No se encontro el instalador extraido en '" + $ScriptPath + "'. No se solicito elevacion.")
+    }
+    $powerShellPath = Get-MensorCadPowerShellPath
+    $argumentString = '-NoProfile -ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
+    foreach ($argument in @($Arguments)) {
+        if (-not [string]::IsNullOrWhiteSpace($argument)) {
+            $argumentString += ' ' + $argument
+        }
+    }
+    try {
+        $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -NoNewWindow -PassThru -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
+    }
+    catch {
+        throw ('No se pudo ejecutar el instalador extraido: ' + $_.Exception.Message + ' La instalacion no se realizo.')
+    }
+    if ($null -eq $process) {
+        throw 'No se pudo iniciar el instalador extraido. La instalacion no se realizo.'
+    }
+    Wait-MensorCadRemoteChild -Process $process -Message $script:MensorCadRemoteChildActivityMessage
+    $stdOut = ''
+    $stdErr = ''
+    if (Test-Path -LiteralPath $StdOutPath -PathType Leaf) { $stdOut = [System.IO.File]::ReadAllText($StdOutPath) }
+    if (Test-Path -LiteralPath $StdErrPath -PathType Leaf) { $stdErr = [System.IO.File]::ReadAllText($StdErrPath) }
+    return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; StdOut = $stdOut; StdErr = $stdErr }
+}
+
+function Write-MensorCadRelayedOutput {
+    param([string]$Text, [switch]$IsError)
+    if ([string]::IsNullOrEmpty($Text)) { return }
+    $payload = $Text
+    if (-not $payload.EndsWith("`n")) { $payload += [Environment]::NewLine }
+    if ($IsError) {
+        [Console]::Error.Write($payload)
+    }
+    else {
+        [Console]::Out.Write($payload)
+    }
+}
+
+function Invoke-MensorCadRemoteInstall {
+    param([string]$Version, [switch]$NoAnimation)
+    # El host, Program Files y el destino fijo ya se validaron en Invoke-MensorCadCli.
+    $null = Get-MensorCadProgramFilesRoot
+    $null = Get-MensorCadDestinationRoot
+    try {
+        # TLS 1.2 solo para el proceso actual; no se cambia ninguna politica global.
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+    }
+    catch {
+        Write-MensorCadInfo 'Aviso: no se pudo habilitar TLS 1.2 en este proceso; la descarga podria fallar.'
+    }
+
+    $totalSteps = 5
+    Write-MensorCadStep -Number 1 -Total $totalSteps -Message 'Resolviendo la release de GitHub'
+    $tag = Resolve-MensorCadReleaseTag -Version $Version
+    Write-MensorCadInfo ('Release seleccionada: ' + $tag)
+    Complete-MensorCadActivity
+
+    $tempRoot = Get-MensorCadRemoteTempRoot
+    if ([string]::IsNullOrWhiteSpace($tempRoot) -or -not (Test-Path -LiteralPath $tempRoot -PathType Container)) {
+        throw "No existe la carpeta temporal '$tempRoot'. No se descargo nada ni se modifico el destino."
+    }
+    $workspace = Join-Path -Path $tempRoot -ChildPath ($script:MensorCadRemoteWorkspacePrefix + [guid]::NewGuid().ToString('N'))
+    try {
+        $null = New-Item -ItemType Directory -Path $workspace
+        Assert-MensorCadNoReparseInPath -Path $workspace -Boundary $tempRoot
+
+        $zipPath = Join-Path -Path $workspace -ChildPath $script:MensorCadReleaseZipAssetName
+        $sidecarPath = Join-Path -Path $workspace -ChildPath $script:MensorCadReleaseChecksumAssetName
+        $extractRoot = Join-Path -Path $workspace -ChildPath 'package'
+        $stdOutPath = Join-Path -Path $workspace -ChildPath 'install.stdout.log'
+        $stdErrPath = Join-Path -Path $workspace -ChildPath 'install.stderr.log'
+
+        Write-MensorCadStep -Number 2 -Total $totalSteps -Message 'Descargando el paquete y su SHA-256 sin permisos de administrador'
+        $null = Save-MensorCadRemoteFile -Uri (Get-MensorCadReleaseAssetUri -Tag $tag -AssetName $script:MensorCadReleaseZipAssetName) -DestinationPath $zipPath
+        $null = Save-MensorCadRemoteFile -Uri (Get-MensorCadReleaseAssetUri -Tag $tag -AssetName $script:MensorCadReleaseChecksumAssetName) -DestinationPath $sidecarPath
+        Complete-MensorCadActivity
+
+        Write-MensorCadStep -Number 3 -Total $totalSteps -Message 'Verificando el SHA-256 y las entradas del ZIP'
+        $null = Assert-MensorCadReleaseArchiveHash -ArchivePath $zipPath -SidecarPath $sidecarPath
+        $archiveEntries = Get-MensorCadReleaseArchiveEntries -ArchivePath $zipPath
+        Write-MensorCadInfo 'SHA-256 verificado: detecta corrupcion, no autentica al publicador.'
+        Complete-MensorCadActivity
+
+        Write-MensorCadStep -Number 4 -Total $totalSteps -Message 'Extrayendo el paquete verificado en una carpeta temporal propia'
+        $null = Expand-MensorCadReleaseArchive -ArchivePath $zipPath -DestinationRoot $extractRoot -Entries $archiveEntries -TrustedBoundary $workspace
+        $null = Test-MensorCadSource -SourceRoot $extractRoot
+        Complete-MensorCadActivity
+
+        Write-MensorCadStep -Number 5 -Total $totalSteps -Message $script:MensorCadRemoteChildActivityMessage
+        Write-MensorCadInfo 'Si Windows muestra UAC, el proceso elevado abrira su propia ventana de diagnostico.'
+        $childScript = Join-Path -Path $extractRoot -ChildPath $script:MensorCadReleaseInstallerAssetName
+        $childArguments = @()
+        if ($NoAnimation) { $childArguments += '-NoAnimation' }
+        $child = Invoke-MensorCadRemoteChild -ScriptPath $childScript -Arguments $childArguments -StdOutPath $stdOutPath -StdErrPath $stdErrPath
+        Write-MensorCadRelayedOutput -Text $child.StdOut
+        Write-MensorCadRelayedOutput -Text $child.StdErr -IsError
+        if ($child.ExitCode -eq 0) {
+            Write-MensorCadInfo 'Recuerde abrir AutoCAD para cargar el bundle instalado.'
+        }
+        return [int]$child.ExitCode
+    }
+    finally {
+        Complete-MensorCadActivity
+        if (Test-Path -LiteralPath $workspace) {
+            try {
+                Remove-MensorCadTree -Path $workspace
+            }
+            catch {
+                Write-MensorCadInfo ('Aviso: no se pudo limpiar la carpeta temporal ' + $workspace + '; se conserva en disco: ' + $_.Exception.Message)
+            }
+        }
+    }
 }
 
 function Invoke-MensorCadElevatedSelf {
     param([switch]$Uninstall, [switch]$NoAnimation)
-    $powerShellPath = 'powershell.exe'
-    if (-not [string]::IsNullOrWhiteSpace($env:SystemRoot)) {
-        $candidatePath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
-            $powerShellPath = $candidatePath
-        }
-    }
+    $powerShellPath = Get-MensorCadPowerShellPath
     $scriptPath = $script:MensorCadScriptPath
     if ([string]::IsNullOrWhiteSpace($scriptPath)) {
         $scriptPath = Join-Path -Path $script:MensorCadScriptRoot -ChildPath 'Install-MensorCAD.ps1'
@@ -942,6 +1497,8 @@ function Invoke-MensorCadCli {
         [switch]$Uninstall,
         [switch]$NoAnimation,
         [switch]$Help,
+        [switch]$FromRelease,
+        [string]$Version,
         [switch]$ElevatedProcess
     )
     $script:MensorCadPlainMode = ($NoAnimation -or (Test-MensorCadOutputRedirected))
@@ -950,6 +1507,10 @@ function Invoke-MensorCadCli {
         return 0
     }
     try {
+        $argumentError = Get-MensorCadArgumentError -Uninstall:$Uninstall -FromRelease:$FromRelease -Version $Version -VersionSpecified:$PSBoundParameters.ContainsKey('Version')
+        if ($null -ne $argumentError) {
+            throw $argumentError
+        }
         if (-not (Test-MensorCadWindows)) {
             throw 'Este instalador solo funciona en Windows con Windows PowerShell 5.1. No se escribio ningun archivo.'
         }
@@ -957,9 +1518,14 @@ function Invoke-MensorCadCli {
         if (-not $ElevatedProcess) {
             Write-MensorCadBanner
         }
-        $sourceRoot = $script:MensorCadScriptRoot
         $programFilesRoot = Get-MensorCadProgramFilesRoot
         $destinationRoot = Get-MensorCadDestinationRoot
+
+        if ($FromRelease) {
+            return (Invoke-MensorCadRemoteInstall -Version $Version -NoAnimation:$NoAnimation)
+        }
+
+        $sourceRoot = $script:MensorCadScriptRoot
 
         if ($Uninstall) {
             Write-MensorCadStep -Number 1 -Total 3 -Message 'Comprobando la instalacion existente'
@@ -1035,4 +1601,11 @@ if ($script:MensorCadDotSourced) {
     return
 }
 
-exit (Invoke-MensorCadCli -Uninstall:$Uninstall -NoAnimation:$NoAnimation -Help:$Help -ElevatedProcess:$ElevatedProcess)
+$mensorCadCliArguments = @{}
+if ($Uninstall) { $mensorCadCliArguments['Uninstall'] = $true }
+if ($NoAnimation) { $mensorCadCliArguments['NoAnimation'] = $true }
+if ($Help) { $mensorCadCliArguments['Help'] = $true }
+if ($FromRelease) { $mensorCadCliArguments['FromRelease'] = $true }
+if ($PSBoundParameters.ContainsKey('Version')) { $mensorCadCliArguments['Version'] = $Version }
+if ($ElevatedProcess) { $mensorCadCliArguments['ElevatedProcess'] = $true }
+exit (Invoke-MensorCadCli @mensorCadCliArguments)
