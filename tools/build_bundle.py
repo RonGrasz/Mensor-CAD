@@ -182,10 +182,12 @@ def _local(tag: str) -> str:
 
 
 def _normalizar_modulo(valor: str) -> str:
+    if valor.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", valor):
+        raise ErrorConstruccion("ModuleName absoluto no permitido: {!r}".format(valor))
     normalizado = posixpath.normpath(valor.replace("\\", "/"))
     if normalizado.startswith("../") or normalizado in ("..", "."):
         raise ErrorConstruccion("ModuleName fuera del paquete: {!r}".format(valor))
-    return normalizado.lstrip("/")
+    return normalizado
 
 
 def validar_manifiesto(ruta: Path, version: str, nombres_lisp: list[str]) -> None:
@@ -211,6 +213,8 @@ def validar_manifiesto(ruta: Path, version: str, nombres_lisp: list[str]) -> Non
                 NOMBRE_PRODUCTO, nombre
             )
         )
+    if not raiz.get("AppVersion"):
+        raise ErrorConstruccion("PackageContents.xml debe declarar AppVersion")
     for atributo in ("Version", "AppVersion"):
         declarada = raiz.get(atributo)
         if declarada is None:

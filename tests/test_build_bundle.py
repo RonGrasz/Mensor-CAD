@@ -386,6 +386,77 @@ class Rechazos(CasoBase):
         resultado = self.ejecutar(fuentes.argumentos(version="0.1"))
         self.assert_rechazo(resultado, fuentes.salida, previos, "versión")
 
+    def assert_rechazo_exacto(self, resultado, salida: Path, previos, stderr_esperado: str):
+        self.assertNotEqual(resultado.returncode, 0, msg="se esperaba un rechazo")
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(resultado.stderr, stderr_esperado)
+        for nombre, contenido in previos.items():
+            self.assertEqual(
+                (salida / nombre).read_bytes(), contenido, msg="se modifico " + nombre
+            )
+        self.assertEqual(sorted(ruta.name for ruta in salida.iterdir()), sorted(previos))
+
+    def reemplazar_modulo(self, fuentes, anterior: str, nuevo: str) -> None:
+        xml = fuentes.package_contents.read_text(encoding="utf-8")
+        self.assertIn(anterior, xml)
+        fuentes.package_contents.write_text(xml.replace(anterior, nuevo), encoding="utf-8")
+
+    def test_rechaza_manifiesto_sin_atributos_de_version(self):
+        fuentes = self.fuentes()
+        xml = fuentes.package_contents.read_text(encoding="utf-8")
+        fuentes.package_contents.write_text(
+            xml.replace('AppVersion="0.1.0" Version="0.1.0" ', ""), encoding="utf-8"
+        )
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assert_rechazo_exacto(
+            resultado,
+            fuentes.salida,
+            previos,
+            "ERROR: PackageContents.xml debe declarar AppVersion\n",
+        )
+
+    def test_rechaza_module_name_lisp_absoluto(self):
+        fuentes = self.fuentes()
+        valor = "/Contents/Lisp/MC-AREA.lsp"
+        self.reemplazar_modulo(fuentes, './Contents/Lisp/MC-AREA.lsp', valor)
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assert_rechazo_exacto(
+            resultado,
+            fuentes.salida,
+            previos,
+            "ERROR: ModuleName absoluto no permitido: {!r}\n".format(valor),
+        )
+
+    def test_rechaza_module_name_cuix_absoluto(self):
+        fuentes = self.fuentes()
+        valor = "/Contents/UI/MensorCAD.cuix"
+        self.reemplazar_modulo(fuentes, './Contents/UI/MensorCAD.cuix', valor)
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assert_rechazo_exacto(
+            resultado,
+            fuentes.salida,
+            previos,
+            "ERROR: ModuleName absoluto no permitido: {!r}\n".format(valor),
+        )
+
+    def test_rechaza_module_name_con_unidad_windows_y_unc(self):
+        valores = ("C:/Contents/UI/MensorCAD.cuix", "\\\\srv\\cup\\Contents\\UI\\MensorCAD.cuix")
+        for indice, valor in enumerate(valores):
+            with self.subTest(valor=valor):
+                fuentes = FuentesDePrueba(self.base / "caso-{}".format(indice))
+                self.reemplazar_modulo(fuentes, './Contents/UI/MensorCAD.cuix', valor)
+                previos = self.preparar_salida_previa(fuentes)
+                resultado = self.ejecutar(fuentes.argumentos())
+                self.assert_rechazo_exacto(
+                    resultado,
+                    fuentes.salida,
+                    previos,
+                    "ERROR: ModuleName absoluto no permitido: {!r}\n".format(valor),
+                )
+
     def test_rechaza_enlace_simbolico_en_cuix(self):
         fuentes = self.fuentes()
         enlace = fuentes.cuix_dir / "iconos-enlazados.png"
