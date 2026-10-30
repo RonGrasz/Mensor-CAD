@@ -4,11 +4,13 @@
 
 Herramientas LISP para agilizar el trabajo topográfico y catastral en AutoCAD: calcula superficies, genera tablas de coordenadas, anota planos, subdivide parcelas e importa o exporta puntos. Cada comando se carga de forma independiente, y la mayoría ofrece un cuadro de opciones para configurar el resultado.
 
-[Instalación](#instalación) · [Comandos](#comandos) · [Desinstalación](#desinstalación)
+[Instalación](#instalación) · [Comandos](#comandos) · [Desinstalación](#desinstalación) · [Guía de pruebas de instalación](docs/installation-testing.md)
 
 ## Plataformas y requisitos
 
-- **AutoCAD para Windows de 64 bits**, con soporte AutoLISP y ActiveX/VLA.
+- **AutoCAD para Windows 64 bits**, con soporte AutoLISP y ActiveX/VLA.
+- **Windows PowerShell 5.1 de 64 bits** para el instalador del paquete.
+- **Administrador** (UAC) para instalar, actualizar o desinstalar en `Program Files`; AutoCAD debe estar cerrado.
 - Los archivos `.lsp` de la carpeta [`lisp/`](lisp/).
 - Para estructuras y operaciones con superficies, disponibilidad de las funciones nativas REGION, operaciones booleanas y Offset utilizadas por cada herramienta.
 
@@ -18,7 +20,28 @@ No se garantiza compatibilidad con AutoCAD para Mac, AutoCAD Web, AutoCAD LT ni 
 
 ## Instalación
 
-La carga es **manual mediante `APPLOAD`**, igual para todos los comandos:
+La vía recomendada es el **paquete ZIP offline** para AutoCAD de Windows: instala el bundle completo, carga el CUIX y deja disponibles los comandos `MC*` sin usar `APPLOAD`.
+
+> **Los assets del release todavía no están publicados.** Hasta que un humano publique `MensorCAD-Windows.zip`, `MensorCAD-Windows.zip.sha256` e `Install-MensorCAD.ps1`, no hay una descarga pública para usuarios ni el comando remoto funciona. El artifact de GitHub Actions es solo para pruebas de mantenedores: no es un release ni reemplaza esos tres assets.
+
+### Ruta rápida con el ZIP
+
+1. **Descarga y extrae.** Cuando el release esté publicado, descarga `MensorCAD-Windows.zip` desde <https://github.com/RonGrasz/Mensor-CAD/releases>, extrae el ZIP completo en una carpeta normal y no ejecutes nada desde dentro del ZIP.
+2. **Cierra AutoCAD** por completo y guarda tus dibujos. El instalador no cierra AutoCAD por su cuenta.
+3. **Ejecuta el instalador con permisos de administrador.** Haz doble clic en `Instalar.bat` y acepta el aviso de UAC. El instalador valida el paquete y escribe en `<Program Files>\Autodesk\ApplicationPlugins\MensorCAD.bundle`.
+4. **Abre AutoCAD** y comprueba que el CUIX y los comandos `MC*` están disponibles. Para actualizar, cierra AutoCAD y repite el paso 3 con el ZIP nuevo.
+
+### Qué hace el instalador
+
+- Valida el SHA-256 del paquete antes de pedir permisos. El hash detecta corrupción o modificaciones de la descarga; no autentica al publicador.
+- Mientras trabaja, la terminal muestra una animación de actividad. La elevación por UAC abre una **ventana de diagnóstico** separada; su salida no se reenvía a la terminal, aunque el código de salida final sí vuelve.
+- `-ExecutionPolicy Bypass` se usa solo para el proceso del instalador; no se cambia la política global. El paquete tampoco modifica `SECURELOAD`, `TRUSTEDPATHS` ni `APPAUTOLOAD`.
+
+La instalación manual del ZIP local fue verificada por el usuario en Windows, incluida la carga del CUIX y de los comandos. Esa comprobación no certifica la ruta remota ni las suites automatizadas de Windows, que siguen pendientes. Para compilar, ejecutar las pruebas y recopilar evidencia, consulta la [guía de pruebas de instalación](docs/installation-testing.md).
+
+### Instalación manual con APPLOAD (alternativa)
+
+Si prefieres no instalar el bundle, la carga sigue siendo **manual mediante `APPLOAD`**, igual para todos los comandos:
 
 1. Guarda en tu equipo los archivos de la carpeta `lisp/`.
 2. En AutoCAD, escribe `APPLOAD` y presiona Enter.
@@ -26,6 +49,16 @@ La carga es **manual mediante `APPLOAD`**, igual para todos los comandos:
 4. Escribe el comando correspondiente en la línea de comandos. Por ejemplo, carga `MC-AREA.lsp` y ejecuta `MCAREA`.
 
 Repite estos pasos para las herramientas que necesites en el dibujo donde vas a trabajar. No hace falta cargar todos los scripts ni seguir un orden específico.
+
+### Instalación remota (cuando exista un release publicado)
+
+El comando remoto no funciona todavía: requiere que un humano publique los tres assets del release. Cuando exista, el comando previsto es:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/Install-MensorCAD.ps1'))) -FromRelease"
+```
+
+La verificación, el destino y el aviso de UAC son los del instalador local; la descarga es propia de la ruta remota. Los detalles y sus límites están en [`docs/remote-installer.md`](docs/remote-installer.md).
 
 ## Comandos
 
@@ -239,11 +272,25 @@ Ejecuta `MCHELP` para consultar una descripción de la herramienta, su versión,
 
 ## Desinstalación
 
-La carga manual con `APPLOAD` no instala un paquete ni dispone de un botón para descargar los comandos LISP ya cargados.
+Si instalaste el bundle, guarda tus dibujos y **cierra AutoCAD por completo**. Desde la carpeta donde extrajiste el ZIP ejecuta:
 
-Para dejar de usarlos, guarda tus dibujos y **cierra por completo AutoCAD**. Al abrirlo de nuevo, no vuelvas a cargar los archivos con `APPLOAD`. Si ya no los necesitas, puedes eliminar de tu equipo las copias de los archivos `.lsp`.
+```bat
+Instalar.bat -Uninstall
+```
 
-Esto **no borra las tablas, textos, símbolos ni demás entidades creadas en los dibujos**. Las actualizaciones que dependen de un script dejan de ejecutarse mientras no esté cargado.
+o, de forma equivalente:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-MensorCAD.ps1 -Uninstall
+```
+
+Acepta el aviso de UAC. La desinstalación elimina **solo los archivos registrados** y la marca del paquete; no borra carpetas padre como `Autodesk` o `ApplicationPlugins` ni archivos ajenos. Si AutoCAD está abierto, se detiene sin borrar nada.
+
+Para actualizar no hace falta desinstalar: cierra AutoCAD y vuelve a ejecutar `Instalar.bat` con el ZIP nuevo.
+
+La carga manual con `APPLOAD` no instala un paquete ni dispone de un botón para descargar los comandos LISP ya cargados. Para dejar de usarlos, guarda tus dibujos y **cierra por completo AutoCAD**. Al abrirlo de nuevo, no vuelvas a cargar los archivos con `APPLOAD`. Si ya no los necesitas, puedes eliminar de tu equipo las copias de los archivos `.lsp`.
+
+**No borra las tablas, textos, símbolos ni demás entidades creadas en los dibujos**. Las actualizaciones que dependen de un script dejan de ejecutarse mientras no esté cargado.
 
 ## Licencia
 

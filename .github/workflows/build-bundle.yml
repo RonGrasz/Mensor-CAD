@@ -1,0 +1,67 @@
+name: Construir paquete y probar instaladores
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Paquete y pruebas en Windows
+    runs-on: windows-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Preparar Python 3.13
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+
+      - name: Pruebas de Python (suite completa)
+        shell: powershell
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -B -m unittest discover -s tests -p "test_*.py" -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Pruebas del instalador local en Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Pruebas del instalador remoto en Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Construir el paquete con la versión del manifiesto
+        shell: powershell
+        run: |
+          [xml]$manifest = Get-Content -LiteralPath PackageContents.xml -Raw
+          $package = $manifest.ApplicationPackage
+          $version = $package.AppVersion
+          if (-not $version) { $version = $package.Version }
+          if (-not $version) { throw "PackageContents.xml no declara AppVersion ni Version" }
+          python tools/build_bundle.py --output-dir dist --version $version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Solo se publica después de que todas las comprobaciones anteriores pasen.
+      # El artifact no es un release: no se crean tags, releases ni pushes.
+      - name: Publicar el paquete construido
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mensorcad-windows
+          path: |
+            dist/MensorCAD-Windows.zip
+            dist/MensorCAD-Windows.zip.sha256
+            dist/Install-MensorCAD.ps1
+          if-no-files-found: error
