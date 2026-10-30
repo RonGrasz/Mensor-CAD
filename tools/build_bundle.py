@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""Empaqueta el bundle de AutoCAD de MensorCAD.
+
+Solo biblioteca estándar de Python 3. Construye:
+
+* ``MensorCAD.bundle/Contents/UI/MensorCAD.cuix`` a partir de ``cuix/``,
+  preservando bytes y rutas relativas.
+* ``MensorCAD.bundle/Contents/Lisp/MC-*.lsp`` y ``PackageContents.xml``.
+* ``bundle.sha256`` con el hash de cada archivo del bundle.
+* ``MensorCAD-Windows.zip``, su sidecar ``MensorCAD-Windows.zip.sha256`` y
+  una copia standalone ``Install-MensorCAD.ps1`` byte a byte igual a la entrada.
+
+El contrato de inventario está congelado: no se agregan archivos al ZIP fuera
+de ``MensorCAD.bundle/``, ``bundle.sha256``, ``Install-MensorCAD.ps1``,
+``Instalar.bat`` y ``LICENSE``. Las fuentes de entrada nunca se modifican y
+toda validación ocurre antes de escribir la salida.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import os
+import posixpath
+import re
+import stat
+import sys
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+import xml.etree.ElementTree as ElementTree
+
+NOMBRE_BUNDLE = "MensorCAD.bundle"
+ZIP_SALIDA = "MensorCAD-Windows.zip"
+SUFIJO_SIDECAR = ".sha256"
+VERSION_POR_DEFECTO = "0.1.0"
+PATRON_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+PATRON_LISP = "MC-*.lsp"
+RUTA_CUIX = "Contents/UI/MensorCAD.cuix"
+RUTA_LISP = "Contents/Lisp"
+NOMBRE_PRODUCTO = "MensorCAD"
+NOMBRE_SCRIPT = "Install-MensorCAD.ps1"
+COMPONENTES_PROHIBIDOS = {"__pycache__"}
+COMPONENTES_OCULTOS_PERMITIDOS = {".rels"}
+MARCA_TIEMPO_ZIP = (1980, 1, 1, 0, 0, 0)
+TAMANO_BLOQUE = 1024 * 1024
+
+
+class ErrorConstruccion(Exception):
+    """Error de validación o de entrada que impide construir el paquete."""
+
+
+@dataclass(frozen=True)
+class Resultado:
+    zip_salida: Path
+    sidecar: Path
+    install_script: Path
+    hash_zip: str
+    archivos_bundle: int
+
+
+@dataclass(frozen=True)
+class Fuentes:
+    package_contents: Path
+    lisp_dir: Path
+    cuix_dir: Path
+    install_script: Path
+    bat_script: Path
+    license: Path
+
+
+def _frontend(etiqueta: str) -> str:
+    """Normaliza una ruta de entrada y rechaza componentes inseguros."""
+    if not etiqueta or etiqueta.startswith("/") or re.match(r"^[A-Za-z]:", etiqueta):
+        raise ErrorConstruccion("ruta absoluta o vacía no permitida: {!r}".format(etiqueta))
+    normalizada = posixpath.normpath(etiqueta.replace("\\", "/"))
+    if normalizada in ("", ".", "..") or normalizada.startswith("../"):
+        raise ErrorConstruccion("ruta fuera del paquete: {!r}".format(etiqueta))
+    for parte in normalizada.split("/"):
+        if parte.startswith(".") and parte not in COMPONENTES_OCULTOS_PERMITIDOS:
+            raise ErrorConstruccion(
+                "archivo oculto no permitido dentro del paquete: {!r}".format(normalizada)
+            )
+        if parte in COMPONENTES_PROHIBIDOS:
+            raise ErrorConstruccion(
+                "caché no permitida dentro del paquete: {!r}".format(normalizada)
+            )
+    return normalizada
+
+
+def _comprobar_archivo_regular(ruta: Path, etiqueta: str) -> Path:
+    if ruta.is_symlink():
+        raise ErrorConstruccion("enlace simbólico no permitido en {}: {}".format(etiqueta, ruta))
+    if not ruta.exists():
+        raise ErrorConstruccion("falta {}: {}".format(etiqueta, ruta))
+    if not stat.S_ISREG(ruta.lstat().st_mode):
+        raise ErrorConstruccion("se esperaba un archivo regular en {}: {}".format(etiqueta, ruta))
+    return ruta
+
+
+def _comprobar_duplicados_case_insensitive(rutas: list[str], etiqueta: str) -> None:
+    vistos: dict[str, str] = {}
+    for ruta in rutas:
+        clave = ruta.casefold()
+        if clave in vistos:
+            raise ErrorConstruccion(
+                "rutas duplicadas sin distinguir mayúsculas en {}: {} y {}".format(
+                    etiqueta, vistos[clave], ruta
+                )
+            )
+        vistos[clave] = ruta
+
+
+def listar_lisp(lisp_dir: Path) -> list[Path]:
+    """Devuelve los ``MC-*.lsp`` de ``lisp_dir`` y rechaza cualquier otro archivo."""
+    if lisp_dir.is_symlink():
+        raise ErrorConstruccion("enlace simbólico no permitido: {}".format(lisp_dir))
+    if not lisp_dir.is_dir():
+        raise ErrorConstruccion("falta el directorio de LISP: {}".format(lisp_dir))
+    archivos: list[Path] = []
+    ajenos: list[str] = []
+    for entrada in sorted(lisp_dir.iterdir(), key=lambda item: item.name):
+        if entrada.is_symlink():
+            raise ErrorConstruccion("enlace simbólico no permitido en lisp: {}".format(entrada))
+        if not entrada.is_file():
+            ajenos.append(entrada.name + "/")
+        elif not fnmatch.fnmatchcase(entrada.name, PATRON_LISP):
+            ajenos.append(entrada.name)
+        else:
+            archivos.append(entrada)
+    if ajenos:
+        raise ErrorConstruccion(
+            "el directorio lisp solo debe contener {}; sobra(n): {}".format(
+                PATRON_LISP, ", ".join(ajenos)
+            )
+        )
+    if not archivos:
+        raise ErrorConstruccion("no se encontró ningún {} en {}".format(PATRON_LISP, lisp_dir))
+    _comprobar_duplicados_case_insensitive([ruta.name for ruta in archivos], "lisp")
+    return archivos
+
+
+def listar_cuix(cuix_dir: Path) -> list[tuple[str, Path]]:
+    """Devuelve pares (ruta relativa POSIX, archivo) de todo el árbol CUIX."""
+    if cuix_dir.is_symlink():
+        raise ErrorConstruccion("enlace simbólico no permitido: {}".format(cuix_dir))
+    if not cuix_dir.is_dir():
+        raise ErrorConstruccion("falta el directorio del CUIX: {}".format(cuix_dir))
+    archivos: list[tuple[str, Path]] = []
+
+    def recorrer(directorio: Path, prefijo: str) -> None:
+        for entrada in sorted(directorio.iterdir(), key=lambda item: item.name):
+            if entrada.is_symlink():
+                raise ErrorConstruccion(
+                    "enlace simbólico no permitido dentro del CUIX: {}".format(entrada)
+                )
+            relativa = prefijo + entrada.name
+            if entrada.is_dir():
+                recorrer(entrada, relativa + "/")
+            elif entrada.is_file():
+                archivos.append((_frontend(relativa), entrada))
+            else:
+                raise ErrorConstruccion(
+                    "tipo de archivo no soportado dentro del CUIX: {}".format(entrada)
+                )
+
+    recorrer(cuix_dir, "")
+    if not archivos:
+        raise ErrorConstruccion("el CUIX de origen está vacío: {}".format(cuix_dir))
+    if "[Content_Types].xml" not in {relativa for relativa, _ in archivos}:
+        raise ErrorConstruccion(
+            "el CUIX de origen no contiene [Content_Types].xml: {}".format(cuix_dir)
+        )
+    _comprobar_duplicados_case_insensitive([relativa for relativa, _ in archivos], "CUIX")
+    return archivos
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _normalizar_modulo(valor: str) -> str:
+    normalizado = posixpath.normpath(valor.replace("\\", "/"))
+    if normalizado.startswith("../") or normalizado in ("..", "."):
+        raise ErrorConstruccion("ModuleName fuera del paquete: {!r}".format(valor))
+    return normalizado.lstrip("/")
+
+
+def validar_manifiesto(ruta: Path, version: str, nombres_lisp: list[str]) -> None:
+    """Valida el manifiesto antes de que cualquier byte llegue a la salida."""
+    contenido = _comprobar_archivo_regular(ruta, "PackageContents.xml").read_bytes()
+    try:
+        raiz = ElementTree.fromstring(contenido)
+    except ElementTree.ParseError as exc:
+        raise ErrorConstruccion(
+            "PackageContents.xml no es XML válido: {}".format(exc)
+        ) from exc
+    if _local(raiz.tag) != "ApplicationPackage":
+        raise ErrorConstruccion(
+            "PackageContents.xml debe tener ApplicationPackage como raíz, no {}".format(
+                _local(raiz.tag)
+            )
+        )
+
+    nombre = raiz.get("Name") or raiz.get("AppName") or ""
+    if nombre != NOMBRE_PRODUCTO:
+        raise ErrorConstruccion(
+            "PackageContents.xml debe declarar Name=\"{}\", no {!r}".format(
+                NOMBRE_PRODUCTO, nombre
+            )
+        )
+    for atributo in ("Version", "AppVersion"):
+        declarada = raiz.get(atributo)
+        if declarada is None:
+            continue
+        if declarada != version:
+            raise ErrorConstruccion(
+                "la versión del manifiesto ({}) no coincide con --version ({})".format(
+                    declarada, version
+                )
+            )
+
+    requisitos = [nodo for nodo in raiz.iter() if _local(nodo.tag) == "RuntimeRequirements"]
+    if not requisitos:
+        raise ErrorConstruccion("PackageContents.xml no declara RuntimeRequirements")
+    if not any(
+        "win64" in (nodo.get("OS") or "").lower()
+        and "autocad" in (nodo.get("Platform") or "").lower()
+        for nodo in requisitos
+    ):
+        raise ErrorConstruccion(
+            "RuntimeRequirements debe declarar OS=\"Win64\" y Platform=\"AutoCAD*\""
+        )
+
+    entradas = [nodo for nodo in raiz.iter() if _local(nodo.tag) == "ComponentEntry"]
+    if not entradas:
+        raise ErrorConstruccion("PackageContents.xml no declara ComponentEntry")
+
+    modulos: dict[str, str] = {}
+    lisp_declarados: set[str] = set()
+    for entrada in entradas:
+        modulo = entrada.get("ModuleName")
+        if not modulo:
+            raise ErrorConstruccion("ComponentEntry sin ModuleName en PackageContents.xml")
+        modulo_normalizado = _normalizar_modulo(modulo)
+        if modulo_normalizado in modulos:
+            raise ErrorConstruccion(
+                "ComponentEntry duplicado para {}".format(modulo_normalizado)
+            )
+        modulos[modulo_normalizado] = entrada.get("AppName") or modulo_normalizado
+        if modulo_normalizado.casefold().endswith(".cuix"):
+            if modulo_normalizado != RUTA_CUIX:
+                raise ErrorConstruccion(
+                    "el CUIX debe declararse como ./{}, no {}".format(
+                        RUTA_CUIX, modulo_normalizado
+                    )
+                )
+            continue
+        if not modulo_normalizado.startswith(RUTA_LISP + "/"):
+            raise ErrorConstruccion(
+                "ModuleName no reconocido en PackageContents.xml: {}".format(modulo_normalizado)
+            )
+        if entrada.get("LoadOnAutoCADStartup") is not None:
+            raise ErrorConstruccion(
+                "LoadOnAutoCADStartup no está permitido en las entradas LISP ({})".format(
+                    modulo_normalizado
+                )
+            )
+        if (entrada.get("PerDocument") or "").lower() != "true":
+            raise ErrorConstruccion(
+                "la entrada LISP debe declarar PerDocument=\"True\": {}".format(
+                    modulo_normalizado
+                )
+            )
+        lisp_declarados.add(posixpath.basename(modulo_normalizado))
+
+    if RUTA_CUIX not in modulos:
+        raise ErrorConstruccion(
+            "PackageContents.xml no declara el componente CUIX ./{}".format(RUTA_CUIX)
+        )
+    faltantes = sorted(set(nombres_lisp) - lisp_declarados)
+    sobrantes = sorted(lisp_declarados - set(nombres_lisp))
+    if faltantes:
+        raise ErrorConstruccion(
+            "LISP presente(s) en lisp/ sin ComponentEntry: {}".format(", ".join(faltantes))
+        )
+    if sobrantes:
+        raise ErrorConstruccion(
+            "ComponentEntry LISP sin archivo en lisp/: {}".format(", ".join(sobrantes))
+        )
+
+
+def comprobar_salida_fuera_de_fuentes(output_dir: Path, fuentes: Fuentes) -> None:
+    salida = output_dir.resolve()
+    for etiqueta, fuente in (
+        ("lisp", fuentes.lisp_dir),
+        ("cuix", fuentes.cuix_dir),
+    ):
+        origen = fuente.resolve()
+        if salida == origen or origen in salida.parents:
+            raise ErrorConstruccion(
+                "la salida no puede estar dentro de las fuentes ({}): {}".format(etiqueta, salida)
+            )
+
+
+def comprobar_destinos(output_dir: Path, destinos: list[Path]) -> None:
+    """Rechaza colisiones antes de mutar cualquier salida.
+
+    Se niegan enlaces simbólicos y directorios en las rutas de salida para no
+    seguir ni reemplazar elementos ajenos al constructor.
+    """
+    if output_dir.is_symlink():
+        raise ErrorConstruccion(
+            "la salida no puede ser un enlace simbólico: {}".format(output_dir)
+        )
+    if output_dir.exists() and not output_dir.is_dir():
+        raise ErrorConstruccion(
+            "la salida no es un directorio: {}".format(output_dir)
+        )
+    for destino in destinos:
+        if destino.is_symlink():
+            raise ErrorConstruccion(
+                "destino de salida es un enlace simbólico: {}".format(destino)
+            )
+        if not destino.exists():
+            continue
+        if destino.is_dir():
+            raise ErrorConstruccion(
+                "destino de salida es un directorio: {}".format(destino)
+            )
+        if not destino.is_file():
+            raise ErrorConstruccion(
+                "destino de salida no es un archivo regular: {}".format(destino)
+            )
+
+
+def _info_zip(nombre: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(nombre, date_time=MARCA_TIEMPO_ZIP)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = (0o100644 & 0xFFFF) << 16
+    return info
+
+
+def _copiar_a_zip(destino: zipfile.ZipFile, nombre: str, ruta: Path) -> str:
+    digest = hashlib.sha256()
+    with ruta.open("rb") as origen, destino.open(_info_zip(nombre), "w") as salida:
+        while True:
+            bloque = origen.read(TAMANO_BLOQUE)
+            if not bloque:
+                break
+            digest.update(bloque)
+            salida.write(bloque)
+    return digest.hexdigest()
+
+
+def construir_cuix(archivos: list[tuple[str, Path]], destino: Path) -> None:
+    """Reconstruye el CUIX como ZIP OPC preservando cada byte de origen."""
+    with zipfile.ZipFile(destino, "w", compression=zipfile.ZIP_DEFLATED) as cuix:
+        for relativa, ruta in archivos:
+            _copiar_a_zip(cuix, relativa, ruta)
+
+
+def _escribir_zip(
+    destino: Path,
+    manifiesto: Path,
+    archivos_lisp: list[Path],
+    cuix: Path,
+    install_script: Path,
+    bat_script: Path,
+    license: Path,
+) -> int:
+    entradas_bundle: list[tuple[str, Path]] = [
+        ("PackageContents.xml", manifiesto),
+        *((RUTA_LISP + "/" + ruta.name, ruta) for ruta in archivos_lisp),
+        (RUTA_CUIX, cuix),
+    ]
+    entradas_bundle.sort(key=lambda par: par[0])
+    hashes: list[tuple[str, str]] = []
+    with zipfile.ZipFile(destino, "w", compression=zipfile.ZIP_DEFLATED) as paquete:
+        for relativa, ruta in entradas_bundle:
+            hashes.append((_copiar_a_zip(paquete, NOMBRE_BUNDLE + "/" + relativa, ruta), relativa))
+        resumen = "".join(
+            "{}  {}\n".format(digest, relativa) for digest, relativa in hashes
+        ).encode("utf-8")
+        paquete.writestr(_info_zip("bundle.sha256"), resumen)
+        for nombre_fijo, ruta in (
+            ("Install-MensorCAD.ps1", install_script),
+            ("Instalar.bat", bat_script),
+            ("LICENSE", license),
+        ):
+            _copiar_a_zip(paquete, nombre_fijo, ruta)
+    return len(entradas_bundle)
+
+
+def _hash_archivo(ruta: Path) -> str:
+    digest = hashlib.sha256()
+    with ruta.open("rb") as archivo:
+        while True:
+            bloque = archivo.read(TAMANO_BLOQUE)
+            if not bloque:
+                break
+            digest.update(bloque)
+    return digest.hexdigest()
+
+
+def _instalar_salida(origen: Path, destino: Path) -> None:
+    """Publica un artefacto con creación exclusiva del temporal.
+
+    ``mkstemp`` falla si la ruta ya existe, así que nunca se sigue un temporal
+    preexistente ni se borran archivos temporales ajenos. Solo se elimina el
+    temporal que este proceso creó. El reemplazo final es atómico por archivo;
+    publicar varios archivos no es una transacción (ver docs/build-bundle.md).
+    """
+    descriptor, ruta_temporal = tempfile.mkstemp(
+        prefix="." + destino.name + ".", suffix=".tmp", dir=str(destino.parent)
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as salida, origen.open("rb") as entrada:
+            while True:
+                bloque = entrada.read(TAMANO_BLOQUE)
+                if not bloque:
+                    break
+                salida.write(bloque)
+        os.replace(ruta_temporal, destino)
+    finally:
+        try:
+            os.unlink(ruta_temporal)
+        except FileNotFoundError:
+            pass
+
+
+def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
+    """Valida todas las entradas y, solo entonces, escribe la salida."""
+    if not PATRON_VERSION.match(version):
+        raise ErrorConstruccion(
+            "formato de versión inválido: {!r} (se espera MAJOR.MINOR.PATCH)".format(version)
+        )
+    for etiqueta, ruta in (
+        ("Install-MensorCAD.ps1", fuentes.install_script),
+        ("Instalar.bat", fuentes.bat_script),
+        ("LICENSE", fuentes.license),
+    ):
+        _comprobar_archivo_regular(ruta, etiqueta)
+
+    archivos_lisp = listar_lisp(fuentes.lisp_dir)
+    archivos_cuix = listar_cuix(fuentes.cuix_dir)
+    validar_manifiesto(
+        fuentes.package_contents, version, [ruta.name for ruta in archivos_lisp]
+    )
+    comprobar_salida_fuera_de_fuentes(output_dir, fuentes)
+    zip_salida = output_dir / ZIP_SALIDA
+    sidecar = output_dir / (ZIP_SALIDA + SUFIJO_SIDECAR)
+    script_salida = output_dir / NOMBRE_SCRIPT
+    comprobar_destinos(output_dir, [zip_salida, sidecar, script_salida])
+
+    with tempfile.TemporaryDirectory(prefix="mensorcad-bundle-") as temporal:
+        cuix_temporal = Path(temporal) / "MensorCAD.cuix"
+        construir_cuix(archivos_cuix, cuix_temporal)
+        zip_temporal = Path(temporal) / ZIP_SALIDA
+        total_bundle = _escribir_zip(
+            zip_temporal,
+            fuentes.package_contents,
+            archivos_lisp,
+            cuix_temporal,
+            fuentes.install_script,
+            fuentes.bat_script,
+            fuentes.license,
+        )
+        hash_zip = _hash_archivo(zip_temporal)
+        sidecar_temporal = Path(temporal) / (ZIP_SALIDA + SUFIJO_SIDECAR)
+        sidecar_temporal.write_text(
+            "{}  {}\n".format(hash_zip, ZIP_SALIDA), encoding="utf-8", newline="\n"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _instalar_salida(zip_temporal, zip_salida)
+        _instalar_salida(sidecar_temporal, sidecar)
+        if not (
+            script_salida.exists()
+            and script_salida.samefile(fuentes.install_script)
+        ):
+            _instalar_salida(fuentes.install_script, script_salida)
+
+    return Resultado(
+        zip_salida=zip_salida,
+        sidecar=sidecar,
+        install_script=script_salida,
+        hash_zip=hash_zip,
+        archivos_bundle=total_bundle,
+    )
+
+
+def _analizar_argumentos(argv: list[str] | None) -> argparse.Namespace:
+    raiz_defecto = Path(__file__).resolve().parents[1]
+    analizador = argparse.ArgumentParser(
+        description="Construye MensorCAD-Windows.zip, su sidecar SHA-256 y el script standalone.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    analizador.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="directorio de salida, fuera de lisp/ y cuix/",
+    )
+    analizador.add_argument(
+        "--version",
+        default=VERSION_POR_DEFECTO,
+        help="versión del paquete; debe coincidir con PackageContents.xml",
+    )
+    analizador.add_argument("--package-contents", type=Path,
+                            default=raiz_defecto / "PackageContents.xml")
+    analizador.add_argument("--lisp-dir", type=Path, default=raiz_defecto / "lisp")
+    analizador.add_argument("--cuix-dir", type=Path, default=raiz_defecto / "cuix")
+    analizador.add_argument(
+        "--install-script", type=Path, default=raiz_defecto / "Install-MensorCAD.ps1"
+    )
+    analizador.add_argument("--bat-script", type=Path, default=raiz_defecto / "Instalar.bat")
+    analizador.add_argument("--license", type=Path, default=raiz_defecto / "LICENSE")
+    return analizador.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    opciones = _analizar_argumentos(argv)
+    fuentes = Fuentes(
+        package_contents=opciones.package_contents,
+        lisp_dir=opciones.lisp_dir,
+        cuix_dir=opciones.cuix_dir,
+        install_script=opciones.install_script,
+        bat_script=opciones.bat_script,
+        license=opciones.license,
+    )
+    try:
+        resultado = construir(fuentes, opciones.output_dir, opciones.version)
+    except ErrorConstruccion as exc:
+        print("ERROR: {}".format(exc), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print("ERROR de entrada/salida: {}".format(exc), file=sys.stderr)
+        return 1
+
+    print("Paquete construido: {}".format(resultado.zip_salida))
+    print("Sidecar SHA-256:    {}".format(resultado.sidecar))
+    print("Script standalone:  {}".format(resultado.install_script))
+    print("SHA-256 del ZIP:    {}".format(resultado.hash_zip))
+    print("Archivos del bundle: {}".format(resultado.archivos_bundle))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

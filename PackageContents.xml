@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifiesto del bundle de MensorCAD para AutoCAD de Windows 64 bits.
+
+  AutoCAD lo lee desde %PROGRAMFILES%\Autodesk\ApplicationPlugins\MensorCAD.bundle
+  y tools/build_bundle.py lo empaqueta junto con los LISP y el CUIX.
+  Cada entrada LISP usa PerDocument="True" para que los comandos queden
+  disponibles en cada dibujo; no se declara LoadOnAutoCADStartup.
+  El CUIX se generó con AutoCAD y se reconstruye sin editar su contenido.
+-->
+<ApplicationPackage SchemaVersion="1.0"
+                    AppVersion="0.1.0"
+                    Version="0.1.0"
+                    FriendlyVersion="0.1.0"
+                    ProductType="Application"
+                    Name="MensorCAD"
+                    Description="Herramientas LISP para topografía y catastro en AutoCAD"
+                    Author="RonGrasz"
+                    ProductCode="{6E2B1C4A-9F3D-4B7E-8A51-2C7D0F4E9B31}"
+                    UpgradeCode="{1F5A8D72-3C64-4E09-B7D2-9A8E4C6F0D53}">
+  <CompanyDetails Name="RonGrasz"
+                  Url="https://github.com/RonGrasz/Mensor-CAD" />
+  <Components Description="Complementos MensorCAD">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" />
+    <ComponentEntry AppName="MensorCAD"
+                    ModuleName="./Contents/UI/MensorCAD.cuix"
+                    AppDescription="Menús, barras y botones de MensorCAD" />
+    <ComponentEntry AppName="MC-AREA"
+                    ModuleName="./Contents/Lisp/MC-AREA.lsp"
+                    PerDocument="True"
+                    AppDescription="Cálculo y rotulado de áreas catastrales" />
+    <ComponentEntry AppName="MC-COLIND"
+                    ModuleName="./Contents/Lisp/MC-COLIND.lsp"
+                    PerDocument="True"
+                    AppDescription="Contornos colindantes" />
+    <ComponentEntry AppName="MC-COORD"
+                    ModuleName="./Contents/Lisp/MC-COORD.lsp"
+                    PerDocument="True"
+                    AppDescription="Tabla de coordenadas ligada a un punto" />
+    <ComponentEntry AppName="MC-ELEMENTS"
+                    ModuleName="./Contents/Lisp/MC-ELEMENTS.lsp"
+                    PerDocument="True"
+                    AppDescription="Elementos y rótulos de dibujo" />
+    <ComponentEntry AppName="MC-EXPORTEX"
+                    ModuleName="./Contents/Lisp/MC-EXPORTEX.lsp"
+                    PerDocument="True"
+                    AppDescription="Exportación de puntos" />
+    <ComponentEntry AppName="MC-FIX"
+                    ModuleName="./Contents/Lisp/MC-FIX.lsp"
+                    PerDocument="True"
+                    AppDescription="Correcciones y ajustes sobre el dibujo" />
+    <ComponentEntry AppName="MC-HELP"
+                    ModuleName="./Contents/Lisp/MC-HELP.lsp"
+                    PerDocument="True"
+                    AppDescription="Ayuda y versión de MensorCAD" />
+    <ComponentEntry AppName="MC-IMPORT"
+                    ModuleName="./Contents/Lisp/MC-IMPORT.lsp"
+                    PerDocument="True"
+                    AppDescription="Importación de puntos TXT/CSV" />
+    <ComponentEntry AppName="MC-SUBDIV"
+                    ModuleName="./Contents/Lisp/MC-SUBDIV.lsp"
+                    PerDocument="True"
+                    AppDescription="Subdivisión de parcelas" />
+    <ComponentEntry AppName="MC-TABLE"
+                    ModuleName="./Contents/Lisp/MC-TABLE.lsp"
+                    PerDocument="True"
+                    AppDescription="Tablas de coordenadas, rumbos y distancias" />
+    <ComponentEntry AppName="MC-TRANSFORM"
+                    ModuleName="./Contents/Lisp/MC-TRANSFORM.lsp"
+                    PerDocument="True"
+                    AppDescription="Transformación de coordenadas" />
+    <ComponentEntry AppName="MC-VECTOR"
+                    ModuleName="./Contents/Lisp/MC-VECTOR.lsp"
+                    PerDocument="True"
+                    AppDescription="Rumbos y distancias sobre polilíneas" />
+    <ComponentEntry AppName="MC-VERTEX"
+                    ModuleName="./Contents/Lisp/MC-VERTEX.lsp"
+                    PerDocument="True"
+                    AppDescription="Símbolos y etiquetas de vértices" />
+  </Components>
+</ApplicationPackage>
