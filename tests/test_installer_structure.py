@@ -344,6 +344,34 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertNotIn("C:\\Program Files", text)
         self.assertNotIn("-Verb RunAs", text)
 
+    def test_windows_tests_capture_bat_streams_without_promoting_native_stderr(self) -> None:
+        # Windows PowerShell 5.1 con $ErrorActionPreference = 'Stop' convierte el
+        # stderr de un comando nativo en un error terminante (NativeCommandError)
+        # cuando la salida se fusiona con 2>&1. La prueba del BAT debe capturar
+        # cada flujo en su propio archivo, igual que Invoke-ChildInstaller.
+        text = self.windows_tests
+        self.assertTrue(
+            "function Invoke-BatCommand" in text, "falta el capturador del BAT"
+        )
+        self.assertTrue("RedirectStandardError" in text, "falta el stderr redirigido")
+        fusionadas = [linea.strip() for linea in text.splitlines() if "2>&1" in linea]
+        self.assertEqual(
+            [], fusionadas, "no se debe fusionar el stderr nativo en la tuberia"
+        )
+        inicio = text.index("Test-Case 'El BAT reenvia opciones")
+        fin = text.index("Test-Case 'La entrada publica instala", inicio)
+        caso = text[inicio:fin]
+        self.assertIn("Invoke-BatCommand -BatPath $batCopy -Arguments @('-Help')", caso)
+        self.assertIn(
+            "Invoke-BatCommand -BatPath $batCopy -Arguments @('-NoAnimation')", caso
+        )
+        self.assertIn("Assert-Equal 0 $help.ExitCode", caso)
+        self.assertIn("$help.Stdout -match 'Uso:'", caso)
+        self.assertIn("Assert-Equal '' ($help.Stderr.Trim())", caso)
+        self.assertIn("Assert-Equal 1 $failure.ExitCode", caso)
+        self.assertIn("$failure.Stderr -match", caso)
+        self.assertIn("MensorCAD.bundle", caso)
+
     def test_docs_document_interface_marker_and_limits(self) -> None:
         for fragment in (
             "-Uninstall",

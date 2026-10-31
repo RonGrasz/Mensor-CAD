@@ -220,6 +220,37 @@ function Invoke-ChildInstaller {
     return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; Stdout = $stdout; Stderr = $stderr }
 }
 
+function Invoke-BatCommand {
+    param([string]$BatPath, [string[]]$Arguments = @())
+    # Windows PowerShell 5.1 con $ErrorActionPreference = 'Stop' convierte el
+    # stderr de un comando nativo en un error terminante (NativeCommandError)
+    # cuando los flujos se fusionan en la tuberia de PowerShell. Un fallo
+    # esperado del instalador abortaria la prueba antes de poder comprobar su
+    # codigo de salida, asi que cada flujo se captura en su propio archivo,
+    # igual que Invoke-ChildInstaller.
+    # cmd.exe /c con una ruta entre comillas exige el patron ""ruta" args" para
+    # que no se pierdan las comillas internas.
+    $commandShell = $env:ComSpec
+    if ([string]::IsNullOrWhiteSpace($commandShell)) {
+        $commandShell = 'cmd.exe'
+    }
+    $commandLine = '/c ""' + $BatPath + '"'
+    if ($Arguments.Count -gt 0) {
+        $commandLine += ' ' + ($Arguments -join ' ')
+    }
+    $commandLine += '"'
+    $stdoutPath = Join-Path -Path $script:TestRoot -ChildPath ('bat-stdout-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $stderrPath = Join-Path -Path $script:TestRoot -ChildPath ('bat-stderr-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $process = Start-Process -FilePath $commandShell -ArgumentList $commandLine -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $stdout = ''
+    $stderr = ''
+    if (Test-Path -LiteralPath $stdoutPath) { $stdout = [System.IO.File]::ReadAllText($stdoutPath) }
+    if (Test-Path -LiteralPath $stderrPath) { $stderr = [System.IO.File]::ReadAllText($stderrPath) }
+    Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; Stdout = $stdout; Stderr = $stderr }
+}
+
 function Copy-InstallerTo {
     param([string]$RootPath)
     $target = Join-Path -Path $RootPath -ChildPath 'Install-MensorCAD.ps1'
@@ -294,17 +325,17 @@ try {
             $batCopy = Join-Path -Path $root -ChildPath 'Instalar.bat'
             Copy-Item -LiteralPath $script:BatPath -Destination $batCopy -Force
 
-            $helpCommand = '"' + $batCopy + '" -Help'
-            $helpOutput = (& cmd.exe /c $helpCommand 2>&1 | Out-String)
-            $helpExit = $LASTEXITCODE
-            Assert-Equal 0 $helpExit 'El BAT debe conservar el codigo 0 de -Help.'
-            Assert-True ($helpOutput -match 'Uso:') 'El BAT debe reenviar -Help al instalador.'
+            $help = Invoke-BatCommand -BatPath $batCopy -Arguments @('-Help')
+            Assert-Equal 0 $help.ExitCode 'El BAT debe conservar el codigo 0 de -Help.'
+            Assert-True ($help.Stdout -match 'Uso:') 'El BAT debe reenviar -Help al instalador.'
+            Assert-Equal '' ($help.Stderr.Trim()) 'La ayuda del BAT no debe escribir en stderr.'
 
-            $failCommand = '"' + $batCopy + '" -NoAnimation'
-            $failOutput = (& cmd.exe /c $failCommand 2>&1 | Out-String)
-            $failExit = $LASTEXITCODE
-            Assert-Equal 1 $failExit 'El BAT debe conservar el codigo 1 de un fallo.'
-            Assert-True ($failOutput -match 'ERROR|bundle') 'El BAT no debe ocultar el mensaje de fallo.'
+            $failure = Invoke-BatCommand -BatPath $batCopy -Arguments @('-NoAnimation')
+            Assert-Equal 1 $failure.ExitCode 'El BAT debe conservar el codigo 1 de un fallo.'
+            Assert-True ($failure.Stderr -match 'ERROR|bundle') 'El BAT no debe ocultar el mensaje de fallo en stderr.'
+            Assert-True ($failure.Stdout -match 'codigo 1') 'El BAT debe informar el codigo de salida del instalador.'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $root 'MensorCAD.bundle'))) 'Un fallo del BAT no debe crear el bundle.'
+            Assert-Equal 0 @(Get-TransactionLeftovers -ParentPath $root).Count 'Un fallo del BAT no debe dejar transacciones.'
         }
         finally {
             if ($null -eq $previousNoPause) {
