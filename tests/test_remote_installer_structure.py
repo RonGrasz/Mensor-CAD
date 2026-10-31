@@ -85,6 +85,17 @@ def function_body(text: str, name: str) -> str:
     return text[start:following]
 
 
+def fin_de_linea_ps51_valido(raw: bytes) -> bool:
+    """Acepta LF y CRLF; solo rechaza retornos de carro sueltos.
+
+    Un checkout Windows (core.autocrlf=true) entrega los .ps1 con CRLF, y
+    Windows PowerShell 5.1 acepta ambos fines de linea. Exigir LF forzaria a
+    normalizar el arbol de trabajo en Windows, que no es responsabilidad de la
+    prueba: alcanza con que no haya CR sin LF.
+    """
+    return b"\r" not in raw.replace(b"\r\n", b"")
+
+
 class RemoteInstallerStructureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -340,8 +351,42 @@ class RemoteInstallerStructureTests(unittest.TestCase):
     def test_remote_windows_test_file_is_ps51_ready(self) -> None:
         raw = REMOTE_TESTS.read_bytes()
         self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), "el archivo debe ser UTF-8 con BOM")
-        self.assertNotIn(b"\r", raw, "el archivo debe usar el mismo fin de linea LF que el resto de los .ps1")
+        texto = raw.decode("utf-8-sig")
+        self.assertIn(
+            "$ErrorActionPreference",
+            texto,
+            "el contenido debe seguir siendo UTF-8 legible por PowerShell 5.1",
+        )
+        self.assertTrue(
+            fin_de_linea_ps51_valido(raw),
+            "el archivo solo puede usar fin de linea LF o CRLF, sin CR sueltos",
+        )
         self.assertTrue(raw.endswith(b"\n"), "el archivo debe terminar con un salto de linea")
+
+    def test_remote_windows_test_file_acepta_lf_y_crlf(self) -> None:
+        # El checkout de Windows llega con BOM y CRLF: ambas formas son validas
+        # y la comprobacion no debe alterar el contenido de la prueba.
+        bom = b"\xef\xbb\xbf"
+        contenido = "param([switch]$PlainMode)\nWrite-Host 'prueba remota'\nexit 2\n"
+        lf = bom + contenido.encode("utf-8")
+        crlf = bom + contenido.replace("\n", "\r\n").encode("utf-8")
+        for muestra in (lf, crlf):
+            self.assertTrue(muestra.startswith(bom), "el BOM UTF-8 debe conservarse")
+            self.assertTrue(
+                fin_de_linea_ps51_valido(muestra),
+                "fin de linea rechazado: {!r}".format(muestra),
+            )
+            self.assertTrue(muestra.endswith(b"\n"), "debe terminar con salto de linea")
+            self.assertEqual(
+                muestra.decode("utf-8-sig").replace("\r\n", "\n"),
+                contenido,
+                "aceptar CRLF no debe alterar el contenido de la prueba",
+            )
+        self.assertNotIn(b"\r", lf, "la variante LF no debe introducir CR")
+        self.assertFalse(
+            fin_de_linea_ps51_valido(bom + b"param()\rWrite-Host 'prueba'\n"),
+            "un CR suelto no es un fin de linea valido",
+        )
 
     def test_active_wait_reuses_the_existing_renderer(self) -> None:
         self.assertIn("function Write-MensorCadActivity", self.local_branch, "el renderizador debe ser el local")

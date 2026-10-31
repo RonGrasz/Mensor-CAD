@@ -254,15 +254,15 @@ class InventarioDeSalida(CasoBase):
 
     def test_acepta_manifiesto_con_solo_version_coincidente(self):
         fuentes = self.fuentes()
-        xml = fuentes.package_contents.read_text(encoding="utf-8").replace(
-            'AppVersion="0.1.0" ', ""
-        )
-        fuentes.package_contents.write_text(xml, encoding="utf-8")
+        # Se trabaja en bytes a proposito: Path.write_text traduce "\n" al fin de
+        # linea de la plataforma y el constructor solo debe copiar bytes.
+        xml = fuentes.package_contents.read_bytes().replace(b'AppVersion="0.1.0" ', b"")
+        fuentes.package_contents.write_bytes(xml)
         self.construir(fuentes)
 
         zip_salida = fuentes.salida / ZIP_SALIDA
         with self.leer_zip(zip_salida) as zf:
-            self.assertEqual(zf.read(RAIZ_BUNDLE + "PackageContents.xml"), xml.encode("utf-8"))
+            self.assertEqual(zf.read(RAIZ_BUNDLE + "PackageContents.xml"), xml)
             self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
         self.assertEqual(
             (fuentes.salida / SIDECAR).read_text(encoding="utf-8"),
@@ -272,6 +272,22 @@ class InventarioDeSalida(CasoBase):
             (fuentes.salida / RUTA_SCRIPT_STANDALONE).read_bytes(),
             fuentes.install_script.read_bytes(),
         )
+
+    def test_preserva_el_manifiesto_con_fin_de_linea_crlf(self):
+        # Un checkout Windows (core.autocrlf=true) entrega CRLF: el constructor
+        # no debe normalizar ni rechazar el manifiesto por su fin de linea.
+        fuentes = self.fuentes()
+        xml = manifiesto("0.1.0", LISP_FIXTURE).replace(b"\n", b"\r\n")
+        fuentes.package_contents.write_bytes(xml)
+        self.construir(fuentes)
+
+        with self.leer_zip(fuentes.salida / ZIP_SALIDA) as zf:
+            self.assertEqual(
+                zf.read(RAIZ_BUNDLE + "PackageContents.xml"),
+                xml,
+                msg="el manifiesto CRLF debe conservarse byte a byte",
+            )
+            self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
 
     def test_manifiesto_publico_no_impone_minimo_ni_locale(self):
         raiz = ElementTree.fromstring((RAIZ_REPO / "PackageContents.xml").read_bytes())
