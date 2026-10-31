@@ -49,11 +49,14 @@ class InstallerStructureTests(unittest.TestCase):
 
     def test_public_switches_are_limited_to_documented_interface(self) -> None:
         block = self.top_param_block
-        for switch in ("$Uninstall", "$NoAnimation", "$Help", "$FromRelease", "$Version"):
+        for switch in ("$Uninstall", "$NoAnimation", "$Help", "$FromRelease", "$Version", "$ElevatedProcess", "$HoldResult"):
             self.assertIn(switch, block)
         self.assertNotIn("Destination", block)
         self.assertNotIn("SourceRoot", block)
         self.assertNotIn("Url", block)
+        self.assertIn("-HoldResult", self.docs, "la documentacion local debe mencionar -HoldResult")
+        # -HoldResult es un interruptor reservado; no aparece como opcion publica
+        # usable desde la entrada remota, solo como senal interna de la relanzada.
 
     def test_destination_is_fixed_program_files_bundle(self) -> None:
         text = self.installer
@@ -69,7 +72,7 @@ class InstallerStructureTests(unittest.TestCase):
             self.installer,
         )
         self.assertIsNotNone(guard, "el instalador debe retornar sin efectos al cargarse con dot-source")
-        self.assertLess(guard.start(), self.installer.index("exit (Invoke-MensorCadCli"))
+        self.assertLess(guard.start(), self.installer.index("exit $mensorCadExitCode"))
 
     def test_engine_functions_exist_and_are_reusable(self) -> None:
         for name in (
@@ -301,7 +304,19 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertIn("[Console]::Error.WriteLine", self.installer)
         self.assertIn("return 0", self.installer)
         self.assertIn("return 1", self.installer)
-        self.assertIn("exit (Invoke-MensorCadCli", self.installer)
+        # La espera final del hijo elevado nunca puede cambiar el estado real:
+        # el codigo se calcula antes y se conserva aunque Read-Host falle.
+        entry = self.installer[self.installer.index("$mensorCadExitCode = Invoke-MensorCadCli") :]
+        self.assertLess(
+            entry.index("$mensorCadExitCode = Invoke-MensorCadCli"),
+            entry.index("Wait-MensorCadResultHold -HoldResult:$HoldResult"),
+            "la espera final debe ejecutarse despues de conocer el codigo real",
+        )
+        self.assertLess(
+            entry.index("Wait-MensorCadResultHold -HoldResult:$HoldResult"),
+            entry.index("exit $mensorCadExitCode"),
+            "el codigo real debe salir despues de la espera final",
+        )
 
     def test_bat_prefers_native_64bit_powershell_and_preserves_exit_code(self) -> None:
         self.assertIn("%~dp0Install-MensorCAD.ps1", self.bat)
@@ -310,6 +325,7 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertIn("Sysnative", self.bat)
         self.assertIn("System32\\WindowsPowerShell\\v1.0\\powershell.exe", self.bat)
         self.assertIn('"%MENSORCAD_POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%MENSORCAD_SCRIPT%" %*', self.bat)
+        self.assertIn('set "MENSORCAD_BAT_LAUNCHER=1"', self.bat, "el BAT debe marcar el lanzamiento del doble clic")
         self.assertIn("%ERRORLEVEL%", self.bat)
         self.assertIn("exit /b %MENSORCAD_EXIT%", self.bat)
         self.assertIn("MENSORCAD_NO_PAUSE", self.bat)
@@ -404,151 +420,208 @@ class InstallerStructureTests(unittest.TestCase):
                 f"{path.name} debe guardarse como UTF-8 con BOM para Windows PowerShell 5.1",
             )
 
-    def test_single_window_handoff_is_confined_to_a_proven_console(self) -> None:
+    def test_single_window_handoff_replaces_window_hiding(self) -> None:
         installer = self.installer
         for name in (
             "Get-MensorCadConsoleNativeType",
-            "Get-MensorCadConsoleProbe",
+            "Get-MensorCadConsoleClients",
             "Get-MensorCadProcessParentId",
             "Get-MensorCadProcessName",
             "Get-MensorCadProcessCommandLine",
             "Get-MensorCadBatchCommandTarget",
-            "Test-MensorCadConsoleHandoffBlocked",
+            "Test-MensorCadConsoleStreamsInteractive",
             "Get-MensorCadDedicatedConsole",
-            "Set-MensorCadConsoleWindowVisible",
+            "Test-MensorCadHandoffEligible",
+            "Wait-MensorCadResultHold",
         ):
             self.assertIn(f"function {name}", installer, f"falta el ayudante {name}")
 
-        # La compilacion Win32 es perezosa: solo dentro del ayudante que la usa.
-        compilations = [
-            position
-            for position in [m.start() for m in re.finditer(r"Add-Type -TypeDefinition", installer)]
-        ]
+        # La ruta obsoleta de ocultar ventanas debe estar retirada por completo.
+        for retired in (
+            "ShowWindow",
+            "user32.dll",
+            "IsWindowVisible",
+            "GetConsoleWindow",
+            "WT_SESSION",
+            "SW_HIDE",
+            "Set-MensorCadConsoleWindowVisible",
+            "Get-MensorCadConsoleProbe",
+            "Test-MensorCadConsoleHandoffBlocked",
+        ):
+            self.assertNotIn(retired, installer, f"la ruta obsoleta sigue presente: {retired}")
+
+        # Solo se conserva la sonda de clientes de consola, perezosa y de lectura.
+        compilations = [m.start() for m in re.finditer(r"Add-Type -TypeDefinition", installer)]
         self.assertEqual(1, len(compilations), "la declaracion Win32 debe compilarse en un solo lugar")
         self.assertGreater(
             compilations[0],
             installer.index("function Get-MensorCadConsoleNativeType"),
             "la sonda nativa no debe compilarse al cargar el archivo",
         )
-        for fragment in (
-            "GetConsoleWindow",
-            "GetConsoleProcessList",
-            "IsWindowVisible",
-            "ShowWindow",
-            "WT_SESSION",
-            "IsOutputRedirected",
-            "IsErrorRedirected",
-            "IsInputRedirected",
-            "explorer",
-            "cmd",
-        ):
-            self.assertIn(fragment, installer, f"la sonda no comprueba {fragment}")
-
-        # B1: la topologia de procesos no distingue una terminal cmd abierta por
-        # Explorer del doble clic del BAT; la linea de comandos es la prueba
-        # adicional y debe exigir el interruptor /c exacto y este Instalar.bat.
-        self.assertIn("CommandLineProbe", installer)
-        self.assertIn("function Get-MensorCadProcessCommandLine", installer)
-        self.assertIn("'Instalar.bat'", installer)
-        self.assertIn("$token -ieq '/c'", installer)
-        self.assertIn("$token -ieq '/k'", installer)
-        self.assertIn("StringComparison]::OrdinalIgnoreCase", installer)
-        recognizer = installer[
-            installer.index("function Get-MensorCadBatchCommandTarget") : installer.index(
-                "function Test-MensorCadConsoleHandoffBlocked"
+        native_block = installer[
+            installer.index("function Get-MensorCadConsoleNativeType") : installer.index(
+                "function Get-MensorCadConsoleClients"
             )
         ]
-        self.assertIn("Get-MensorCadBatchCommandTarget -CommandLine $commandLine", installer)
-        self.assertIn("if (-not [string]::Equals($resolved, $expected", recognizer)
-        self.assertIn("return $null", recognizer, "el reconocedor debe fallar abierto")
+        self.assertIn("kernel32.dll", native_block)
+        self.assertIn("GetConsoleProcessList", native_block)
 
-        # Ocultar y restaurar viven solo en la relanzada elevada, alrededor del
-        # mismo lanzamiento bloqueante, con la restauracion en el finally.
+        # Prueba de consola dedicada: exactamente dos clientes, cmd padre directo
+        # y /c exacto de este BAT. Sin antecesor de cmd y sin WT_SESSION.
+        proof = installer[
+            installer.index("function Get-MensorCadDedicatedConsole") : installer.index(
+                "function Test-MensorCadHandoffEligible"
+            )
+        ]
+        self.assertIn("$consoleProcessIds.Count -ne 2", proof)
+        self.assertIn("$ParentIdProbe $CurrentProcessId", proof)
+        self.assertIn("'^cmd$'", proof)
+        self.assertNotIn("explorer", proof)
+        self.assertIn("Get-MensorCadBatchCommandTarget -CommandLine $commandLine", proof)
+        self.assertIn("$token -ieq '/c'", installer)
+        self.assertIn("$token -ieq '/k'", installer)
+
+        # Regla unica de elegibilidad: opt-in del BAT, consola interactiva, sin
+        # automatizacion y prueba de consola dedicada.
+        eligible = installer[
+            installer.index("function Test-MensorCadHandoffEligible") : installer.index(
+                "function Wait-MensorCadResultHold"
+            )
+        ]
+        for fragment in (
+            "if (-not $BatLauncher) { return $false }",
+            "if (-not $StreamsInteractive) { return $false }",
+            "if (-not [string]::IsNullOrEmpty($NoPause)) { return $false }",
+            "& $DedicatedConsoleProbe",
+        ):
+            self.assertIn(fragment, eligible)
+
+        # Un unico sitio de elevacion, con espera condicional y sentinel privado.
         elevation = installer[
             installer.index("function Invoke-MensorCadElevatedSelf") : installer.index(
                 "function Invoke-MensorCadCli"
             )
         ]
-        self.assertEqual(2, installer.count("Get-MensorCadDedicatedConsole"))
-        self.assertEqual(1, elevation.count("Get-MensorCadDedicatedConsole"))
+        self.assertEqual(1, installer.count("-Verb RunAs"))
         self.assertEqual(1, elevation.count("-Verb RunAs"))
-        self.assertIn("-Verb RunAs -Wait -PassThru", elevation)
+        self.assertIn("-Verb RunAs -Wait:(-not $handoff) -PassThru", elevation)
+        self.assertIn("Test-MensorCadHandoffEligible -BatLauncher:$BatLauncher", elevation)
+        self.assertIn("$argumentString += ' -HoldResult'", elevation)
+        self.assertIn("return [int]$script:MensorCadBatHandoffSentinel", elevation)
+        self.assertIn("return [int]$process.ExitCode", elevation)
+        self.assertIn("No se obtuvo elevacion mediante UAC. La instalacion no se realizo. Detalle: ", elevation)
+        self.assertIn("No se pudo iniciar el proceso elevado. La instalacion no se realizo.", elevation)
+        self.assertNotIn("Stop-Process", elevation)
+
+        # El opt-in del BAT viaja como marca de entorno reservada; la espera
+        # final viaja como interruptor reservado -HoldResult porque la herencia
+        # de entorno no esta probada tras UAC.
+        block = self.top_param_block
+        self.assertIn("[switch]$HoldResult", block, "-HoldResult debe ser un parametro reservado del script")
+        self.assertNotIn("[switch]$BatLauncher", block, "-BatLauncher no debe ser un parametro publico")
+        self.assertIn("$env:MENSORCAD_BAT_LAUNCHER -eq '1'", installer)
+        self.assertIn("Wait-MensorCadResultHold -HoldResult:$HoldResult", installer)
+        self.assertNotIn("MENSORCAD_RESULT_HOLD", installer, "no debe depender de la herencia de entorno")
+        self.assertIn("MENSORCAD_BAT_LAUNCHER", self.bat)
+        entry = installer[installer.index("$mensorCadCliArguments = @{}") :]
         self.assertLess(
-            elevation.index("Get-MensorCadDedicatedConsole"),
-            elevation.index("-Verb RunAs"),
-            "la sonda debe decidir antes de pedir UAC",
+            entry.index("$env:MENSORCAD_BAT_LAUNCHER -eq '1'"),
+            entry.index("$mensorCadExitCode = Invoke-MensorCadCli"),
+            "la marca del BAT debe decidir antes de ejecutar el flujo",
         )
-        self.assertLess(
-            elevation.index("-Visible $false"),
-            elevation.index("-Verb RunAs"),
-            "ocultar debe ocurrir antes del lanzamiento bloqueante",
-        )
-        self.assertLess(
-            elevation.index("-Verb RunAs"),
-            elevation.index("finally {"),
-            "la restauracion debe vivir despues del lanzamiento",
-        )
-        finally_block = elevation[elevation.index("finally {") :]
-        self.assertIn("-Visible $true", finally_block, "la restauracion debe vivir en el finally")
-        self.assertIn(
-            "return [int]$process.ExitCode",
-            elevation,
-            "el codigo de salida del proceso elevado debe conservarse",
-        )
-        self.assertEqual(
-            1,
-            installer.count("::ShowWindow"),
-            "ShowWindow solo debe invocarse desde el envoltorio de visibilidad",
-        )
+
+        # Sentinel privado, coherente con el BAT y ajeno a los codigos reales.
+        sentinel_match = re.search(r"\$script:MensorCadBatHandoffSentinel = (\d+)", installer)
+        self.assertIsNotNone(sentinel_match, "falta el sentinel privado del lanzador")
+        sentinel = sentinel_match.group(1)
+        self.assertNotIn(sentinel, ("0", "1"), "el sentinel no puede confundirse con un estado real")
+        bat_sentinel = re.search(r'if "%MENSORCAD_EXIT%"=="(\d+)" goto :handoff', self.bat)
+        self.assertIsNotNone(bat_sentinel, "el BAT debe reconocer el sentinel del lanzador")
+        self.assertEqual(sentinel, bat_sentinel.group(1), "BAT y PS deben compartir el mismo sentinel")
+
+        # La espera final del hijo elevado es visible pero nunca en automatizacion
+        # ni con flujos redirigidos, y no debe hacer polling de teclado.
+        hold = installer[
+            installer.index("function Wait-MensorCadResultHold") : installer.index(
+                "function Invoke-MensorCadElevatedSelf"
+            )
+        ]
+        for fragment in (
+            "if (-not $HoldResult) { return }",
+            "if (-not $StreamsInteractive) { return }",
+            "if (-not [string]::IsNullOrEmpty($NoPause)) { return }",
+            "Read-Host",
+        ):
+            self.assertIn(fragment, hold)
+        self.assertNotIn("ReadKey", installer)
+        self.assertNotIn("Wait-Key", installer)
+
+    def test_bat_launcher_handoff_is_neutral_and_skips_pause(self) -> None:
+        bat = self.bat
+        self.assertIn('set "MENSORCAD_BAT_LAUNCHER=1"', bat, "el BAT debe marcar el lanzamiento")
+        self.assertIn('"%MENSORCAD_SCRIPT%" %*', bat, "el BAT debe reenviar los argumentos sin cambios")
+        self.assertIn("goto :handoff", bat)
+        self.assertIn("\n:handoff", bat.replace("\r\n", "\n"))
+        handoff = bat.replace("\r\n", "\n")
+        handoff = handoff[handoff.index("\n:handoff") :]
+        self.assertIn("continua en la ventana elevada", handoff)
+        self.assertIn("exit /b 0", handoff)
+        self.assertNotIn("pause", handoff, "la entrega no debe hacer pausa")
+        self.assertNotIn("correctamente", handoff, "la entrega no debe imprimir exito")
+        neutral_line = [line for line in handoff.splitlines() if "continua en la ventana elevada" in line][0]
+        self.assertNotIn("ERROR", neutral_line)
+        self.assertIn("if not defined MENSORCAD_NO_PAUSE pause", bat, "el camino normal conserva la pausa")
+        self.assertIn("exit /b %MENSORCAD_EXIT%", bat, "el camino normal conserva el codigo original")
 
     def test_window_tests_exercise_handoff_with_local_seams_only(self) -> None:
         text = self.window_tests
         for fragment in (
-            "descubrir,ocultar,lanzar,restaurar",
             "Get-MensorCadDedicatedConsole",
-            "Set-MensorCadConsoleWindowVisible",
-            "Start-Process",
+            "Test-MensorCadConsoleStreamsInteractive",
+            "Wait-MensorCadResultHold",
             "$Verb -eq 'RunAs'",
             "GetTempPath",
             ". $script:InstallerPath",
-            "[System.IntPtr]::Zero",
             "Restore-WindowTestSeams",
+            "MENSORCAD_NO_PAUSE",
+            "MENSORCAD_STUB_EXIT",
+            "MENSORCAD_BAT_LAUNCHER",
         ):
             self.assertIn(fragment, text, f"las pruebas de ventana no cubren: {fragment}")
         self.assertNotIn("-Verb RunAs", text, "las pruebas de ventana no deben pedir UAC real")
+        self.assertNotIn("ShowWindow", text, "las pruebas de ventana no deben manipular ventanas")
         for scenario in (
+            "WT_SESSION",
+            "Sin la marca del BAT",
+            "MENSORCAD_NO_PAUSE",
+            "flujos redirigidos",
+            "terminal existente",
+            "sentinel",
+            "HoldResult",
             "Cancelar UAC",
-            "Un lanzamiento sin proceso",
-            "Consola compartida",
-            "Salida redirigida",
-            "Camino ya elevado",
-            "ayuda",
-            "Desinstalacion con UAC",
+            "Ya administrador",
+            "El BAT marca el lanzamiento",
             "hijo remoto",
-            "Una terminal cmd abierta por Explorer no se oculta (B1)",
-            "El doble clic cmd /c de este BAT si oculta y restaura",
-            "La linea de comandos distingue el doble clic",
         ):
             self.assertIn(scenario, text, f"las pruebas de ventana no cubren: {scenario}")
-        for fragment in (
-            "ConsoleTopology",
-            "Get-MensorCadProcessCommandLine",
-            "/k",
-            "Instalar.bat",
-        ):
-            self.assertIn(fragment, text, f"las pruebas de ventana no cubren el gate B1: {fragment}")
 
     def test_docs_document_single_window_limits_and_manual_proof(self) -> None:
         for fragment in (
             "Ventana única",
             "UAC",
             "Windows Terminal",
+            "closeOnExit",
             "fail-open",
             "prueba visual",
             "Test-InstallerWindow.ps1",
-            "explorer",
+            "MENSORCAD_BAT_LAUNCHER",
+            "HoldResult",
+            "continua en la ventana elevada",
+            "sentinel privado",
+            "75",
         ):
             self.assertIn(fragment, self.docs, f"la documentacion no menciona {fragment}")
+        self.assertNotIn("oculta la consola", self.docs, "la documentacion no debe describir la ruta obsoleta")
 
 
 if __name__ == "__main__":

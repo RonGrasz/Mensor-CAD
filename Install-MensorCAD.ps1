@@ -35,6 +35,12 @@
 .PARAMETER ElevatedProcess
     Reservado. Lo usa la relanzada elevada para no repetir el banner. No evita
     ninguna comprobacion de administrador.
+
+    Marcas reservadas (no son opciones publicas): Instalar.bat define
+    MENSORCAD_BAT_LAUNCHER=1 para marcar el lanzamiento del doble clic, y la
+    relanzada de entrega recibe el interruptor reservado -HoldResult para
+    mantener su resultado visible hasta Enter. Ninguna de las dos evita
+    permisos, validaciones ni comprobaciones de administrador.
 #>
 [CmdletBinding()]
 param(
@@ -43,7 +49,8 @@ param(
     [switch]$Help,
     [string]$Version,
     [switch]$FromRelease,
-    [switch]$ElevatedProcess
+    [switch]$ElevatedProcess,
+    [switch]$HoldResult
 )
 
 Set-StrictMode -Version 2.0
@@ -929,6 +936,7 @@ function Write-MensorCadUsage {
     Write-Host '  -FromRelease  Instala desde el ultimo release publicado en GitHub.'
     Write-Host '  -Version      Fija un tag concreto de la release (requiere -FromRelease).'
     Write-Host '  -Help         Muestra esta ayuda.'
+    Write-Host 'Marcas reservadas: MENSORCAD_BAT_LAUNCHER=1 (Instalar.bat); -HoldResult (relanzada de entrega).'
     Write-Host ''
     Write-Host 'Destino fijo:'
     Write-Host '  <Program Files>\Autodesk\ApplicationPlugins\MensorCAD.bundle'
@@ -1502,36 +1510,44 @@ function Invoke-MensorCadRemoteInstall {
 }
 
 # ---------------------------------------------------------------------------
-# Ventana unica: consola propia y ocultamiento temporal durante UAC
+# Entrega de ventana unica: consola dedicada del BAT
 # ---------------------------------------------------------------------------
-# Al hacer doble clic en Instalar.bat, Windows abre una consola cmd.exe dedicada
-# (su padre es explorer.exe) y el instalador corre dentro de ella. La elevacion
-# UAC abre una segunda ventana, de modo que al aceptar quedaban dos. Para dejar
-# una sola ventana visible se oculta temporalmente ESA consola mientras el
-# proceso elevado exista y se restaura siempre al terminar.
+# Con el doble clic del BAT, el lanzador no es una consola "sobrante": es el
+# proceso que el usuario abrio. El problema es que el instalador termina en esa
+# consola mientras el trabajo ocurre en una segunda ventana elevada. En lugar de
+# ocultar ventanas (imposible de forma fiable en un host delegado como Windows
+# Terminal) el lanzador ENTREGA el resultado:
 #
-# Reglas de seguridad:
-#  - La sonda nativa se compila solo cuando se va a pedir elevacion; el
-#    dot-source no registra tipos, no oculta nada y no escribe nada.
-#  - Nunca se oculta una terminal existente o compartida, una consola con flujos
-#    redirigidos ni una pseudoconsola (Windows Terminal / ConPTY): en esos casos
-#    se conserva el comportamiento anterior. Una terminal cmd abierta por
-#    Explorer tiene la misma topologia de procesos que el doble clic, asi que
-#    ademas se exige que su linea de comandos ejecute este Instalar.bat con /c.
-#  - Cualquier duda (error de sondeo, cadena de procesos distinta, ventana no
-#    visible) se resuelve SIN ocultar nada (fail-open).
-#  - La restauracion ocurre en un bloque finally: tambien al cancelar UAC o si
-#    el lanzamiento falla. No se cierra ningun proceso.
+#  - Solo con el opt-in reservado del BAT (MENSORCAD_BAT_LAUNCHER=1), consola
+#    interactiva, sin MENSORCAD_NO_PAUSE y con la prueba estricta de que esta
+#    consola es la del doble clic de este Instalar.bat.
+#  - El proceso elevado se lanza sin -Wait, recibe el interruptor reservado
+#    -HoldResult y mantiene su resultado final visible hasta Enter.
+#  - El lanzador devuelve un sentinel privado; el BAT imprime un mensaje neutral
+#    y termina con 0, sin resumen de exito ni pausa.
+#
+# Todo lo demas (PowerShell directo, terminal existente, entrada remota, flujos
+# redirigidos, automatizacion con MENSORCAD_NO_PAUSE o cualquier duda) conserva
+# el camino sincrono y sus codigos de salida originales. Nunca se oculta ni se
+# cierra ninguna ventana ni ningun proceso.
+#
+# La prueba de consola dedicada es la minima posible y solo de lectura: la lista
+# de clientes de la consola (kernel32) debe tener exactamente dos procesos, este
+# y su cmd.exe padre directo, y la linea de comandos de ese cmd debe ejecutar
+# este Instalar.bat con /c. No se consulta el antecesor de cmd ni la sesion de la
+# terminal: el host es irrelevante porque no se toca ninguna ventana.
+
+$script:MensorCadBatHandoffSentinel = 75
 
 function Get-MensorCadConsoleNativeType {
-    # Devuelve el tipo con las declaraciones Win32 o $null si no se puede
-    # compilar. Nunca lanza: sin sonda no se oculta nada.
+    # Devuelve el tipo con la declaracion Win32 o $null si no se puede compilar.
+    # Nunca lanza: sin sonda la entrega no se habilita (fail-open).
     if ($null -ne $script:MensorCadConsoleNativeType) {
         return $script:MensorCadConsoleNativeType
     }
     foreach ($assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
         try {
-            $existing = $assembly.GetType('MensorCadConsoleHost.NativeWindow', $false, $false)
+            $existing = $assembly.GetType('MensorCadConsoleHost.NativeConsole', $false, $false)
         }
         catch {
             $existing = $null
@@ -1547,21 +1563,10 @@ using System.Runtime.InteropServices;
 
 namespace MensorCadConsoleHost
 {
-    public static class NativeWindow
+    public static class NativeConsole
     {
-        [DllImport("kernel32.dll")]
-        public static extern IntPtr GetConsoleWindow();
-
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern uint GetConsoleProcessList(uint[] processList, uint processCount);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool IsWindowVisible(IntPtr windowHandle);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool ShowWindow(IntPtr windowHandle, int command);
     }
 }
 '@
@@ -1573,23 +1578,21 @@ namespace MensorCadConsoleHost
         return $null
     }
     foreach ($type in $types) {
-        if ($type.FullName -eq 'MensorCadConsoleHost.NativeWindow') {
+        if ($type.FullName -eq 'MensorCadConsoleHost.NativeConsole') {
             $script:MensorCadConsoleNativeType = $type
         }
     }
     return $script:MensorCadConsoleNativeType
 }
 
-function Get-MensorCadConsoleProbe {
-    # Sonda de SOLO lectura: ventana de la consola, clientes conectados y
-    # visibilidad. Devuelve $null si no hay consola o si algo no se puede leer.
+function Get-MensorCadConsoleClients {
+    # Sonda de SOLO lectura: procesos conectados a esta consola. Devuelve $null si
+    # no hay consola, si no se puede compilar la declaracion o si la lista no es
+    # concluyente.
     param([int]$BufferSize = 8)
     $native = Get-MensorCadConsoleNativeType
     if ($null -eq $native) { return $null }
     try {
-        $windowHandle = $native::GetConsoleWindow()
-        if ($null -eq $windowHandle) { return $null }
-        if ($windowHandle -eq [IntPtr]::Zero) { return $null }
         $buffer = New-Object -TypeName 'uint32[]' -ArgumentList $BufferSize
         $count = [int]$native::GetConsoleProcessList($buffer, [uint32]$BufferSize)
         if ($count -le 0 -or $count -gt $BufferSize) { return $null }
@@ -1597,12 +1600,7 @@ function Get-MensorCadConsoleProbe {
         for ($index = 0; $index -lt $count; $index++) {
             $processIds += [int]$buffer[$index]
         }
-        $visible = [bool]$native::IsWindowVisible($windowHandle)
-        return [pscustomobject]@{
-            WindowHandle = $windowHandle
-            ProcessIds = $processIds
-            WindowVisible = $visible
-        }
+        return [pscustomobject]@{ ProcessIds = $processIds }
     }
     catch {
         return $null
@@ -1626,7 +1624,7 @@ function Get-MensorCadProcessName {
 
 function Get-MensorCadProcessCommandLine {
     # Linea de comandos del proceso, de solo lectura. Si no se puede leer se
-    # lanza y la deteccion se resuelve sin ocultar nada.
+    # lanza y la deteccion se resuelve sin entregar (fail-open).
     param([int]$ProcessId)
     $process = Get-CimInstance -ClassName 'Win32_Process' -Filter ('ProcessId = ' + $ProcessId) -ErrorAction Stop
     if ($null -eq $process) {
@@ -1643,10 +1641,10 @@ function Get-MensorCadBatchCommandTarget {
     # Reconocimiento minimo y estricto del doble clic de Explorer sobre este BAT:
     #   cmd.exe /c ""<carpeta>\Instalar.bat" "
     # Devuelve la ruta reconocida cuando el destino es exactamente el BAT de la
-    # raiz del script; en cualquier otro caso devuelve $null (la consola queda
-    # visible). No es un interprete de shell: solo separa el ejecutable, exige el
-    # interruptor /c exacto (nunca /c dentro de una ruta o argumento entre
-    # comillas), rechaza /k, composiciones y objetivos distintos.
+    # raiz del script; en cualquier otro caso devuelve $null (camino sincrono). No
+    # es un interprete de shell: solo separa el ejecutable, exige el interruptor
+    # /c exacto (nunca /c dentro de una ruta o argumento entre comillas), rechaza
+    # /k, composiciones y objetivos distintos.
     param([string]$CommandLine, [string]$BatchPath)
     if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $null }
     if ([string]::IsNullOrWhiteSpace($BatchPath)) { return $null }
@@ -1731,88 +1729,54 @@ function Get-MensorCadBatchCommandTarget {
     return $resolved
 }
 
-function Test-MensorCadConsoleHandoffBlocked {
-    # Con cualquier flujo redirigido no hay una consola interactiva propia que
-    # ocultar; se trata como motivo para no tocar nada.
+function Test-MensorCadConsoleStreamsInteractive {
+    # La entrega solo tiene sentido con una consola interactiva: con cualquier
+    # flujo redirigido se conserva el camino sincrono.
     try {
-        if ([Console]::IsOutputRedirected) { return $true }
-        if ([Console]::IsErrorRedirected) { return $true }
-        if ([Console]::IsInputRedirected) { return $true }
-        return $false
+        if ([Console]::IsInputRedirected) { return $false }
+        if ([Console]::IsOutputRedirected) { return $false }
+        if ([Console]::IsErrorRedirected) { return $false }
+        return $true
     }
     catch {
-        return $true
+        return $false
     }
 }
 
 function Get-MensorCadDedicatedConsole {
-    # Devuelve la ventana de la consola propia SOLO cuando es una consola
-    # dedicada del doble clic de este BAT: exactamente este proceso y su padre
-    # cmd.exe, ese cmd.exe abierto por explorer.exe, ventana visible, sin
-    # redireccion y con una linea de comandos que ejecuta este Instalar.bat con
-    # /c. Una terminal cmd abierta por Explorer tiene la misma topologia de
-    # procesos, asi que la linea de comandos es la prueba adicional. En
-    # cualquier otro caso (terminal existente, /k, destino distinto, duda o
-    # lectura imposible) devuelve $null y el instalador se comporta como antes.
+    # Confirma que esta consola es la del doble clic de este BAT: exactamente dos
+    # clientes conectados (este proceso y su cmd.exe padre directo), y la linea
+    # de comandos de ese cmd ejecuta este Instalar.bat con /c. El antecesor de cmd
+    # y el host de la terminal no se consultan: el host puede ser Windows
+    # Terminal, conhost o cualquier otro, porque no se manipula ninguna ventana.
     param(
-        [scriptblock]$ConsoleProbe = { Get-MensorCadConsoleProbe },
+        [scriptblock]$ClientProbe = { Get-MensorCadConsoleClients },
         [scriptblock]$ParentIdProbe = { param($ProcessId) Get-MensorCadProcessParentId -ProcessId $ProcessId },
         [scriptblock]$ProcessNameProbe = { param($ProcessId) Get-MensorCadProcessName -ProcessId $ProcessId },
         [scriptblock]$CommandLineProbe = { param($ProcessId) Get-MensorCadProcessCommandLine -ProcessId $ProcessId },
         [string]$BatchPath = '',
-        [bool]$OutputRedirected = (Test-MensorCadConsoleHandoffBlocked),
-        [string]$TerminalSession = $env:WT_SESSION,
         [int]$CurrentProcessId = $PID
     )
-    if ($OutputRedirected) { return $null }
-    if (-not [string]::IsNullOrWhiteSpace($TerminalSession)) { return $null }
     try {
-        $probe = & $ConsoleProbe
-        if ($null -eq $probe) { return $null }
-        $windowHandle = $probe.WindowHandle
-        if ($null -eq $windowHandle) { return $null }
-        if ($windowHandle -eq [IntPtr]::Zero) { return $null }
-        if (-not [bool]$probe.WindowVisible) { return $null }
+        $probe = & $ClientProbe
+        if ($null -eq $probe) { return $false }
         $consoleProcessIds = @($probe.ProcessIds)
-        if ($consoleProcessIds.Count -ne 2) { return $null }
-        if (-not ($consoleProcessIds -contains $CurrentProcessId)) { return $null }
+        if ($consoleProcessIds.Count -ne 2) { return $false }
+        if (-not ($consoleProcessIds -contains $CurrentProcessId)) { return $false }
         $commandShellId = 0
         foreach ($candidate in $consoleProcessIds) {
             if ([int]$candidate -ne $CurrentProcessId) { $commandShellId = [int]$candidate }
         }
-        if ($commandShellId -le 0) { return $null }
-        if ((& $ParentIdProbe $CurrentProcessId) -ne $commandShellId) { return $null }
-        if ((& $ProcessNameProbe $commandShellId) -notmatch '^cmd$') { return $null }
-        $shellParentId = & $ParentIdProbe $commandShellId
-        if ((& $ProcessNameProbe $shellParentId) -notmatch '^explorer$') { return $null }
-        # Prueba adicional: la linea de comandos debe ser el doble clic de este
-        # BAT. Si no se puede leer o no coincide, no se oculta nada.
+        if ($commandShellId -le 0) { return $false }
+        if ((& $ParentIdProbe $CurrentProcessId) -ne $commandShellId) { return $false }
+        if ((& $ProcessNameProbe $commandShellId) -notmatch '^cmd$') { return $false }
         $expectedBatch = $BatchPath
         if ([string]::IsNullOrWhiteSpace($expectedBatch)) {
-            if ([string]::IsNullOrWhiteSpace($script:MensorCadScriptRoot)) { return $null }
+            if ([string]::IsNullOrWhiteSpace($script:MensorCadScriptRoot)) { return $false }
             $expectedBatch = Join-Path -Path $script:MensorCadScriptRoot -ChildPath 'Instalar.bat'
         }
         $commandLine = & $CommandLineProbe $commandShellId
-        if ($null -eq (Get-MensorCadBatchCommandTarget -CommandLine $commandLine -BatchPath $expectedBatch)) { return $null }
-        return [pscustomobject]@{ WindowHandle = $windowHandle }
-    }
-    catch {
-        return $null
-    }
-}
-
-function Set-MensorCadConsoleWindowVisible {
-    # Oculta (SW_HIDE) o restaura (SW_SHOW) una ventana de consola concreta.
-    # Nunca lanza: un fallo de la ventana no debe romper la instalacion.
-    param([IntPtr]$WindowHandle, [bool]$Visible)
-    if ($null -eq $WindowHandle) { return $false }
-    if ($WindowHandle -eq [IntPtr]::Zero) { return $false }
-    $native = Get-MensorCadConsoleNativeType
-    if ($null -eq $native) { return $false }
-    try {
-        $command = 0
-        if ($Visible) { $command = 5 }
-        $null = $native::ShowWindow($WindowHandle, $command)
+        if ($null -eq (Get-MensorCadBatchCommandTarget -CommandLine $commandLine -BatchPath $expectedBatch)) { return $false }
         return $true
     }
     catch {
@@ -1820,8 +1784,49 @@ function Set-MensorCadConsoleWindowVisible {
     }
 }
 
+function Test-MensorCadHandoffEligible {
+    # Regla unica de elegibilidad. Cualquier duda o dato ausente devuelve $false y
+    # el lanzamiento sigue siendo sincrono con los mensajes y codigos originales.
+    param(
+        [switch]$BatLauncher,
+        [bool]$StreamsInteractive = (Test-MensorCadConsoleStreamsInteractive),
+        [string]$NoPause = $env:MENSORCAD_NO_PAUSE,
+        [scriptblock]$DedicatedConsoleProbe = { Get-MensorCadDedicatedConsole }
+    )
+    if (-not $BatLauncher) { return $false }
+    if (-not $StreamsInteractive) { return $false }
+    if (-not [string]::IsNullOrEmpty($NoPause)) { return $false }
+    try {
+        return [bool](& $DedicatedConsoleProbe)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Wait-MensorCadResultHold {
+    # Mantiene visible el resultado final de la ventana elevada hasta que el
+    # usuario pulse Enter. Nunca se ejecuta en flujos redirigidos ni en
+    # automatizacion, y un fallo de lectura jamas altera el estado real de la
+    # instalacion: el codigo de salida se decide fuera de esta funcion.
+    param(
+        [switch]$HoldResult,
+        [bool]$StreamsInteractive = (Test-MensorCadConsoleStreamsInteractive),
+        [string]$NoPause = $env:MENSORCAD_NO_PAUSE
+    )
+    if (-not $HoldResult) { return }
+    if (-not $StreamsInteractive) { return }
+    if (-not [string]::IsNullOrEmpty($NoPause)) { return }
+    try {
+        $null = Read-Host 'Pulse Enter para cerrar esta ventana.'
+    }
+    catch {
+        # Sin teclado disponible no hay espera; el codigo de salida no cambia.
+    }
+}
+
 function Invoke-MensorCadElevatedSelf {
-    param([switch]$Uninstall, [switch]$NoAnimation)
+    param([switch]$Uninstall, [switch]$NoAnimation, [switch]$BatLauncher)
     $powerShellPath = Get-MensorCadPowerShellPath
     $scriptPath = $script:MensorCadScriptPath
     if ([string]::IsNullOrWhiteSpace($scriptPath)) {
@@ -1831,35 +1836,32 @@ function Invoke-MensorCadElevatedSelf {
     if ($Uninstall) { $argumentString += ' -Uninstall' }
     if ($NoAnimation) { $argumentString += ' -NoAnimation' }
     Write-MensorCadInfo 'Se abrira la ventana de UAC. Acepte para continuar.'
-    # Ventana unica: solo una consola dedicada comprobada se oculta, y solo
-    # mientras el proceso elevado (el que abre su propia ventana) esta vivo.
-    # La restauracion vive en el finally, asi que tambien ocurre al cancelar
-    # UAC, si el lanzamiento falla o si no hay proceso. El estado de salida y
-    # los mensajes no cambian.
-    $hiddenConsoleWindow = $null
+    # Entrega de ventana unica: solo el lanzador del BAT, con consola interactiva
+    # dedicada a este BAT y sin automatizacion, deja de esperar y entrega el
+    # resultado. El hijo elevado recibe -HoldResult para mantener su resultado
+    # visible. Cualquier otro caso conserva el lanzamiento bloqueante original.
+    $handoff = Test-MensorCadHandoffEligible -BatLauncher:$BatLauncher
+    if ($handoff) {
+        # Interruptor reservado: el hijo elevado lo recibe como parametro
+        # -HoldResult para decidir la espera final. No es una opcion publica y
+        # no altera el codigo de salida.
+        $argumentString += ' -HoldResult'
+    }
     try {
-        $dedicatedConsole = Get-MensorCadDedicatedConsole
-        if ($null -ne $dedicatedConsole) {
-            if (Set-MensorCadConsoleWindowVisible -WindowHandle $dedicatedConsole.WindowHandle -Visible $false) {
-                $hiddenConsoleWindow = $dedicatedConsole.WindowHandle
-            }
-        }
-        try {
-            $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -Verb RunAs -Wait -PassThru
-        }
-        catch {
-            throw ('No se obtuvo elevacion mediante UAC. La instalacion no se realizo. Detalle: ' + $_.Exception.Message)
-        }
-        if ($null -eq $process) {
-            throw 'No se pudo iniciar el proceso elevado. La instalacion no se realizo.'
-        }
-        return [int]$process.ExitCode
+        $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -Verb RunAs -Wait:(-not $handoff) -PassThru
     }
-    finally {
-        if ($null -ne $hiddenConsoleWindow) {
-            $null = Set-MensorCadConsoleWindowVisible -WindowHandle $hiddenConsoleWindow -Visible $true
-        }
+    catch {
+        throw ('No se obtuvo elevacion mediante UAC. La instalacion no se realizo. Detalle: ' + $_.Exception.Message)
     }
+    if ($null -eq $process) {
+        throw 'No se pudo iniciar el proceso elevado. La instalacion no se realizo.'
+    }
+    if ($handoff) {
+        # Sentinel privado: solo el BAT lo interpreta, y solo en el lanzador. No
+        # significa exito de instalacion ni sustituye el estado real del hijo.
+        return [int]$script:MensorCadBatHandoffSentinel
+    }
+    return [int]$process.ExitCode
 }
 
 function Invoke-MensorCadCli {
@@ -1869,7 +1871,8 @@ function Invoke-MensorCadCli {
         [switch]$Help,
         [switch]$FromRelease,
         [string]$Version,
-        [switch]$ElevatedProcess
+        [switch]$ElevatedProcess,
+        [switch]$BatLauncher
     )
     $script:MensorCadPlainMode = ($NoAnimation -or (Test-MensorCadOutputRedirected))
     if ($Help) {
@@ -1907,7 +1910,7 @@ function Invoke-MensorCadCli {
                 if ($ElevatedProcess) {
                     throw 'La sesion elevada no tiene permisos de administrador. La desinstalacion no se realizo.'
                 }
-                return (Invoke-MensorCadElevatedSelf -Uninstall -NoAnimation:$NoAnimation)
+                return (Invoke-MensorCadElevatedSelf -Uninstall -NoAnimation:$NoAnimation -BatLauncher:$BatLauncher)
             }
             Write-MensorCadStep -Number 2 -Total 3 -Message 'Comprobando que AutoCAD este cerrado'
             Write-MensorCadStep -Number 3 -Total 3 -Message 'Desinstalando MensorCAD'
@@ -1931,7 +1934,7 @@ function Invoke-MensorCadCli {
             if ($ElevatedProcess) {
                 throw 'La sesion elevada no tiene permisos de administrador. La instalacion no se realizo.'
             }
-            return (Invoke-MensorCadElevatedSelf -NoAnimation:$NoAnimation)
+            return (Invoke-MensorCadElevatedSelf -NoAnimation:$NoAnimation -BatLauncher:$BatLauncher)
         }
 
         Write-MensorCadStep -Number 3 -Total 4 -Message 'Revalidando el paquete despues de la elevacion'
@@ -1978,4 +1981,12 @@ if ($Help) { $mensorCadCliArguments['Help'] = $true }
 if ($FromRelease) { $mensorCadCliArguments['FromRelease'] = $true }
 if ($PSBoundParameters.ContainsKey('Version')) { $mensorCadCliArguments['Version'] = $Version }
 if ($ElevatedProcess) { $mensorCadCliArguments['ElevatedProcess'] = $true }
-exit (Invoke-MensorCadCli @mensorCadCliArguments)
+# Marca reservada del BAT: solo Instalar.bat define MENSORCAD_BAT_LAUNCHER=1.
+# El interruptor reservado -HoldResult indica a la relanzada elevada que debe
+# mantener el resultado visible hasta Enter.
+if ($env:MENSORCAD_BAT_LAUNCHER -eq '1') { $mensorCadCliArguments['BatLauncher'] = $true }
+$mensorCadExitCode = Invoke-MensorCadCli @mensorCadCliArguments
+# La espera final nunca cambia el estado real: el codigo se calculo antes y se
+# conserva aunque la lectura de teclado falle.
+Wait-MensorCadResultHold -HoldResult:$HoldResult
+exit $mensorCadExitCode

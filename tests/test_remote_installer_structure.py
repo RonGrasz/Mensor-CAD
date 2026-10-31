@@ -127,7 +127,7 @@ class RemoteInstallerStructureTests(unittest.TestCase):
         declared = set(re.findall(r"\$(\w+)", block))
         self.assertEqual(
             declared,
-            {"Uninstall", "NoAnimation", "Help", "Version", "FromRelease", "ElevatedProcess"},
+            {"Uninstall", "NoAnimation", "Help", "Version", "FromRelease", "ElevatedProcess", "HoldResult"},
             "la entrada remota no debe abrir parametros nuevos fuera de -FromRelease y -Version",
         )
         for forbidden in ("$Destination", "$SourceRoot", "$Url", "$Uri", "$Path", "$Repository", "$Token"):

@@ -63,6 +63,8 @@ en un host de 64 bits usa `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershe
 | `-FromRelease` | Instala desde el último release de GitHub (ver `docs/remote-installer.md`). |
 | `-Version` | Fija un tag concreto del release; requiere `-FromRelease`. |
 | `-ElevatedProcess` | Reservado para la relanzada interna de UAC. No evita comprobaciones. |
+| `MENSORCAD_BAT_LAUNCHER=1` | Marca reservada que define `Instalar.bat`: identifica el lanzamiento del doble clic y habilita (si todo se cumple) la entrega de ventana única. No evita permisos ni validaciones. No es una opción pública del script. |
+| `-HoldResult` | Interruptor reservado para la relanzada de entrega: le indica que debe mantener su resultado visible hasta Enter. No es una opción pública, no se aplica a flujos redirigidos ni cambia el código de salida. |
 
 También se desactiva la animación automáticamente cuando la salida está
 redirigida, para que los registros de consola sigan siendo legibles.
@@ -74,44 +76,71 @@ automatizaciones.
 
 ## Ventana única después de UAC
 
-Al hacer doble clic en `Instalar.bat` se abre una consola propia. Antes de
-mostrar el aviso de UAC el instalador oculta **solo esa** consola, deja que la
-ventana elevada haga el trabajo y la restaura al terminar, incluso si se cancela
-UAC o si el lanzamiento falla. Al aceptar UAC queda una sola ventana visible y el
-resultado final se lee en la consola original, que es la que muestra el resumen
-del BAT y queda en pausa.
+Al hacer doble clic en `Instalar.bat` el lanzador **no** manipula ni oculta
+ventanas: entrega el resultado a la ventana elevada. Con una consola interactiva
+dedicada a este BAT, el lanzador deja de esperar, la ventana elevada hace el
+trabajo y mantiene su resultado final visible hasta pulsar Enter, y el lanzador
+imprime el mensaje neutral «La instalacion continua en la ventana elevada.» y
+termina en ese instante. Así el host de la terminal
+(Windows Terminal, conhost u otro) no necesita cambios: la ventana que queda con
+el resultado es la elevada.
 
 | Situación | Resultado |
 |-----------|-----------|
-| Doble clic en `Instalar.bat` (consola dedicada `cmd.exe` abierta por `explorer.exe` que ejecuta este `Instalar.bat` con `/c`) | Se oculta la consola original; al aceptar UAC queda una sola ventana visible. |
-| Terminal `cmd.exe` ya abierta por el usuario (también puede haber sido abierta desde `explorer.exe`) | No se oculta nada; se conservan las dos ventanas del comportamiento anterior. |
-| Windows Terminal, ConPTY o cualquier flujo redirigido | No se oculta nada (fail-open): la detección es conservadora. |
-| Ya elevado (sin UAC) o `-Help` | No se toca ninguna ventana; el flujo no cambia. |
+| Doble clic en `Instalar.bat` con consola dedicada `cmd.exe /c` de este BAT | El lanzador entrega el resultado: mensaje neutral, sin resumen de éxito ni pausa. La ventana elevada muestra el resultado final hasta Enter. |
+| PowerShell directo, terminal ya abierta, `-FromRelease` o consola compartida | Sin entrega: se conserva el comportamiento síncrono y los códigos de salida originales. |
+| Flujos redirigidos o automatización con `MENSORCAD_NO_PAUSE=1` | Sin entrega y sin espera final: camino síncrono original. |
+| Ya elevado (sin UAC) o `-Help` | No se lanza ninguna entrega ni se abre ninguna ventana extra. |
+| Se cancela UAC o el lanzamiento falla | Errores originales, código `1`, resumen de error y pausa del BAT como antes. |
 
-La detección es deliberadamente estricta: exige que la consola tenga
-exactamente este proceso y su padre `cmd.exe`, que ese `cmd.exe` haya sido
-abierto por `explorer.exe`, que la ventana sea visible y que no haya flujos
-redirigidos ni una pseudoconsola (`WT_SESSION`). Una terminal `cmd.exe` abierta
-por el usuario tiene la **misma topología de procesos**, así que además se lee
-su línea de comandos y solo se acepta el doble clic: `cmd.exe /c` seguido
-exactamente del `Instalar.bat` de esta carpeta. Se rechaza `/k`, un `/c` que
-solo aparece dentro de una ruta o argumento entre comillas, un `/c` de otro
-programa, otro `Instalar.bat` de otra carpeta, comandos compuestos y cualquier
-línea de comandos ilegible o desconocida. Si alguna comprobación falla, si el
-sondeo no se puede leer o si no hay compilador para las declaraciones Win32, no
-se oculta nada y el instalador sigue como antes. No se cierran procesos, no se
-cambia el código de salida, no se altera la validación previa a UAC y el `pause`
-del BAT sigue igual.
+La entrega exige cuatro condiciones a la vez, y cualquier duda la desactiva
+(fail-open, camino síncrono):
 
-Variantes de lanzamiento desconocidas (por ejemplo un envoltorio `.cmd` propio,
-un acceso directo con otra línea de comandos o una terminal abierta con `/k`)
-quedan visibles: la ventana extra es el precio de no ocultar nunca una terminal
-ajena. Esa decisión es intencionalmente conservadora.
+1. El lanzador del BAT, marcado con `MENSORCAD_BAT_LAUNCHER=1`.
+2. Consola interactiva: entrada, salida y error sin redirigir.
+3. Sin `MENSORCAD_NO_PAUSE` (automatización).
+4. Prueba de consola dedicada: la lista de clientes de la consola tiene
+   exactamente dos procesos (este y su `cmd.exe` padre directo) y la línea de
+   comandos de ese `cmd.exe` ejecuta exactamente este `Instalar.bat` con `/c`.
+   Se rechaza `/k`, un `/c` dentro de una ruta o argumento, otro programa, otro
+   `Instalar.bat` y cualquier línea ilegible. El antecesor de `cmd.exe` y la
+   variable `WT_SESSION` no se consultan: el host de la terminal es irrelevante
+   porque no se toca ninguna ventana.
+
+La ventana elevada recibe el interruptor reservado `-HoldResult` y mantiene su
+resultado visible hasta Enter, tanto si la instalación termina bien como si
+falla; nunca se aplica a flujos redirigidos y un fallo de lectura de teclado no
+altera el código de salida real. El lanzador devuelve un sentinel privado (`75`)
+que solo el BAT interpreta: no es éxito de instalación y nunca llega a
+PowerShell directo, a la entrada remota ni a automatizaciones. El código de
+salida documentado del instalador sigue siendo `0` o `1`; `75` es interno del
+lanzador y el BAT lo convierte en `0` tras informar el traspaso.
+
+Comprobación de seguridad: la validación local antes de UAC, la revalidación
+después de UAC y el motor de instalación no cambian; el único sitio de elevación
+sigue siendo uno y la marca reservada no evita ninguna comprobación de permisos
+ni de integridad.
+
+### Límite conocido en Windows Terminal
+
+Microsoft Learn documenta en
+<https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-advanced#profile-termination-behavior>
+que con `closeOnExit` en `automatic` (el valor por defecto) el comportamiento es
+como `always` para una aplicación cuyo terminal predeterminado está delegado:
+la pestaña se cierra al terminar el lanzador y **no** se conserva. Si el usuario
+configurara `closeOnExit: never` la pestaña podría permanecer, pero es una
+preferencia global del usuario: este instalador no escribe ninguna
+configuración de Windows Terminal y no promete el cierre de la pestaña en todos
+los casos. Lo que se conserva es la ventana elevada con el resultado final.
+
+Variantes desconocidas (por ejemplo un envoltorio `.cmd` propio o un acceso
+directo con otra línea de comandos) no entregan el resultado: el precio de no
+tocar nunca una terminal ajena es que el lanzador original permanezca.
 
 Esta unidad **no** demuestra el resultado visual: eso exige prueba visual humana
 en Windows (doble clic en `Instalar.bat`, aceptar y cancelar UAC y comprobar que
-queda una sola ventana legible). Las pruebas automatizadas usan costuras locales
-y no sustituyen esa comprobación.
+queda una sola ventana legible con el resultado). Las pruebas automatizadas usan
+costuras locales y no sustituyen esa comprobación.
 
 ## Destino fijo
 
@@ -290,7 +319,7 @@ los assets del release.
 |--------|-------|--------|
 | Estructura del instalador, BAT y documentación | `python3 -m unittest discover -s tests -p 'test_installer_structure.py' -v` | Se ejecuta en Linux. No demuestra comportamiento funcional. |
 | Instalación, actualización, desinstalación, rollback, rechazos y flags | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1` | Requiere Windows PowerShell 5.1. Usa destinos temporales aislados. |
-| Ventana única (orden ocultar/lanzar/restaurar, cancelación, fail-open, `/c` de este BAT frente a terminal existente) | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1` | Requiere Windows PowerShell 5.1. Consola, UAC y proceso simulado; no demuestra el resultado visual. |
+| Ventana única (entrega con sentinel, espera no bloqueante, `-HoldResult`, camino síncrono, `/c` de este BAT y BAT real con stub) | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1` | Requiere Windows PowerShell 5.1. Consola, UAC y proceso simulado; no demuestra el resultado visual. |
 | Entrada remota | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1` | Requiere Windows PowerShell 5.1. Red y proceso hijo simulados. |
 
 Las pruebas de Windows nunca escriben en Program Files ni abren AutoCAD. Los
@@ -307,6 +336,7 @@ Windows. No se debe presentar como superada.
 |--------|-------------|
 | `0` | Instalación, actualización, desinstalación o ayuda completadas. |
 | `1` | Fallo controlado: validación, permisos, UAC, AutoCAD abierto, destino no propio, rollback fallido u otro error. |
+| `75` | Interno del lanzador del BAT: entrega de ventana única. No es un resultado de instalación; `Instalar.bat` lo convierte en `0` después de informar el traspaso. Nunca se devuelve a PowerShell directo, a `-FromRelease` ni a automatizaciones. |
 
 Los errores se escriben en `stderr` con el prefijo `ERROR:` y un mensaje en
 español. `Instalar.bat` conserva el mismo código y no oculta el fallo.
