@@ -1363,21 +1363,50 @@ function Invoke-MensorCadRemoteChild {
             $argumentString += ' ' + $argument
         }
     }
+    $process = $null
     try {
-        $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -NoNewWindow -PassThru -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
+        try {
+            $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -NoNewWindow -PassThru -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
+        }
+        catch {
+            throw ('No se pudo ejecutar el instalador extraido: ' + $_.Exception.Message + ' La instalacion no se realizo.')
+        }
+        if ($null -eq $process) {
+            throw 'No se pudo iniciar el instalador extraido. La instalacion no se realizo.'
+        }
+        # Windows PowerShell 5.1 puede dejar sin acceso el estado nativo del proceso
+        # cuando Start-Process vuelve sin -Wait: ExitCode se lee entonces como $null
+        # y [int]$null convertiria un fallo real en un falso exito 0. Fijar el handle
+        # antes de la espera conserva el acceso al estado real del hijo.
+        try {
+            $null = $process.Handle
+            $childPid = $process.Id
+        }
+        catch {
+            throw ('No se pudo fijar el estado del proceso hijo: ' + $_.Exception.Message + ' La instalacion no se confirmo.')
+        }
+        Wait-MensorCadRemoteChild -Process $process -Message $script:MensorCadRemoteChildActivityMessage
+        # El estado crudo se lee una sola vez y se valida antes de convertirlo: un
+        # estado ausente nunca puede pasar como exito.
+        try {
+            $rawExitCode = $process.ExitCode
+        }
+        catch {
+            throw ('No se pudo leer el codigo de salida del proceso hijo ' + $childPid + ': ' + $_.Exception.Message + ' La instalacion no se confirmo.')
+        }
+        if ($null -eq $rawExitCode) {
+            throw ('No se pudo determinar el codigo de salida del proceso hijo ' + $childPid + '. La instalacion no se confirmo.')
+        }
+        $exitCode = [int]$rawExitCode
+        $stdOut = ''
+        $stdErr = ''
+        if (Test-Path -LiteralPath $StdOutPath -PathType Leaf) { $stdOut = [System.IO.File]::ReadAllText($StdOutPath) }
+        if (Test-Path -LiteralPath $StdErrPath -PathType Leaf) { $stdErr = [System.IO.File]::ReadAllText($StdErrPath) }
+        return [pscustomobject]@{ ExitCode = $exitCode; StdOut = $stdOut; StdErr = $stdErr }
     }
-    catch {
-        throw ('No se pudo ejecutar el instalador extraido: ' + $_.Exception.Message + ' La instalacion no se realizo.')
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
     }
-    if ($null -eq $process) {
-        throw 'No se pudo iniciar el instalador extraido. La instalacion no se realizo.'
-    }
-    Wait-MensorCadRemoteChild -Process $process -Message $script:MensorCadRemoteChildActivityMessage
-    $stdOut = ''
-    $stdErr = ''
-    if (Test-Path -LiteralPath $StdOutPath -PathType Leaf) { $stdOut = [System.IO.File]::ReadAllText($StdOutPath) }
-    if (Test-Path -LiteralPath $StdErrPath -PathType Leaf) { $stdErr = [System.IO.File]::ReadAllText($StdErrPath) }
-    return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; StdOut = $stdOut; StdErr = $stdErr }
 }
 
 function Write-MensorCadRelayedOutput {

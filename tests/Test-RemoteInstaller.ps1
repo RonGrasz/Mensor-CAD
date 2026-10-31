@@ -303,12 +303,28 @@ $ErrorActionPreference = 'Stop'
 . '__INSTALLER__'
 $script:MensorCadPlainMode = $false
 $script:ProbeProcess = $null
+# Diagnostico crudo: se inicializa para StrictMode y se llena dentro de la
+# espera, mientras el Process sigue vigente (el motor lo libera en su finally).
+$script:ProbeRawExitCode = $null
+$script:ProbeRawExitIsNull = $true
+$script:ProbeRawExitError = ''
 $frames = New-Object 'System.Collections.Generic.List[object]'
 $originalWait = ${function:Wait-MensorCadRemoteChild}
 function script:Wait-MensorCadRemoteChild {
     param($Process, [string]$Message, [int]$IntervalMilliseconds = 200)
     $script:ProbeProcess = $Process
     $null = & $originalWait -Process $Process -Message $Message -IntervalMilliseconds $IntervalMilliseconds
+    # Captura del estado crudo justo cuando la espera activa termina y antes de
+    # que Invoke-MensorCadRemoteChild libere el Process en su bloque finally.
+    try {
+        $script:ProbeRawExitCode = $Process.ExitCode
+        $script:ProbeRawExitIsNull = ($null -eq $script:ProbeRawExitCode)
+        $script:ProbeRawExitError = ''
+    }
+    catch {
+        $script:ProbeRawExitIsNull = $true
+        $script:ProbeRawExitError = $_.Exception.Message
+    }
 }
 function script:Write-MensorCadActivity {
     param([string]$Message)
@@ -317,21 +333,13 @@ function script:Write-MensorCadActivity {
     $frames.Add([pscustomobject]@{ Message = $Message; Running = $running })
 }
 $result = Invoke-MensorCadRemoteChild -ScriptPath '__CHILD__' -Arguments @('-Milliseconds', '700') -StdOutPath (Join-Path $Root 'child.stdout.log') -StdErrPath (Join-Path $Root 'child.stderr.log')
-# Se observa el proceso despues de obtener el resultado, sin modificar el motor
-# ni convertir el valor original a entero: un estado ausente no equivale a cero.
-$rawProcessExitCode = $null
-$processExitCodeError = ''
-try {
-    $rawProcessExitCode = $script:ProbeProcess.ExitCode
-}
-catch {
-    $processExitCodeError = $_.Exception.Message
-}
+# El resumen usa los valores capturados durante la espera: el Process ya fue
+# liberado por el motor y no se vuelve a desreferenciar.
 $summary = [pscustomobject]@{
     ExitCode = [int]$result.ExitCode
-    RawProcessExitCode = $rawProcessExitCode
-    ProcessExitCodeIsNull = ($null -eq $rawProcessExitCode)
-    ProcessExitCodeError = $processExitCodeError
+    RawProcessExitCode = $script:ProbeRawExitCode
+    ProcessExitCodeIsNull = [bool]$script:ProbeRawExitIsNull
+    ProcessExitCodeError = [string]$script:ProbeRawExitError
     StdOut = [string]$result.StdOut
     StdErr = [string]$result.StdErr
     Frames = $frames.Count
@@ -341,6 +349,52 @@ $summary | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $Root 
 exit 0
 '@
     $content = $template.Replace('__INSTALLER__', $installerLiteral).Replace('__CHILD__', $childLiteral)
+    $encoding = New-Object -TypeName 'System.Text.UTF8Encoding' -ArgumentList @($false)
+    [System.IO.File]::WriteAllText($probePath, $content, $encoding)
+    return $probePath
+}
+
+function New-ChildStatusProbeScript {
+    param([string]$RootPath)
+    $probePath = Join-Path -Path $RootPath -ChildPath 'missing-status-probe.ps1'
+    $installerLiteral = $script:InstallerPath.Replace("'", "''")
+    # Costura estrecha: se reemplazan el lanzador y la espera para simular un
+    # proceso cuyo estado crudo no esta disponible. No se toca produccion ni se
+    # agrega un framework de procesos: solo se ejercita el camino de fallo seguro.
+    $template = @'
+param([string]$Root)
+$ErrorActionPreference = 'Stop'
+. '__INSTALLER__'
+function script:Start-Process {
+    param(
+        [string]$FilePath,
+        [string]$ArgumentList,
+        [switch]$NoNewWindow,
+        [switch]$PassThru,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError
+    )
+    $fake = [pscustomobject]@{ Id = 4242; Handle = [IntPtr]::Zero; ExitCode = $null }
+    $null = $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }
+    return $fake
+}
+function script:Wait-MensorCadRemoteChild {
+    param($Process, [string]$Message = '', [int]$IntervalMilliseconds = 200)
+    return
+}
+$summary = [pscustomobject]@{ Threw = $false; Message = ''; ExitCode = $null }
+try {
+    $result = Invoke-MensorCadRemoteChild -ScriptPath (Join-Path $Root 'Install-MensorCAD.ps1') -Arguments @('-NoAnimation') -StdOutPath (Join-Path $Root 'missing.stdout.log') -StdErrPath (Join-Path $Root 'missing.stderr.log')
+    $summary.ExitCode = [int]$result.ExitCode
+}
+catch {
+    $summary.Threw = $true
+    $summary.Message = $_.Exception.Message
+}
+$summary | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $Root 'missing-status.json') -Encoding UTF8
+exit 0
+'@
+    $content = $template.Replace('__INSTALLER__', $installerLiteral)
     $encoding = New-Object -TypeName 'System.Text.UTF8Encoding' -ArgumentList @($false)
     [System.IO.File]::WriteAllText($probePath, $content, $encoding)
     return $probePath
@@ -843,6 +897,52 @@ exit 9
             Assert-True ([int]$summary.Frames -ge 2) 'La espera activa debe pintar mientras el hijo real corre.'
             Assert-True ([int]$summary.RunningFrames -ge 2) 'Los frames deben pintarse con el proceso aun vivo.'
             Assert-True ($stopwatch.Elapsed.TotalMilliseconds -le 8000) ('La espera activa no debe bloquearse tras el hijo. ms=' + [int]$stopwatch.Elapsed.TotalMilliseconds)
+        }
+        finally {
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El hijo real con exito conserva el codigo 0 y su salida' {
+        $root = New-TestCaseRoot
+        try {
+            $childScript = Join-Path -Path $root -ChildPath 'child-ok.ps1'
+            Write-FixtureFile -Path $childScript -Content @'
+param([int]$Milliseconds)
+Start-Sleep -Milliseconds $Milliseconds
+Write-Output 'SALIDA-HIJO-OK'
+exit 0
+'@
+            $probe = New-ChildProbeScript -RootPath $root -ChildScriptPath $childScript
+            $result = Invoke-ChildInstaller -ScriptPath $probe -Arguments @('-Root', ('"' + $root + '"'))
+            Assert-Equal 0 $result.ExitCode ('La sonda del hijo exitoso debe salir con 0. stderr: ' + $result.Stderr)
+            $summaryPath = Join-Path -Path $root -ChildPath 'child-probe.json'
+            Assert-True (Test-Path -LiteralPath $summaryPath -PathType Leaf) 'La sonda exitosa debe escribir su resumen observable.'
+            $summaryJson = [System.IO.File]::ReadAllText($summaryPath)
+            $summary = $summaryJson | ConvertFrom-Json
+            Assert-Equal 0 ([int]$summary.ExitCode) ('El exito real 0 debe conservarse. Resumen del hijo: ' + $summaryJson)
+            Assert-True ([string]$summary.StdOut -match 'SALIDA-HIJO-OK') 'La salida estandar del hijo exitoso debe capturarse.'
+            Assert-True ([int]$summary.Frames -ge 1) 'La espera activa debe pintar tambien en el caso exitoso.'
+            Assert-True ($null -ne $summary.RawProcessExitCode) 'El estado crudo del hijo exitoso debe estar disponible.'
+        }
+        finally {
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El estado de salida ausente del hijo falla sin reportar exito' {
+        $root = New-TestCaseRoot
+        try {
+            $null = Copy-InstallerTo -RootPath $root
+            $probe = New-ChildStatusProbeScript -RootPath $root
+            $result = Invoke-ChildInstaller -ScriptPath $probe -Arguments @('-Root', ('"' + $root + '"'))
+            Assert-Equal 0 $result.ExitCode ('La sonda de estado ausente debe salir con 0. stderr: ' + $result.Stderr)
+            $summaryPath = Join-Path -Path $root -ChildPath 'missing-status.json'
+            Assert-True (Test-Path -LiteralPath $summaryPath -PathType Leaf) 'La sonda debe escribir su resumen observable.'
+            $summary = [System.IO.File]::ReadAllText($summaryPath) | ConvertFrom-Json
+            Assert-Equal $true ([bool]$summary.Threw) 'Un estado de salida ausente debe fallar, no devolver 0 como exito.'
+            Assert-Equal $null $summary.ExitCode 'El ayudante no debe devolver un codigo de salida inventado.'
+            Assert-True ([string]$summary.Message -match 'No se pudo determinar el codigo de salida') 'El error debe explicar que no se pudo determinar el estado del hijo.'
         }
         finally {
             Remove-TestCaseRoot -Path $root

@@ -431,6 +431,105 @@ class RemoteInstallerStructureTests(unittest.TestCase):
                 "falta el diagnostico sin conversion a entero: " + campo,
             )
 
+    def test_remote_child_pins_process_state_and_rejects_missing_exit_status(self) -> None:
+        # Windows PowerShell 5.1 puede dejar el estado crudo del Process hijo sin
+        # disponible: ExitCode se lee como $null sin excepcion y [int]$null
+        # convertiria un fallo real en un falso exito 0. La correccion fija el
+        # handle antes de la espera activa, lee el estado crudo una sola vez y lo
+        # rechaza antes de convertirlo.
+        body = function_body(self.installer, "Invoke-MensorCadRemoteChild")
+        # Los comentarios del codigo no cuentan como ejecucion.
+        code = "\n".join(
+            linea for linea in body.splitlines() if not linea.strip().startswith("#")
+        )
+        self.assertTrue(
+            "$null = $process.Handle" in code, "falta fijar el handle del proceso hijo"
+        )
+        self.assertLess(
+            code.index("$null = $process.Handle"),
+            code.index("Wait-MensorCadRemoteChild -Process $process"),
+            "el handle debe fijarse antes de la espera activa",
+        )
+        self.assertTrue(
+            "$rawExitCode = $process.ExitCode" in code,
+            "falta leer el estado crudo del hijo una sola vez",
+        )
+        self.assertIn("if ($null -eq $rawExitCode)", code)
+        self.assertLess(
+            code.index("if ($null -eq $rawExitCode)"),
+            code.index("[int]$rawExitCode"),
+            "el estado ausente debe rechazarse antes de convertir a entero",
+        )
+        self.assertIn("finally {", code)
+        self.assertIn("$process.Dispose()", code)
+        self.assertLess(
+            code.index("return [pscustomobject]"),
+            code.index("finally {"),
+            "el proceso se libera en el bloque finally despues de capturar el resultado",
+        )
+        self.assertEqual(1, code.count("Start-Process"), "no se debe lanzar el hijo dos veces")
+        self.assertNotIn("-Wait ", code, "la espera debe seguir siendo activa, no bloqueante")
+        self.assertNotIn("Stop-Process", code, "no se debe terminar el hijo a la fuerza")
+
+    def test_remote_windows_tests_cover_missing_child_status(self) -> None:
+        text = self.remote_tests
+        for fragment in (
+            "New-ChildStatusProbeScript",
+            "missing-status.json",
+            "function script:Start-Process",
+            "ExitCode = $null",
+            "No se pudo determinar el codigo de salida",
+            "child-ok.ps1",
+            "SALIDA-HIJO-OK",
+        ):
+            self.assertTrue(fragment in text, "faltan pruebas Windows para: " + fragment)
+
+    def test_remote_docs_document_missing_child_status(self) -> None:
+        docs = self.remote_docs
+        self.assertTrue(
+            "estado de salida" in docs.lower(), "la documentacion debe explicar el estado de salida"
+        )
+        self.assertTrue(
+            "no se puede determinar" in docs.lower(),
+            "la documentacion debe explicar el fallo seguro sin estado",
+        )
+
+    def test_child_probe_captures_raw_status_before_helper_disposes_process(self) -> None:
+        # Invoke-MensorCadRemoteChild libera el Process en su bloque finally antes
+        # de devolver, asi que leer ExitCode despues del return observa un objeto
+        # ya liberado. La sonda debe capturar el estado crudo dentro de la espera,
+        # antes de que el ayudante devuelva, y resumir esos valores guardados.
+        text = self.remote_tests
+        inicio = text.index("function New-ChildProbeScript")
+        fin = text.index("function New-ChildStatusProbeScript", inicio)
+        probe = text[inicio:fin]
+        self.assertTrue(
+            "$script:ProbeRawExitCode = $null" in probe,
+            "la sonda debe inicializar el diagnostico crudo para StrictMode",
+        )
+        self.assertTrue(
+            "$script:ProbeRawExitCode = $Process.ExitCode" in probe,
+            "la sonda debe capturar el estado crudo dentro de la espera",
+        )
+        self.assertLess(
+            probe.index("$script:ProbeRawExitCode = $Process.ExitCode"),
+            probe.index("$result = Invoke-MensorCadRemoteChild"),
+            "la captura cruda debe ocurrir antes de que el ayudante devuelva",
+        )
+        self.assertLess(
+            probe.index("$script:ProbeRawExitCode = $Process.ExitCode"),
+            probe.index("$summary = [pscustomobject]"),
+            "el resumen debe construirse con los valores ya capturados",
+        )
+        self.assertTrue(
+            "RawProcessExitCode = $script:ProbeRawExitCode" in probe,
+            "el resumen debe usar el valor capturado antes de la liberacion",
+        )
+        self.assertTrue(
+            "$script:ProbeProcess.ExitCode" not in probe,
+            "no se debe desreferenciar el Process despues de que el ayudante lo libere",
+        )
+
     def test_active_wait_reuses_the_existing_renderer(self) -> None:
         self.assertIn("function Write-MensorCadActivity", self.local_branch, "el renderizador debe ser el local")
         wait_function = function_body(self.remote_branch, "Wait-MensorCadRemoteChild")

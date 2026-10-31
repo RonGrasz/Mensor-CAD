@@ -165,8 +165,8 @@ Ver `docs/local-installer.md` para el detalle del motor local.
 
 | Código | Significado |
 |--------|-------------|
-| `0` | Instalación remota completada. |
-| `1` | Fallo controlado: argumentos inválidos, red, API, SHA-256, ZIP inseguro, UAC cancelado, error del instalador local. |
+| `0` | Instalación remota completada; solo cuando el hijo reportó `0` de verdad. |
+| `1` | Fallo controlado: argumentos inválidos, red, API, SHA-256, ZIP inseguro, UAC cancelado, error del instalador local o estado de salida del hijo no disponible. |
 | Otro | Código propagado desde el instalador extraído. |
 
 Los errores de la entrada remota se escriben en `stderr` con prefijo `ERROR:`.
@@ -174,6 +174,18 @@ La salida del hijo inmediato se reenvía a `stdout`/`stderr` sin ocultarla: los
 mensajes del proceso que pide UAC se capturan antes de elevar, y el proceso ya
 elevado escribe en su propia ventana de diagnóstico, que no se captura. El
 estado de salida final siempre vuelve a la terminal que invocó.
+
+### Estado de salida del proceso hijo
+
+El instalador remoto captura el estado de salida del proceso hijo inmediato
+mientras mantiene la espera activa: fija el handle del proceso antes de esperar,
+lee el estado crudo una sola vez y lo valida **antes** de convertirlo en número.
+Si el sistema no expone ese estado (por ejemplo, un `Process` cuyo `ExitCode`
+queda vacío en Windows PowerShell 5.1), no se puede determinar el estado real
+del hijo: la entrada remota termina con código `1` y un mensaje `ERROR:` que
+incluye el identificador del proceso. Ese caso nunca se informa como éxito: un
+`0` solo se devuelve cuando el hijo realmente salió con `0`, y cualquier otro
+valor real se propaga sin cambios.
 
 ## Verificación
 
