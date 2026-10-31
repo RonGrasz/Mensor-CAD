@@ -388,6 +388,49 @@ class RemoteInstallerStructureTests(unittest.TestCase):
             "un CR suelto no es un fin de linea valido",
         )
 
+    def test_remote_test_helpers_preserve_collection_cardinality(self) -> None:
+        # Windows PowerShell 5.1 desenrolla `return @(...)`: el llamador recibe
+        # $null con 0 coincidencias y el objeto suelto con 1, asi que .Count
+        # falla bajo Set-StrictMode 2.0. El ayudante debe devolver el arreglo
+        # como un unico objeto para conservar 0/1/2+ elementos.
+        text = self.remote_tests
+        inicio = text.index("function Get-SeamCalls")
+        fin = text.index("\ntry {", inicio)
+        cuerpo = text[inicio:fin]
+        self.assertTrue(
+            "return ,$calls" in cuerpo,
+            "Get-SeamCalls debe devolver el arreglo sin desenrollarlo",
+        )
+        self.assertTrue(
+            "return @($script:SeamCalls" not in cuerpo,
+            "return @(...) desenrolla la coleccion y rompe .Count",
+        )
+        for fragmento in (
+            "Assert-Equal 1 $apiCalls.Count",
+            "Assert-Equal 0 (Get-SeamCalls -Kind 'text').Count",
+            "Assert-Equal 0 (Get-SeamCalls -Kind 'file').Count",
+            "Assert-Equal 2 $fileCalls.Count",
+        ):
+            self.assertTrue(fragmento in text, "falta la comprobacion: " + fragmento)
+
+    def test_child_probe_failure_message_includes_child_summary(self) -> None:
+        # El codigo de salida real del hijo no se puede reproducir en Linux: el
+        # resumen del hijo debe acompanar al fallo para que el proximo log de
+        # Windows distinga un hijo que no corrio de un estado mal leido.
+        self.assertTrue(
+            "Resumen del hijo: " in self.remote_tests,
+            "el fallo del codigo de salida debe incluir el resumen del hijo",
+        )
+        self.assertTrue(
+            "Assert-Equal 9 ([int]$summary.ExitCode)" in self.remote_tests,
+            "la expectativa estricta del codigo 9 debe seguir vigente",
+        )
+        for campo in ("RawProcessExitCode", "ProcessExitCodeIsNull", "ProcessExitCodeError"):
+            self.assertTrue(
+                campo in self.remote_tests,
+                "falta el diagnostico sin conversion a entero: " + campo,
+            )
+
     def test_active_wait_reuses_the_existing_renderer(self) -> None:
         self.assertIn("function Write-MensorCadActivity", self.local_branch, "el renderizador debe ser el local")
         wait_function = function_body(self.remote_branch, "Wait-MensorCadRemoteChild")

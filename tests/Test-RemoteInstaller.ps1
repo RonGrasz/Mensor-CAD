@@ -317,8 +317,21 @@ function script:Write-MensorCadActivity {
     $frames.Add([pscustomobject]@{ Message = $Message; Running = $running })
 }
 $result = Invoke-MensorCadRemoteChild -ScriptPath '__CHILD__' -Arguments @('-Milliseconds', '700') -StdOutPath (Join-Path $Root 'child.stdout.log') -StdErrPath (Join-Path $Root 'child.stderr.log')
+# Se observa el proceso despues de obtener el resultado, sin modificar el motor
+# ni convertir el valor original a entero: un estado ausente no equivale a cero.
+$rawProcessExitCode = $null
+$processExitCodeError = ''
+try {
+    $rawProcessExitCode = $script:ProbeProcess.ExitCode
+}
+catch {
+    $processExitCodeError = $_.Exception.Message
+}
 $summary = [pscustomobject]@{
     ExitCode = [int]$result.ExitCode
+    RawProcessExitCode = $rawProcessExitCode
+    ProcessExitCodeIsNull = ($null -eq $rawProcessExitCode)
+    ProcessExitCodeError = $processExitCodeError
     StdOut = [string]$result.StdOut
     StdErr = [string]$result.StdErr
     Frames = $frames.Count
@@ -444,7 +457,12 @@ function Assert-NoRemoteLeftovers {
 
 function Get-SeamCalls {
     param([string]$Kind)
-    return @($script:SeamCalls | Where-Object { $_.Kind -eq $Kind })
+    $calls = @($script:SeamCalls | Where-Object { $_.Kind -eq $Kind })
+    # `return @(...)` desenrolla la coleccion: con 0 coincidencias el llamador
+    # recibe $null y con 1 recibe el objeto suelto, de modo que .Count falla
+    # bajo Set-StrictMode 2.0. La coma devuelve el arreglo como un unico objeto
+    # y conserva 0/1/2+ elementos para las comprobaciones de red y limpieza.
+    return ,$calls
 }
 
 try {
@@ -815,8 +833,11 @@ exit 9
             Assert-Equal 0 $result.ExitCode ('La sonda del hijo real debe salir con 0. stderr: ' + $result.Stderr)
             $summaryPath = Join-Path -Path $root -ChildPath 'child-probe.json'
             Assert-True (Test-Path -LiteralPath $summaryPath -PathType Leaf) 'La sonda debe escribir su resumen observable.'
-            $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
-            Assert-Equal 9 ([int]$summary.ExitCode) 'El estado real distinto de cero no debe ocultarse.'
+            $summaryJson = [System.IO.File]::ReadAllText($summaryPath)
+            $summary = $summaryJson | ConvertFrom-Json
+            # El resumen viaja en el mensaje para que un fallo en Windows muestre
+            # si el hijo real corrio (stdout/stderr) o si solo se leyo mal el estado.
+            Assert-Equal 9 ([int]$summary.ExitCode) ('El estado real distinto de cero no debe ocultarse. Resumen del hijo: ' + $summaryJson)
             Assert-True ([string]$summary.StdOut -match 'SALIDA-HIJO-REAL') 'La salida estandar del hijo real debe capturarse.'
             Assert-True ([string]$summary.StdErr -match 'ERROR-HIJO-REAL') 'La salida de error del hijo real debe capturarse.'
             Assert-True ([int]$summary.Frames -ge 2) 'La espera activa debe pintar mientras el hijo real corre.'
