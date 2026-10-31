@@ -12,7 +12,9 @@
     (sentinel privado + espera no bloqueante + marca de espera) solo cuando la consola
     es interactiva y dedicada a este Instalar.bat; cualquier otra entrada
     (PowerShell directo, terminal existente, remoto, redirigido o automatizado)
-    conserva el comportamiento sincrono y sus codigos de salida originales.
+    conserva el comportamiento sincrono y sus codigos de salida originales. En la
+    entrega se prefiere wt.exe con una ventana nueva y un payload codificado, y se
+    conservan el banner completo y el redibujado limpio del indicador.
 
     Lo que estas pruebas NO demuestran: que la ventana final se vea como se
     espera. Eso exige prueba visual humana (doble clic, aceptar y cancelar UAC).
@@ -73,7 +75,8 @@ $script:SeamFunctionNames = @(
     'Get-MensorCadProcessParentId',
     'Get-MensorCadProcessName',
     'Get-MensorCadProcessCommandLine',
-    'Test-MensorCadHandoffEligible'
+    'Test-MensorCadHandoffEligible',
+    'Get-MensorCadWindowsTerminalPath'
 )
 $script:OriginalFunctions = @{}
 foreach ($name in $script:SeamFunctionNames) {
@@ -114,6 +117,7 @@ function script:Start-Process {
         $script:Events.Add('lanzar')
         $script:LaunchCount++
         $script:LaunchWaited = $Wait.IsPresent
+        $script:LaunchFile = $FilePath
         $script:LaunchArguments = $ArgumentList
         $script:LaunchHoldMarker = ([string]$ArgumentList) -match '\bHoldResult\b'
         if ($script:WindowTestElevation -eq 'cancel') { throw 'cancelado por el usuario' }
@@ -301,6 +305,51 @@ function Invoke-CliCapturingError {
     return [pscustomobject]@{ ExitCode = [int]$code; StdErr = $writer.ToString() }
 }
 
+function Invoke-PowerShellEncodedCommand {
+    # Ejecuta el payload de la entrega con Windows PowerShell comun, sin wt.exe y
+    # sin UAC: asi se prueba de verdad el enlace de parametros, la ruta y el
+    # codigo de salida del comando codificado.
+    param([string]$Payload)
+    $stdoutPath = Join-Path -Path $script:TestRoot -ChildPath ('eo-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $stderrPath = Join-Path -Path $script:TestRoot -ChildPath ('ee-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $powerShellPath = Join-Path -Path $PSHOME -ChildPath 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
+        $powerShellPath = 'powershell.exe'
+    }
+    $arguments = @{
+        FilePath = $powerShellPath
+        ArgumentList = ('-NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + $Payload)
+        Wait = $true
+        PassThru = $true
+        NoNewWindow = $true
+        RedirectStandardOutput = $stdoutPath
+        RedirectStandardError = $stderrPath
+    }
+    $process = & $script:RealStartProcess @arguments
+    $stdout = ''
+    $stderr = ''
+    if (Test-Path -LiteralPath $stdoutPath) { $stdout = [System.IO.File]::ReadAllText($stdoutPath) }
+    if (Test-Path -LiteralPath $stderrPath) { $stderr = [System.IO.File]::ReadAllText($stderrPath) }
+    Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ ExitCode = [int]$process.ExitCode; Stdout = $stdout; Stderr = $stderr }
+}
+
+function Invoke-CliCapturingHost {
+    # Captura el flujo de informacion (Write-Host) sin redirigir la consola del
+    # proceso: el modo de color del instalador no cambia.
+    param([scriptblock]$Action)
+    $records = @()
+    $records = @(& $Action 6>&1)
+    $hostText = ''
+    $code = 0
+    foreach ($record in $records) {
+        if ($record -is [int] -or $record -is [long]) { $code = [int]$record }
+        else { $hostText += [string]$record }
+    }
+    return [pscustomobject]@{ ExitCode = $code; HostText = $hostText }
+}
+
 function Set-WindowTestSeams {
     param(
         [string]$SourceRoot,
@@ -311,6 +360,7 @@ function Set-WindowTestSeams {
         [ValidateSet('none', 'modeled')][string]$ConsoleTopology = 'none',
         [string]$CommandLine = '',
         [string]$CommandLineError = '',
+        [string]$WindowsTerminalPath = '',
         [switch]$StreamsRedirected,
         [switch]$Administrator,
         [switch]$RealDiscovery
@@ -318,8 +368,11 @@ function Set-WindowTestSeams {
     $script:Events = New-Object 'System.Collections.Generic.List[string]'
     $script:LaunchCount = 0
     $script:LaunchWaited = $false
+    $script:LaunchFile = ''
     $script:LaunchArguments = ''
     $script:LaunchHoldMarker = $false
+    $script:WindowsTerminalLookups = 0
+    $script:WindowTestWindowsTerminalPath = $WindowsTerminalPath
     $script:WindowTestProgramFiles = $ProgramFilesRoot
     $script:WindowTestAdministrator = $Administrator.IsPresent
     $script:WindowTestElevation = $Elevation
@@ -371,6 +424,14 @@ function Set-WindowTestSeams {
     }
     elseif (-not $RealDiscovery) {
         function script:Get-MensorCadDedicatedConsole { return $false }
+    }
+    # wt.exe jamas se consulta de verdad en las pruebas: la costura devuelve el
+    # valor pedido (por defecto $null, que conserva el camino original) y cuenta
+    # las consultas para probar que el camino sincrono no toca Windows Terminal.
+    function script:Get-MensorCadWindowsTerminalPath {
+        $script:WindowsTerminalLookups++
+        if ([string]::IsNullOrEmpty($script:WindowTestWindowsTerminalPath)) { return $null }
+        return [string]$script:WindowTestWindowsTerminalPath
     }
     $script:UseStartProcessStub = $true
     $script:MensorCadScriptRoot = $SourceRoot
@@ -448,6 +509,7 @@ function script:Get-MensorCadProcessCommandLine {
     param([int]$ProcessId)
     return ('C:\Windows\system32\cmd.exe /c ""' + (Join-Path $here 'dist\Instalar.bat') + '" "')
 }
+function script:Get-MensorCadWindowsTerminalPath { return $null }
 function script:Start-Process {
     param(
         [string]$FilePath,
@@ -491,9 +553,11 @@ function Get-HandoffState {
         Sentinel = [int]$script:MensorCadBatHandoffSentinel
         LaunchCount = [int]$script:LaunchCount
         Waited = [bool]$script:LaunchWaited
+        File = [string]$script:LaunchFile
         Arguments = [string]$script:LaunchArguments
         Events = (Get-WindowEvents)
         HoldMarker = [bool]$script:LaunchHoldMarker
+        WindowsTerminalLookups = [int]$script:WindowsTerminalLookups
         HoldMarkerCleared = [string]::IsNullOrEmpty($env:MENSORCAD_RESULT_HOLD)
     }
 }
@@ -909,6 +973,266 @@ try {
         finally {
             Restore-WindowTestSeams
             Remove-TestCaseRoot -Path $root
+        }
+    }
+    Test-Case 'La entrega con wt.exe abre una sola ventana nueva con el payload codificado' {
+        $root = New-TestCaseRoot
+        try {
+            $source = New-FixtureSource -RootPath $root
+            $programFiles = Join-Path $root 'PF'
+            $null = New-Item -ItemType Directory -Path $programFiles -Force
+            $batch = Join-Path $source 'Instalar.bat'
+            $fakeTerminal = Join-Path $root 'WindowsApps\wt.exe'
+            Write-FixtureFile -Path $fakeTerminal -Content 'stub-de-wt'
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -ConsoleTopology 'modeled' -WindowsTerminalPath $fakeTerminal -CommandLine ('C:\Windows\system32\cmd.exe /c ""' + $batch + '" "')
+            $result = Invoke-CliCapturingError -Action { Invoke-MensorCadCli -NoAnimation -BatLauncher 6>$null }
+            $state = Get-HandoffState
+            Assert-Equal $state.Sentinel $result.ExitCode 'La entrega con Windows Terminal debe devolver el sentinel.'
+            Assert-Equal 1 $state.LaunchCount 'Debe lanzarse una sola vez el proceso elevado.'
+            Assert-Equal $false $state.Waited 'La entrega no debe esperar al proceso elevado.'
+            Assert-Equal 1 $state.WindowsTerminalLookups 'wt.exe debe consultarse una sola vez en la entrega.'
+            Assert-Equal $fakeTerminal $state.File 'El FilePath elevado debe ser wt.exe.'
+            Assert-True ($state.Arguments -match '^-w new new-tab -- ') 'wt.exe debe abrir una ventana nueva.'
+            Assert-True ($state.Arguments -match '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ') 'La ventana nueva debe ejecutar Windows PowerShell 5.1 con el payload codificado.'
+            Assert-True ($state.Arguments -notmatch '\s-NonInteractive') 'La relanzada no debe agregar -NonInteractive.'
+            Assert-True ($state.Arguments -notmatch '\s-(p|profile)\s') 'No debe fijarse un perfil de Windows Terminal.'
+            $payload = [string]($state.Arguments -replace '^.*-EncodedCommand ', '')
+            $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($payload))
+            $expectedDecoded = '& ''' + $script:InstallerPath + ''' -ElevatedProcess -HoldResult -NoAnimation; exit $LASTEXITCODE'
+            Assert-Equal $expectedDecoded $decoded 'El payload debe invocar el script con interruptores constantes y salir con su codigo.'
+            Assert-Equal '' $result.StdErr 'La entrega con Windows Terminal no debe escribir en stderr.'
+            Assert-Equal 0 @(Get-ChildItem -LiteralPath $programFiles -Force -Recurse -ErrorAction SilentlyContinue).Count 'La entrega no debe escribir en el destino.'
+        }
+        finally {
+            Restore-WindowTestSeams
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'Sin wt.exe o con descubrimiento fallido se conserva el camino original' {
+        $root = New-TestCaseRoot
+        try {
+            $source = New-FixtureSource -RootPath $root
+            $programFiles = Join-Path $root 'PF'
+            $null = New-Item -ItemType Directory -Path $programFiles -Force
+            $batch = Join-Path $source 'Instalar.bat'
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -ConsoleTopology 'modeled' -CommandLine ('C:\Windows\system32\cmd.exe /c ""' + $batch + '" "')
+            $result = Invoke-CliCapturingError -Action { Invoke-MensorCadCli -NoAnimation -BatLauncher 6>$null }
+            $state = Get-HandoffState
+            Assert-Equal $state.Sentinel $result.ExitCode 'Sin wt.exe debe conservarse la entrega con sentinel.'
+            Assert-Equal 1 $state.WindowsTerminalLookups 'La entrega debe intentar el descubrimiento una sola vez.'
+            Assert-True ($state.File -match '(?i)powershell\.exe$') 'Sin wt.exe el FilePath debe seguir siendo Windows PowerShell.'
+            Assert-True ($state.Arguments -match '-File "') 'Sin wt.exe se conserva la invocacion original con -File.'
+            Assert-True ($state.Arguments -match '-ElevatedProcess -NoAnimation -HoldResult') 'Sin wt.exe se conservan los interruptores originales.'
+
+            # Descubrimiento sin resultado util: siempre $null y camino original.
+            Restore-WindowTestSeams
+            Assert-True ($null -eq (Get-MensorCadWindowsTerminalPath -DiscoveryProbe { throw 'consulta no disponible' })) 'Un error de descubrimiento debe devolver $null.'
+            Assert-True ($null -eq (Get-MensorCadWindowsTerminalPath -DiscoveryProbe { return $null })) 'Un descubrimiento vacio debe devolver $null.'
+            Assert-True ($null -eq (Get-MensorCadWindowsTerminalPath -DiscoveryProbe { return [pscustomobject]@{ Source = '' } })) 'Un descubrimiento sin ruta debe devolver $null.'
+            Assert-Equal 'C:\fake\wt.exe' (Get-MensorCadWindowsTerminalPath -DiscoveryProbe { return [pscustomobject]@{ Source = 'C:\fake\wt.exe' } }) 'Un descubrimiento valido debe devolver la ruta de wt.exe.'
+            Assert-Equal 'C:\fake\wt.exe' (Get-MensorCadWindowsTerminalPath -DiscoveryProbe { return @([pscustomobject]@{ Source = 'C:\fake\wt.exe' }) }) 'Un resultado en lista debe resolverse igual.'
+        }
+        finally {
+            Restore-WindowTestSeams
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El camino sincrono no consulta wt.exe ni cambia sus argumentos' {
+        $root = New-TestCaseRoot
+        $previousNoPause = $env:MENSORCAD_NO_PAUSE
+        try {
+            $source = New-FixtureSource -RootPath $root
+            $programFiles = Join-Path $root 'PF'
+            $null = New-Item -ItemType Directory -Path $programFiles -Force
+            $batch = Join-Path $source 'Instalar.bat'
+            $commandLine = 'C:\Windows\system32\cmd.exe /c ""' + $batch + '" "'
+            $fakeTerminal = Join-Path $root 'WindowsApps\wt.exe'
+            Write-FixtureFile -Path $fakeTerminal -Content 'stub-de-wt'
+
+            # PowerShell directo, sin la marca del BAT.
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -ConsoleTopology 'modeled' -WindowsTerminalPath $fakeTerminal -CommandLine $commandLine
+            Assert-Equal 7 (Invoke-MensorCadCli -NoAnimation 6>$null) 'Sin opt-in debe conservarse el codigo del proceso elevado.'
+            $state = Get-HandoffState
+            Assert-Equal 0 $state.WindowsTerminalLookups 'Sin opt-in no se debe consultar wt.exe.'
+            Assert-True ($state.File -match '(?i)powershell\.exe$') 'Sin opt-in el FilePath debe ser Windows PowerShell.'
+            Assert-True ($state.Arguments -match '-File "') 'Sin opt-in se conserva la invocacion original con -File.'
+
+            # Automatizacion: tampoco consulta wt.exe.
+            $env:MENSORCAD_NO_PAUSE = '1'
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -ConsoleTopology 'modeled' -WindowsTerminalPath $fakeTerminal -CommandLine $commandLine
+            Assert-Equal 7 (Invoke-MensorCadCli -NoAnimation -BatLauncher 6>$null) 'En automatizacion debe conservarse el codigo del proceso elevado.'
+            $paused = Get-HandoffState
+            Assert-Equal 0 $paused.WindowsTerminalLookups 'En automatizacion no se debe consultar wt.exe.'
+            Assert-Equal $true $paused.Waited 'En automatizacion la espera debe ser bloqueante.'
+            Remove-Item Env:MENSORCAD_NO_PAUSE -ErrorAction SilentlyContinue
+
+            # Ayuda y ya administrador: no hay entrega ni consulta.
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -Administrator -WindowsTerminalPath $fakeTerminal
+            Assert-Equal 0 (Invoke-MensorCadCli -Help -NoAnimation -BatLauncher 6>$null) 'La ayuda debe seguir saliendo con codigo 0.'
+            Assert-Equal 0 (Get-HandoffState).WindowsTerminalLookups 'La ayuda no debe consultar wt.exe.'
+        }
+        finally {
+            if ($null -eq $previousNoPause) { Remove-Item Env:MENSORCAD_NO_PAUSE -ErrorAction SilentlyContinue }
+            else { $env:MENSORCAD_NO_PAUSE = $previousNoPause }
+            Restore-WindowTestSeams
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'Cancelar UAC con wt.exe conserva el error exacto y no reintenta' {
+        $root = New-TestCaseRoot
+        try {
+            $source = New-FixtureSource -RootPath $root
+            $programFiles = Join-Path $root 'PF'
+            $null = New-Item -ItemType Directory -Path $programFiles -Force
+            $batch = Join-Path $source 'Instalar.bat'
+            $fakeTerminal = Join-Path $root 'WindowsApps\wt.exe'
+            Write-FixtureFile -Path $fakeTerminal -Content 'stub-de-wt'
+            $commandLine = 'C:\Windows\system32\cmd.exe /c ""' + $batch + '" "'
+            $expectedCancel = 'ERROR: No se obtuvo elevacion mediante UAC. La instalacion no se realizo. Detalle: cancelado por el usuario' + [Environment]::NewLine
+            $expectedMissing = 'ERROR: No se pudo iniciar el proceso elevado. La instalacion no se realizo.' + [Environment]::NewLine
+
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -ConsoleTopology 'modeled' -WindowsTerminalPath $fakeTerminal -Elevation 'cancel' -CommandLine $commandLine
+            $cancel = Invoke-CliCapturingError -Action { Invoke-MensorCadCli -NoAnimation -BatLauncher 6>$null }
+            Assert-Equal 1 $cancel.ExitCode 'Cancelar UAC debe salir con codigo 1, nunca con el sentinel.'
+            Assert-Equal $expectedCancel $cancel.StdErr 'El error de cancelacion debe ser el mismo de antes.'
+            Assert-Equal 1 (Get-HandoffState).LaunchCount 'No debe reintentarse con PowerShell despues de cancelar UAC.'
+
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -ConsoleTopology 'modeled' -WindowsTerminalPath $fakeTerminal -Elevation 'missing' -CommandLine $commandLine
+            $missing = Invoke-CliCapturingError -Action { Invoke-MensorCadCli -NoAnimation -BatLauncher 6>$null }
+            Assert-Equal 1 $missing.ExitCode 'Un lanzamiento sin proceso debe salir con codigo 1, nunca con el sentinel.'
+            Assert-Equal $expectedMissing $missing.StdErr 'El error de lanzamiento debe ser el mismo de antes.'
+            Assert-Equal 1 (Get-HandoffState).LaunchCount 'No debe reintentarse despues de un lanzamiento fallido.'
+            Assert-Equal 0 @(Get-ChildItem -LiteralPath $programFiles -Force -Recurse -ErrorAction SilentlyContinue).Count 'Los fallos de UAC no deben escribir en el destino.'
+        }
+        finally {
+            Restore-WindowTestSeams
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'La relanzada entregada muestra el banner completo del instalador' {
+        $root = New-TestCaseRoot
+        try {
+            $source = New-FixtureSource -RootPath $root
+            $programFiles = Join-Path $root 'PF'
+            $null = New-Item -ItemType Directory -Path $programFiles -Force
+            $banner = [regex]::Escape('MensorCAD - Instalador local para AutoCAD')
+
+            # La relanzada entregada recibe -HoldResult y debe mostrar el banner.
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -Administrator
+            $delivered = Invoke-CliCapturingHost -Action { Invoke-MensorCadCli -ElevatedProcess -HoldResult -NoAnimation }
+            Assert-Equal 0 $delivered.ExitCode 'La relanzada entregada debe salir con codigo 0.'
+            Assert-Equal 1 ([regex]::Matches($delivered.HostText, $banner)).Count 'La relanzada entregada debe mostrar el banner completo.'
+            Assert-True ($delivered.HostText -match 'Instalando en Program Files') 'La relanzada entregada debe conservar los pasos.'
+
+            # Sin -HoldResult la relanzada elevada conserva su comportamiento previo.
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -Administrator
+            $plainElevated = Invoke-CliCapturingHost -Action { Invoke-MensorCadCli -ElevatedProcess -NoAnimation }
+            Assert-Equal 0 $plainElevated.ExitCode 'La relanzada sin -HoldResult debe salir con codigo 0.'
+            Assert-Equal 0 ([regex]::Matches($plainElevated.HostText, $banner)).Count 'Sin -HoldResult la relanzada no repite el banner.'
+
+            # La instalacion directa sigue mostrando el banner como antes.
+            Set-WindowTestSeams -SourceRoot $source -ProgramFilesRoot $programFiles -Administrator
+            $direct = Invoke-CliCapturingHost -Action { Invoke-MensorCadCli -NoAnimation }
+            Assert-Equal 0 $direct.ExitCode 'La instalacion directa debe seguir saliendo con codigo 0.'
+            Assert-Equal 1 ([regex]::Matches($direct.HostText, $banner)).Count 'La instalacion directa debe conservar su banner.'
+        }
+        finally {
+            Restore-WindowTestSeams
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El payload codificado conserva parametros, ruta con caracteres raros y codigo' {
+        $root = New-TestCaseRoot
+        try {
+            # Ruta con espacios, unicode, apostrofe y punto y coma: nada de eso
+            # debe llegar al analizador de wt.exe como comando.
+            $specialRoot = Join-Path -Path $root -ChildPath "pa quete'u;ni ü"
+            $null = New-Item -ItemType Directory -Path $specialRoot -Force
+            $child = Join-Path $specialRoot 'Install-MensorCAD.ps1'
+            $stub = @'
+param(
+    [switch]$ElevatedProcess,
+    [switch]$HoldResult,
+    [switch]$Uninstall,
+    [switch]$NoAnimation
+)
+$record = [pscustomobject]@{
+    ElevatedProcess = [bool]$ElevatedProcess
+    HoldResult = [bool]$HoldResult
+    Uninstall = [bool]$Uninstall
+    NoAnimation = [bool]$NoAnimation
+    ScriptPath = [string]$PSCommandPath
+}
+$record | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'child-args.json') -Encoding UTF8
+Write-Output 'CHILD-OK'
+exit 42
+'@
+            Write-FixtureFile -Path $child -Content $stub
+            $payload = New-MensorCadHandoffPayload -ScriptPath $child -Uninstall -NoAnimation
+            $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($payload))
+            Assert-True ($decoded.Contains("pa quete''u;ni ü")) 'El payload debe doblar el apostrofe y conservar la ruta.'
+
+            $childResult = Invoke-PowerShellEncodedCommand -Payload $payload
+            Assert-Equal 42 $childResult.ExitCode 'El payload debe salir con el codigo real del hijo.'
+            Assert-True ($childResult.Stdout -match 'CHILD-OK') 'El payload debe ejecutar el script indicado.'
+            $record = [System.IO.File]::ReadAllText((Join-Path $specialRoot 'child-args.json')) | ConvertFrom-Json
+            Assert-Equal $true ([bool]$record.ElevatedProcess) 'El payload debe reenviar -ElevatedProcess.'
+            Assert-Equal $true ([bool]$record.HoldResult) 'El payload debe reenviar -HoldResult.'
+            Assert-Equal $true ([bool]$record.Uninstall) 'El payload debe reenviar -Uninstall.'
+            Assert-Equal $true ([bool]$record.NoAnimation) 'El payload debe reenviar -NoAnimation.'
+            Assert-Equal $child ([string]$record.ScriptPath) 'El payload debe ejecutar exactamente la ruta pedida.'
+        }
+        finally {
+            Restore-WindowTestSeams
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El redibujado del indicador borra el sufijo de una linea mas corta' {
+        $previousPlain = $script:MensorCadPlainMode
+        try {
+            $script:MensorCadPlainMode = $false
+            $script:MensorCadSpinnerIndex = 0
+            $script:MensorCadActivityLength = 0
+            $records = @(& {
+                Write-MensorCadActivity -Message 'Copiando 1/2: PackageContents.xml'
+                Write-MensorCadActivity -Message 'Copiando 2/2: AD.cuix'
+            } 6>&1 | ForEach-Object { [string]$_ })
+            Assert-Equal 2 $records.Count 'Cada paso del indicador debe redibujarse una vez.'
+            $firstLine = '  | Copiando 1/2: PackageContents.xml'
+            $secondLine = '  / Copiando 2/2: AD.cuix'
+            Assert-Equal ("`r" + $firstLine) $records[0] 'La primera linea no necesita relleno.'
+            Assert-True $records[1].StartsWith("`r" + $secondLine) 'La segunda linea debe redibujarse desde el inicio.'
+            $suffix = $records[1].Substring(1 + $secondLine.Length)
+            Assert-Equal ($firstLine.Length - $secondLine.Length) $suffix.Length 'El relleno debe cubrir exactamente el sufijo anterior.'
+            Assert-True ($suffix -match '^ +$') 'El relleno debe ser solo espacios.'
+            $screen = $records[1].Substring(1)
+            Assert-True ($screen -notmatch 'xml') 'El sufijo anterior no debe quedar visible.'
+            Assert-Equal ($secondLine + $suffix) $screen 'La pantalla redibujada no debe mostrar restos del texto anterior.'
+
+            # Complete-MensorCadActivity reinicia la longitud recordada.
+            Complete-MensorCadActivity
+            Assert-Equal 0 $script:MensorCadActivityLength 'Completar la actividad debe reiniciar el relleno.'
+            $afterComplete = @(& { Write-MensorCadActivity -Message 'ok' } 6>&1 | ForEach-Object { [string]$_ })
+            Assert-Equal ("`r  - ok") $afterComplete[0] 'Tras completar, el indicador no debe arrastrar relleno.'
+
+            # Sin animacion el texto plano queda byte a byte igual que antes.
+            $script:MensorCadPlainMode = $true
+            $plain = @(& {
+                Write-MensorCadActivity -Message 'Copiando 1/2: PackageContents.xml'
+                Write-MensorCadActivity -Message 'AD.cuix'
+            } 6>&1 | ForEach-Object { [string]$_ })
+            Assert-Equal '  Copiando 1/2: PackageContents.xml' $plain[0] 'El texto plano no debe cambiar.'
+            Assert-Equal '  AD.cuix' $plain[1] 'El texto plano no debe llevar relleno ni retorno de carro.'
+        }
+        finally {
+            $script:MensorCadPlainMode = $previousPlain
+            $script:MensorCadActivityLength = 0
         }
     }
 }

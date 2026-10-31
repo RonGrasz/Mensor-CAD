@@ -33,7 +33,8 @@
     destino fijo y la elevacion UAC.
 
 .PARAMETER ElevatedProcess
-    Reservado. Lo usa la relanzada elevada para no repetir el banner. No evita
+    Reservado. Lo usa la relanzada elevada para no repetir el banner, salvo en
+    la entrega con -HoldResult, que lo conserva para el usuario. No evita
     ninguna comprobacion de administrador.
 
     Marcas reservadas (no son opciones publicas): Instalar.bat define
@@ -67,6 +68,9 @@ $script:MensorCadScriptPath = $PSCommandPath
 $script:MensorCadDotSourced = ($MyInvocation.InvocationName -eq '.')
 $script:MensorCadPlainMode = $false
 $script:MensorCadSpinnerIndex = 0
+# Longitud del ultimo texto dibujado por el indicador. Se usa solo para rellenar
+# el sufijo que quedaria visible cuando la linea siguiente es mas corta.
+$script:MensorCadActivityLength = 0
 # Tipo nativo de la sonda de consola. Se resuelve de forma perezosa: cargar el
 # archivo con dot-source no registra tipos ni toca ninguna ventana.
 $script:MensorCadConsoleNativeType = $null
@@ -897,13 +901,21 @@ function Write-MensorCadActivity {
     $frames = @('|', '/', '-', '\')
     $frame = $frames[$script:MensorCadSpinnerIndex % $frames.Count]
     $script:MensorCadSpinnerIndex = $script:MensorCadSpinnerIndex + 1
-    Write-Host ("`r  {0} {1}" -f $frame, $Message) -NoNewline -ForegroundColor DarkCyan
+    $line = '  {0} {1}' -f $frame, $Message
+    # El indicador se redibuja en la misma linea con retorno de carro: si el
+    # texto nuevo es mas corto, se rellena con espacios para borrar el sufijo
+    # que quedaria visible del texto anterior.
+    $padding = [Math]::Max(0, [int]$script:MensorCadActivityLength - $line.Length)
+    $script:MensorCadActivityLength = $line.Length
+    Write-Host ("`r" + $line + (' ' * $padding)) -NoNewline -ForegroundColor DarkCyan
 }
 
 function Complete-MensorCadActivity {
     if (-not $script:MensorCadPlainMode) {
         Write-Host ''
     }
+    # La linea quedo completada: el proximo indicador no necesita relleno.
+    $script:MensorCadActivityLength = 0
 }
 
 function Write-MensorCadProgress {
@@ -1825,6 +1837,54 @@ function Wait-MensorCadResultHold {
     }
 }
 
+function Get-MensorCadWindowsTerminalPath {
+    # Descubre wt.exe de forma perezosa y solo en la entrega. Devuelve $null si
+    # no esta disponible o si la consulta falla: el lanzamiento cae entonces al
+    # camino original de Windows PowerShell y no se consulta nada mas.
+    param(
+        [scriptblock]$DiscoveryProbe = { Get-Command -Name 'wt.exe' -CommandType Application -ErrorAction Stop }
+    )
+    try {
+        $command = & $DiscoveryProbe
+        if ($null -eq $command) { return $null }
+        $candidate = @($command)[0]
+        if ($null -eq $candidate) { return $null }
+        foreach ($propertyName in @('Source', 'Path')) {
+            $property = $candidate.PSObject.Properties[$propertyName]
+            if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                return [string]$property.Value
+            }
+        }
+        return $null
+    }
+    catch {
+        return $null
+    }
+}
+
+function New-MensorCadHandoffPayload {
+    # Comando unico y fijo para el analizador adicional de wt.exe. El payload
+    # -EncodedCommand evita que espacios, unicode, apostrofes o punto y coma de
+    # la ruta se interpreten como comandos de la terminal. La ruta se escapa
+    # doblando apostrofes y el hijo sale con su ultimo codigo real.
+    param([string]$ScriptPath, [switch]$Uninstall, [switch]$NoAnimation)
+    $quotedPath = "'" + ($ScriptPath -replace "'", "''") + "'"
+    $command = '& ' + $quotedPath + ' -ElevatedProcess -HoldResult'
+    if ($Uninstall) { $command += ' -Uninstall' }
+    if ($NoAnimation) { $command += ' -NoAnimation' }
+    $command += '; exit $LASTEXITCODE'
+    return [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
+}
+
+function New-MensorCadWindowsTerminalArguments {
+    # Invocacion fija: ventana nueva (-w new) con el perfil predeterminado del
+    # usuario (sin selector de perfil y sin leer ni escribir ajustes), y Windows
+    # PowerShell 5.1 con los mismos interruptores de siempre. El proceso elevado
+    # es wt.exe, asi que el UAC aparece antes de que exista esta ventana.
+    param([string]$PowerShellPath, [string]$Payload)
+    return ('-w new new-tab -- "{0}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {1}' -f $PowerShellPath, $Payload)
+}
+
 function Invoke-MensorCadElevatedSelf {
     param([switch]$Uninstall, [switch]$NoAnimation, [switch]$BatLauncher)
     $powerShellPath = Get-MensorCadPowerShellPath
@@ -1847,8 +1907,23 @@ function Invoke-MensorCadElevatedSelf {
         # no altera el codigo de salida.
         $argumentString += ' -HoldResult'
     }
+    # Entrega con Windows Terminal disponible: el proceso elevado es wt.exe y
+    # abre una sola ventana nueva con el perfil del usuario y el resultado
+    # completo. Sin wt.exe, o si el descubrimiento falla, el FilePath sigue
+    # siendo Windows PowerShell como antes. wt.exe solo se consulta en la
+    # entrega: el camino sincrono nunca lo toca.
+    $startFilePath = $powerShellPath
+    $startArguments = $argumentString
+    if ($handoff) {
+        $windowsTerminalPath = Get-MensorCadWindowsTerminalPath
+        if (-not [string]::IsNullOrWhiteSpace($windowsTerminalPath)) {
+            $payload = New-MensorCadHandoffPayload -ScriptPath $scriptPath -Uninstall:$Uninstall -NoAnimation:$NoAnimation
+            $startFilePath = $windowsTerminalPath
+            $startArguments = New-MensorCadWindowsTerminalArguments -PowerShellPath $powerShellPath -Payload $payload
+        }
+    }
     try {
-        $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -Verb RunAs -Wait:(-not $handoff) -PassThru
+        $process = Start-Process -FilePath $startFilePath -ArgumentList $startArguments -Verb RunAs -Wait:(-not $handoff) -PassThru
     }
     catch {
         throw ('No se obtuvo elevacion mediante UAC. La instalacion no se realizo. Detalle: ' + $_.Exception.Message)
@@ -1872,6 +1947,7 @@ function Invoke-MensorCadCli {
         [switch]$FromRelease,
         [string]$Version,
         [switch]$ElevatedProcess,
+        [switch]$HoldResult,
         [switch]$BatLauncher
     )
     $script:MensorCadPlainMode = ($NoAnimation -or (Test-MensorCadOutputRedirected))
@@ -1888,7 +1964,9 @@ function Invoke-MensorCadCli {
             throw 'Este instalador solo funciona en Windows con Windows PowerShell 5.1. No se escribio ningun archivo.'
         }
         Assert-MensorCad64BitHost
-        if (-not $ElevatedProcess) {
+        # La entrega elevada conserva el banner completo para el usuario: el
+        # resultado que queda visible no puede perder el estilo de la CLI.
+        if ((-not $ElevatedProcess) -or $HoldResult) {
             Write-MensorCadBanner
         }
         $programFilesRoot = Get-MensorCadProgramFilesRoot
@@ -1981,6 +2059,7 @@ if ($Help) { $mensorCadCliArguments['Help'] = $true }
 if ($FromRelease) { $mensorCadCliArguments['FromRelease'] = $true }
 if ($PSBoundParameters.ContainsKey('Version')) { $mensorCadCliArguments['Version'] = $Version }
 if ($ElevatedProcess) { $mensorCadCliArguments['ElevatedProcess'] = $true }
+if ($HoldResult) { $mensorCadCliArguments['HoldResult'] = $true }
 # Marca reservada del BAT: solo Instalar.bat define MENSORCAD_BAT_LAUNCHER=1.
 # El interruptor reservado -HoldResult indica a la relanzada elevada que debe
 # mantener el resultado visible hasta Enter.

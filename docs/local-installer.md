@@ -77,17 +77,21 @@ automatizaciones.
 ## Ventana única después de UAC
 
 Al hacer doble clic en `Instalar.bat` el lanzador **no** manipula ni oculta
-ventanas: entrega el resultado a la ventana elevada. Con una consola interactiva
-dedicada a este BAT, el lanzador deja de esperar, la ventana elevada hace el
-trabajo y mantiene su resultado final visible hasta pulsar Enter, y el lanzador
-imprime el mensaje neutral «La instalacion continua en la ventana elevada.» y
-termina en ese instante. Así el host de la terminal
-(Windows Terminal, conhost u otro) no necesita cambios: la ventana que queda con
-el resultado es la elevada.
+ventanas: primero pide UAC y después entrega el resultado a la ventana elevada.
+Con una consola interactiva dedicada a este BAT, el lanzador deja de esperar, la
+ventana elevada hace el trabajo y mantiene su resultado final visible hasta
+pulsar Enter, y el lanzador imprime el mensaje neutral «La instalacion continua en la ventana elevada.» y termina en ese instante.
+
+Si el equipo tiene `wt.exe` (Windows Terminal), la ventana elevada es una
+**ventana nueva** de Windows Terminal con el perfil predeterminado del usuario:
+el doble clic deja una sola ventana con el aspecto configurado, no una consola
+nativa. Sin `wt.exe`, o si el descubrimiento falla, se usa el camino original de
+Windows PowerShell y el comportamiento no cambia.
 
 | Situación | Resultado |
 |-----------|-----------|
-| Doble clic en `Instalar.bat` con consola dedicada `cmd.exe /c` de este BAT | El lanzador entrega el resultado: mensaje neutral, sin resumen de éxito ni pausa. La ventana elevada muestra el resultado final hasta Enter. |
+| Doble clic en `Instalar.bat` con consola dedicada `cmd.exe /c` de este BAT y `wt.exe` disponible | UAC primero. El lanzador entrega el resultado y Windows Terminal abre una ventana nueva elevada con el perfil del usuario. |
+| Doble clic sin `wt.exe`, o con descubrimiento fallido | UAC primero y después la ventana elevada de Windows PowerShell, como antes. |
 | PowerShell directo, terminal ya abierta, `-FromRelease` o consola compartida | Sin entrega: se conserva el comportamiento síncrono y los códigos de salida originales. |
 | Flujos redirigidos o automatización con `MENSORCAD_NO_PAUSE=1` | Sin entrega y sin espera final: camino síncrono original. |
 | Ya elevado (sin UAC) o `-Help` | No se lanza ninguna entrega ni se abre ninguna ventana extra. |
@@ -110,11 +114,32 @@ La entrega exige cuatro condiciones a la vez, y cualquier duda la desactiva
 La ventana elevada recibe el interruptor reservado `-HoldResult` y mantiene su
 resultado visible hasta Enter, tanto si la instalación termina bien como si
 falla; nunca se aplica a flujos redirigidos y un fallo de lectura de teclado no
-altera el código de salida real. El lanzador devuelve un sentinel privado (`75`)
-que solo el BAT interpreta: no es éxito de instalación y nunca llega a
-PowerShell directo, a la entrada remota ni a automatizaciones. El código de
-salida documentado del instalador sigue siendo `0` o `1`; `75` es interno del
-lanzador y el BAT lo convierte en `0` tras informar el traspaso.
+altera el código de salida real. Esa relanzada conserva además el **banner**
+completo del instalador y sus colores: el resultado que queda visible se ve como
+la CLI original. El sentinel privado (`75`) que devuelve el lanzador solo lo
+interpreta el BAT: no es éxito de instalación y nunca llega a PowerShell
+directo, a la entrada remota ni a automatizaciones. El código de salida
+documentado del instalador sigue siendo `0` o `1`; `75` es interno del lanzador
+y el BAT lo convierte en `0` tras informar el traspaso.
+
+Invocación en Windows Terminal (fija, sin opciones nuevas):
+
+1. `wt.exe -w new new-tab -- "<ruta de Windows PowerShell>" -NoProfile
+   -ExecutionPolicy Bypass -EncodedCommand <payload UTF-16LE en base64>`. El UAC
+   ocurre antes de esa ventana nueva: el proceso elevado es `wt.exe`.
+2. El payload invoca el script con los interruptores constantes
+   (`-ElevatedProcess`, `-HoldResult` y los que correspondan de `-Uninstall` y
+   `-NoAnimation`), escapa la ruta doblando apóstrofes y termina con
+   `exit $LASTEXITCODE` para devolver el código real del hijo. Así los espacios,
+   el unicode, los apóstrofes o el punto y coma de la ruta del paquete no se
+   interpretan como comandos de la terminal. No hay script temporal, IPC ni
+   perfiles escritos: el perfil es el predeterminado del usuario.
+
+El indicador de progreso se redibuja en la misma línea con retorno de carro y
+ahora recuerda la longitud anterior para **rellenar con espacios** el sufijo que
+quedaría visible cuando la línea siguiente es más corta; al completar la
+actividad se reinicia esa longitud. Con `-NoAnimation` o con flujos redirigidos
+el texto plano no cambia ni un byte.
 
 Comprobación de seguridad: la validación local antes de UAC, la revalidación
 después de UAC y el motor de instalación no cambian; el único sitio de elevación

@@ -586,6 +586,9 @@ class InstallerStructureTests(unittest.TestCase):
             "MENSORCAD_NO_PAUSE",
             "MENSORCAD_STUB_EXIT",
             "MENSORCAD_BAT_LAUNCHER",
+            "Get-MensorCadWindowsTerminalPath",
+            "New-MensorCadHandoffPayload",
+            "-EncodedCommand",
         ):
             self.assertIn(fragment, text, f"las pruebas de ventana no cubren: {fragment}")
         self.assertNotIn("-Verb RunAs", text, "las pruebas de ventana no deben pedir UAC real")
@@ -602,8 +605,101 @@ class InstallerStructureTests(unittest.TestCase):
             "Ya administrador",
             "El BAT marca el lanzamiento",
             "hijo remoto",
+            "wt.exe",
+            "ventana nueva",
+            "banner",
+            "indicador",
         ):
             self.assertIn(scenario, text, f"las pruebas de ventana no cubren: {scenario}")
+
+    def test_handoff_prefers_windows_terminal_with_clean_banner_and_spinner(self) -> None:
+        installer = self.installer
+        for name in (
+            "Get-MensorCadWindowsTerminalPath",
+            "New-MensorCadHandoffPayload",
+            "New-MensorCadWindowsTerminalArguments",
+        ):
+            self.assertIn(f"function {name}", installer, f"falta el ayudante {name}")
+
+        # Descubrimiento perezoso de wt.exe y solo dentro de la entrega: el
+        # camino sincrono nunca consulta Windows Terminal.
+        self.assertIn("Get-Command -Name 'wt.exe' -CommandType Application", installer)
+        elevation = installer[
+            installer.index("function Invoke-MensorCadElevatedSelf") : installer.index("function Invoke-MensorCadCli")
+        ]
+        self.assertEqual(1, installer.count("-Verb RunAs"), "debe seguir habiendo un unico sitio de elevacion")
+        self.assertEqual(1, elevation.count("Get-MensorCadWindowsTerminalPath"))
+        handoff_index = elevation.index("$handoff = Test-MensorCadHandoffEligible -BatLauncher:$BatLauncher")
+        lookup_index = elevation.index("$windowsTerminalPath = Get-MensorCadWindowsTerminalPath")
+        self.assertLess(handoff_index, lookup_index, "la consulta de wt.exe debe ocurrir despues de decidir la entrega")
+        self.assertIn(
+            "if ($handoff) {",
+            elevation[max(0, lookup_index - 200) : lookup_index],
+            "la consulta de wt.exe debe vivir dentro del camino de entrega",
+        )
+        self.assertLess(elevation.index("$startFilePath = $powerShellPath"), lookup_index)
+        self.assertIn("$startArguments = $argumentString", elevation, "el camino original debe conservarse intacto")
+        self.assertIn(
+            "-FilePath $startFilePath -ArgumentList $startArguments -Verb RunAs -Wait:(-not $handoff) -PassThru",
+            elevation,
+            "el unico sitio de elevacion debe elegir entre wt.exe y PowerShell",
+        )
+
+        # Invocacion fija de wt.exe: ventana nueva, perfil predeterminado y el
+        # mismo Windows PowerShell 5.1 con los interruptores de siempre.
+        terminal = installer[
+            installer.index("function New-MensorCadWindowsTerminalArguments") : installer.index(
+                "function Invoke-MensorCadElevatedSelf"
+            )
+        ]
+        self.assertIn("'-w new new-tab -- ", terminal)
+        self.assertIn("-NoProfile -ExecutionPolicy Bypass -EncodedCommand", terminal)
+        self.assertNotIn("-NonInteractive", installer, "la relanzada nunca debe ser no interactiva")
+        self.assertNotIn("--profile", installer, "no debe elegirse un perfil de Windows Terminal")
+        self.assertNotIn("-p ", terminal, "no debe elegirse un perfil de Windows Terminal")
+
+        # Payload unico y seguro: ruta escapada, interruptores constantes, sin
+        # script temporal ni IPC, y salida con el codigo real del hijo.
+        payload = installer[
+            installer.index("function New-MensorCadHandoffPayload") : installer.index(
+                "function New-MensorCadWindowsTerminalArguments"
+            )
+        ]
+        self.assertIn("$ScriptPath -replace \"'\", \"''\"", payload)
+        self.assertIn("'; exit $LASTEXITCODE'", payload)
+        self.assertIn("[System.Text.Encoding]::Unicode.GetBytes", payload)
+        self.assertIn("[Convert]::ToBase64String", payload)
+        for forbidden in ("Set-Content", "Out-File", "New-TemporaryFile", "Start-Process"):
+            self.assertNotIn(forbidden, payload, f"el payload no debe crear nada: {forbidden}")
+
+        # La relanzada entregada conserva el banner; las comprobaciones de
+        # administrador y antirrecursion siguen en pie.
+        self.assertIn("if ((-not $ElevatedProcess) -or $HoldResult) {", installer)
+        cli = installer[installer.index("function Invoke-MensorCadCli") : installer.index("# Guarda de dot-source")]
+        self.assertIn("[switch]$HoldResult", cli, "la CLI debe recibir la marca de espera entregada")
+        self.assertGreaterEqual(cli.count("if ($ElevatedProcess) {"), 2, "las comprobaciones antirrecursion deben seguir")
+        self.assertIn("La sesion elevada no tiene permisos de administrador. La instalacion no se realizo.", cli)
+        self.assertIn("La sesion elevada no tiene permisos de administrador. La desinstalacion no se realizo.", cli)
+        entry = installer[installer.index("$mensorCadCliArguments = @{}") :]
+        self.assertIn("if ($HoldResult) { $mensorCadCliArguments['HoldResult'] = $true }", entry)
+        self.assertLess(
+            entry.index("if ($HoldResult) { $mensorCadCliArguments['HoldResult'] = $true }"),
+            entry.index("$mensorCadExitCode = Invoke-MensorCadCli"),
+            "la marca de espera debe decidirse antes de ejecutar el flujo",
+        )
+
+        # Redibujado del indicador: un unico escalar con la longitud anterior y
+        # relleno de espacios; nada de secuencias de limpieza ni otro motor.
+        activity = installer[
+            installer.index("function Write-MensorCadActivity") : installer.index("function Write-MensorCadProgress")
+        ]
+        self.assertIn("$padding = [Math]::Max(0, [int]$script:MensorCadActivityLength - $line.Length)", activity)
+        self.assertIn("(' ' * $padding)", activity)
+        self.assertIn("$script:MensorCadActivityLength = $line.Length", activity)
+        self.assertIn("$script:MensorCadActivityLength = 0", activity)
+        self.assertIn("Write-Host ('  ' + $Message)", activity, "el texto plano debe seguir igual")
+        for forbidden in ("Clear-Host", "[Console]::Clear"):
+            self.assertNotIn(forbidden, installer, f"el indicador no debe usar {forbidden}")
 
     def test_docs_document_single_window_limits_and_manual_proof(self) -> None:
         for fragment in (
@@ -619,6 +715,11 @@ class InstallerStructureTests(unittest.TestCase):
             "continua en la ventana elevada",
             "sentinel privado",
             "75",
+            "wt.exe",
+            "ventana nueva",
+            "EncodedCommand",
+            "banner",
+            "indicador",
         ):
             self.assertIn(fragment, self.docs, f"la documentacion no menciona {fragment}")
         self.assertNotIn("oculta la consola", self.docs, "la documentacion no debe describir la ruta obsoleta")
