@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "Install-MensorCAD.ps1"
 BAT = ROOT / "Instalar.bat"
 WINDOWS_TESTS = ROOT / "tests" / "Test-Installer.ps1"
+WINDOW_TESTS = ROOT / "tests" / "Test-InstallerWindow.ps1"
 DOCS = ROOT / "docs" / "local-installer.md"
 
 REMOTE_SECTION_MARKER = "# Entrada remota: descarga y verificacion de releases de GitHub"
@@ -31,6 +32,7 @@ class InstallerStructureTests(unittest.TestCase):
         cls.installer = read_text(INSTALLER)
         cls.bat = read_text(BAT)
         cls.windows_tests = read_text(WINDOWS_TESTS)
+        cls.window_tests = read_text(WINDOW_TESTS)
         cls.docs = read_text(DOCS)
         cls.top_param_block = cls._top_param_block(cls.installer)
         cls.local_branch, _, cls.remote_branch = cls.installer.partition(REMOTE_SECTION_MARKER)
@@ -42,7 +44,7 @@ class InstallerStructureTests(unittest.TestCase):
         return text[start : end + 2]
 
     def test_expected_files_exist(self) -> None:
-        for path in (INSTALLER, BAT, WINDOWS_TESTS, DOCS):
+        for path in (INSTALLER, BAT, WINDOWS_TESTS, WINDOW_TESTS, DOCS):
             self.assertTrue(path.is_file(), f"falta {path}")
 
     def test_public_switches_are_limited_to_documented_interface(self) -> None:
@@ -396,11 +398,157 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertIn("instalación", self.docs)  # documento en espanol
 
     def test_ps1_files_are_utf8_with_bom_for_windows_powershell_51(self) -> None:
-        for path in (INSTALLER, WINDOWS_TESTS):
+        for path in (INSTALLER, WINDOWS_TESTS, WINDOW_TESTS):
             self.assertTrue(
                 path.read_bytes().startswith(b"\xef\xbb\xbf"),
                 f"{path.name} debe guardarse como UTF-8 con BOM para Windows PowerShell 5.1",
             )
+
+    def test_single_window_handoff_is_confined_to_a_proven_console(self) -> None:
+        installer = self.installer
+        for name in (
+            "Get-MensorCadConsoleNativeType",
+            "Get-MensorCadConsoleProbe",
+            "Get-MensorCadProcessParentId",
+            "Get-MensorCadProcessName",
+            "Get-MensorCadProcessCommandLine",
+            "Get-MensorCadBatchCommandTarget",
+            "Test-MensorCadConsoleHandoffBlocked",
+            "Get-MensorCadDedicatedConsole",
+            "Set-MensorCadConsoleWindowVisible",
+        ):
+            self.assertIn(f"function {name}", installer, f"falta el ayudante {name}")
+
+        # La compilacion Win32 es perezosa: solo dentro del ayudante que la usa.
+        compilations = [
+            position
+            for position in [m.start() for m in re.finditer(r"Add-Type -TypeDefinition", installer)]
+        ]
+        self.assertEqual(1, len(compilations), "la declaracion Win32 debe compilarse en un solo lugar")
+        self.assertGreater(
+            compilations[0],
+            installer.index("function Get-MensorCadConsoleNativeType"),
+            "la sonda nativa no debe compilarse al cargar el archivo",
+        )
+        for fragment in (
+            "GetConsoleWindow",
+            "GetConsoleProcessList",
+            "IsWindowVisible",
+            "ShowWindow",
+            "WT_SESSION",
+            "IsOutputRedirected",
+            "IsErrorRedirected",
+            "IsInputRedirected",
+            "explorer",
+            "cmd",
+        ):
+            self.assertIn(fragment, installer, f"la sonda no comprueba {fragment}")
+
+        # B1: la topologia de procesos no distingue una terminal cmd abierta por
+        # Explorer del doble clic del BAT; la linea de comandos es la prueba
+        # adicional y debe exigir el interruptor /c exacto y este Instalar.bat.
+        self.assertIn("CommandLineProbe", installer)
+        self.assertIn("function Get-MensorCadProcessCommandLine", installer)
+        self.assertIn("'Instalar.bat'", installer)
+        self.assertIn("$token -ieq '/c'", installer)
+        self.assertIn("$token -ieq '/k'", installer)
+        self.assertIn("StringComparison]::OrdinalIgnoreCase", installer)
+        recognizer = installer[
+            installer.index("function Get-MensorCadBatchCommandTarget") : installer.index(
+                "function Test-MensorCadConsoleHandoffBlocked"
+            )
+        ]
+        self.assertIn("Get-MensorCadBatchCommandTarget -CommandLine $commandLine", installer)
+        self.assertIn("if (-not [string]::Equals($resolved, $expected", recognizer)
+        self.assertIn("return $null", recognizer, "el reconocedor debe fallar abierto")
+
+        # Ocultar y restaurar viven solo en la relanzada elevada, alrededor del
+        # mismo lanzamiento bloqueante, con la restauracion en el finally.
+        elevation = installer[
+            installer.index("function Invoke-MensorCadElevatedSelf") : installer.index(
+                "function Invoke-MensorCadCli"
+            )
+        ]
+        self.assertEqual(2, installer.count("Get-MensorCadDedicatedConsole"))
+        self.assertEqual(1, elevation.count("Get-MensorCadDedicatedConsole"))
+        self.assertEqual(1, elevation.count("-Verb RunAs"))
+        self.assertIn("-Verb RunAs -Wait -PassThru", elevation)
+        self.assertLess(
+            elevation.index("Get-MensorCadDedicatedConsole"),
+            elevation.index("-Verb RunAs"),
+            "la sonda debe decidir antes de pedir UAC",
+        )
+        self.assertLess(
+            elevation.index("-Visible $false"),
+            elevation.index("-Verb RunAs"),
+            "ocultar debe ocurrir antes del lanzamiento bloqueante",
+        )
+        self.assertLess(
+            elevation.index("-Verb RunAs"),
+            elevation.index("finally {"),
+            "la restauracion debe vivir despues del lanzamiento",
+        )
+        finally_block = elevation[elevation.index("finally {") :]
+        self.assertIn("-Visible $true", finally_block, "la restauracion debe vivir en el finally")
+        self.assertIn(
+            "return [int]$process.ExitCode",
+            elevation,
+            "el codigo de salida del proceso elevado debe conservarse",
+        )
+        self.assertEqual(
+            1,
+            installer.count("::ShowWindow"),
+            "ShowWindow solo debe invocarse desde el envoltorio de visibilidad",
+        )
+
+    def test_window_tests_exercise_handoff_with_local_seams_only(self) -> None:
+        text = self.window_tests
+        for fragment in (
+            "descubrir,ocultar,lanzar,restaurar",
+            "Get-MensorCadDedicatedConsole",
+            "Set-MensorCadConsoleWindowVisible",
+            "Start-Process",
+            "$Verb -eq 'RunAs'",
+            "GetTempPath",
+            ". $script:InstallerPath",
+            "[System.IntPtr]::Zero",
+            "Restore-WindowTestSeams",
+        ):
+            self.assertIn(fragment, text, f"las pruebas de ventana no cubren: {fragment}")
+        self.assertNotIn("-Verb RunAs", text, "las pruebas de ventana no deben pedir UAC real")
+        for scenario in (
+            "Cancelar UAC",
+            "Un lanzamiento sin proceso",
+            "Consola compartida",
+            "Salida redirigida",
+            "Camino ya elevado",
+            "ayuda",
+            "Desinstalacion con UAC",
+            "hijo remoto",
+            "Una terminal cmd abierta por Explorer no se oculta (B1)",
+            "El doble clic cmd /c de este BAT si oculta y restaura",
+            "La linea de comandos distingue el doble clic",
+        ):
+            self.assertIn(scenario, text, f"las pruebas de ventana no cubren: {scenario}")
+        for fragment in (
+            "ConsoleTopology",
+            "Get-MensorCadProcessCommandLine",
+            "/k",
+            "Instalar.bat",
+        ):
+            self.assertIn(fragment, text, f"las pruebas de ventana no cubren el gate B1: {fragment}")
+
+    def test_docs_document_single_window_limits_and_manual_proof(self) -> None:
+        for fragment in (
+            "Ventana única",
+            "UAC",
+            "Windows Terminal",
+            "fail-open",
+            "prueba visual",
+            "Test-InstallerWindow.ps1",
+            "explorer",
+        ):
+            self.assertIn(fragment, self.docs, f"la documentacion no menciona {fragment}")
 
 
 if __name__ == "__main__":

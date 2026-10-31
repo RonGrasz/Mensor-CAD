@@ -72,6 +72,47 @@ redirigida, para que los registros de consola sigan siendo legibles.
 `pause` final se puede omitir con la variable `MENSORCAD_NO_PAUSE=1` en
 automatizaciones.
 
+## Ventana única después de UAC
+
+Al hacer doble clic en `Instalar.bat` se abre una consola propia. Antes de
+mostrar el aviso de UAC el instalador oculta **solo esa** consola, deja que la
+ventana elevada haga el trabajo y la restaura al terminar, incluso si se cancela
+UAC o si el lanzamiento falla. Al aceptar UAC queda una sola ventana visible y el
+resultado final se lee en la consola original, que es la que muestra el resumen
+del BAT y queda en pausa.
+
+| Situación | Resultado |
+|-----------|-----------|
+| Doble clic en `Instalar.bat` (consola dedicada `cmd.exe` abierta por `explorer.exe` que ejecuta este `Instalar.bat` con `/c`) | Se oculta la consola original; al aceptar UAC queda una sola ventana visible. |
+| Terminal `cmd.exe` ya abierta por el usuario (también puede haber sido abierta desde `explorer.exe`) | No se oculta nada; se conservan las dos ventanas del comportamiento anterior. |
+| Windows Terminal, ConPTY o cualquier flujo redirigido | No se oculta nada (fail-open): la detección es conservadora. |
+| Ya elevado (sin UAC) o `-Help` | No se toca ninguna ventana; el flujo no cambia. |
+
+La detección es deliberadamente estricta: exige que la consola tenga
+exactamente este proceso y su padre `cmd.exe`, que ese `cmd.exe` haya sido
+abierto por `explorer.exe`, que la ventana sea visible y que no haya flujos
+redirigidos ni una pseudoconsola (`WT_SESSION`). Una terminal `cmd.exe` abierta
+por el usuario tiene la **misma topología de procesos**, así que además se lee
+su línea de comandos y solo se acepta el doble clic: `cmd.exe /c` seguido
+exactamente del `Instalar.bat` de esta carpeta. Se rechaza `/k`, un `/c` que
+solo aparece dentro de una ruta o argumento entre comillas, un `/c` de otro
+programa, otro `Instalar.bat` de otra carpeta, comandos compuestos y cualquier
+línea de comandos ilegible o desconocida. Si alguna comprobación falla, si el
+sondeo no se puede leer o si no hay compilador para las declaraciones Win32, no
+se oculta nada y el instalador sigue como antes. No se cierran procesos, no se
+cambia el código de salida, no se altera la validación previa a UAC y el `pause`
+del BAT sigue igual.
+
+Variantes de lanzamiento desconocidas (por ejemplo un envoltorio `.cmd` propio,
+un acceso directo con otra línea de comandos o una terminal abierta con `/k`)
+quedan visibles: la ventana extra es el precio de no ocultar nunca una terminal
+ajena. Esa decisión es intencionalmente conservadora.
+
+Esta unidad **no** demuestra el resultado visual: eso exige prueba visual humana
+en Windows (doble clic en `Instalar.bat`, aceptar y cancelar UAC y comprobar que
+queda una sola ventana legible). Las pruebas automatizadas usan costuras locales
+y no sustituyen esa comprobación.
+
 ## Destino fijo
 
 ```text
@@ -249,6 +290,7 @@ los assets del release.
 |--------|-------|--------|
 | Estructura del instalador, BAT y documentación | `python3 -m unittest discover -s tests -p 'test_installer_structure.py' -v` | Se ejecuta en Linux. No demuestra comportamiento funcional. |
 | Instalación, actualización, desinstalación, rollback, rechazos y flags | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1` | Requiere Windows PowerShell 5.1. Usa destinos temporales aislados. |
+| Ventana única (orden ocultar/lanzar/restaurar, cancelación, fail-open, `/c` de este BAT frente a terminal existente) | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1` | Requiere Windows PowerShell 5.1. Consola, UAC y proceso simulado; no demuestra el resultado visual. |
 | Entrada remota | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1` | Requiere Windows PowerShell 5.1. Red y proceso hijo simulados. |
 
 Las pruebas de Windows nunca escriben en Program Files ni abren AutoCAD. Los
