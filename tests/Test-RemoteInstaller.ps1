@@ -27,7 +27,9 @@ $script:FailureMessages = @()
 $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $script:InstallerPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'Install-MensorCAD.ps1'
 $script:BatPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'Instalar.bat'
-$script:TestRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('MensorCadRemoteTests-' + [guid]::NewGuid().ToString('N'))
+# Prefijos cortos dejan espacio para la ruta transaccional del instalador bajo
+# MAX_PATH. Se conservan los GUID completos para aislar cada suite y cada caso.
+$script:TestRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('MCRT-' + [guid]::NewGuid().ToString('N'))
 
 if (-not (Test-Path -LiteralPath $script:InstallerPath -PathType Leaf)) {
     Write-Host "ERROR: no se encontro el instalador en '$script:InstallerPath'." -ForegroundColor Red
@@ -80,7 +82,7 @@ function Test-Case {
 }
 
 function New-TestCaseRoot {
-    $path = Join-Path -Path $script:TestRoot -ChildPath ('case-' + [guid]::NewGuid().ToString('N'))
+    $path = Join-Path -Path $script:TestRoot -ChildPath ('c-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $path -Force
     return $path
 }
@@ -400,6 +402,82 @@ exit 0
     return $probePath
 }
 
+function Get-DocumentedBootstrapBody {
+    # Extrae el cuerpo exacto entre -Command "..." del comando de una linea
+    # publicado en docs/remote-installer.md. Asi la prueba ejecuta el mismo
+    # texto que copia un usuario, no una copia paralela que puede divergir.
+    param([string]$Text, [string]$Kind = 'latest')
+    $bodies = @()
+    foreach ($line in ($Text -split "`r?`n")) {
+        if (-not $line.TrimStart().StartsWith('powershell.exe')) { continue }
+        $start = $line.IndexOf('-Command "')
+        if ($start -lt 0) { continue }
+        $start += '-Command "'.Length
+        $end = $line.LastIndexOf('"')
+        if ($end -le $start) { continue }
+        $body = $line.Substring($start, $end - $start)
+        $isPinned = ($body -match 'releases/download/v[0-9]+\.[0-9]+\.[0-9]+/Install-MensorCAD\.ps1')
+        if ($Kind -eq 'pinned' -and $isPinned) { $bodies += $body }
+        if ($Kind -eq 'latest' -and -not $isPinned -and $body -match 'releases/latest/download/Install-MensorCAD\.ps1') { $bodies += $body }
+    }
+    if ($bodies.Count -ne 1) {
+        throw ('Se esperaba exactamente un comando documentado de tipo ' + $Kind + '; encontrados: ' + $bodies.Count)
+    }
+    return $bodies[0]
+}
+
+function New-BootstrapProbeScript {
+    # Ejecuta el cuerpo EXACTO del comando de una linea documentado dentro de
+    # un proceso PowerShell aparte. La primera descarga (Invoke-RestMethod) y la
+    # red del instalador (Invoke-WebRequest) se reemplazan por costuras
+    # locales: la prueba nunca descarga nada, no pide UAC y no escribe en el
+    # destino fijo. El cuerpo se ejecuta con ErrorActionPreference NO
+    # terminante, para medir el -ErrorAction Stop del comando publicado.
+    param([string]$RootPath, [string]$Name, [string]$Body)
+    $bodyPath = Join-Path -Path $RootPath -ChildPath ('bootstrap-body-' + $Name + '.txt')
+    Write-FixtureFile -Path $bodyPath -Content $Body
+    $probePath = Join-Path -Path $RootPath -ChildPath ('bootstrap-probe-' + $Name + '.ps1')
+    $installerLiteral = $script:InstallerPath.Replace("'", "''")
+    $bodyLiteral = $bodyPath.Replace("'", "''")
+    $template = @'
+param([switch]$FailFirstFetch)
+$ErrorActionPreference = 'Continue'
+$script:ProbeBodyPath = '__BODY__'
+$script:ProbeInstallerPath = '__INSTALLER__'
+function global:Invoke-RestMethod {
+    [CmdletBinding()]
+    param([switch]$UseBasicParsing, [Parameter(Position = 0)][string]$Uri)
+    if ($FailFirstFetch) {
+        $firstFetchError = New-Object -TypeName 'System.Exception' -ArgumentList @('respuesta 404 simulada en la primera descarga')
+        $null = $firstFetchError | Add-Member -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 404 })
+        throw $firstFetchError
+    }
+    return [System.IO.File]::ReadAllText($script:ProbeInstallerPath)
+}
+function global:Invoke-WebRequest {
+    [CmdletBinding()]
+    param([switch]$UseBasicParsing, [Parameter(Position = 0)][string]$Uri, [string]$OutFile, [int]$TimeoutSec = 0)
+    throw ('red no simulada en la prueba: ' + $Uri)
+}
+$documentedBody = [scriptblock]::Create([System.IO.File]::ReadAllText($script:ProbeBodyPath))
+& $documentedBody
+'@
+    $content = $template.Replace('__BODY__', $bodyLiteral).Replace('__INSTALLER__', $installerLiteral)
+    $encoding = New-Object -TypeName 'System.Text.UTF8Encoding' -ArgumentList @($false)
+    [System.IO.File]::WriteAllText($probePath, $content, $encoding)
+    return $probePath
+}
+
+function New-RemoteHttpError {
+    # Error con Response/StatusCode como el de Invoke-WebRequest: ejercita la
+    # deteccion real de estado HTTP sin tocar la red.
+    param([int]$StatusCode, [string]$Message)
+    $httpError = New-Object -TypeName 'System.Exception' -ArgumentList @($Message)
+    $response = [pscustomobject]@{ StatusCode = $StatusCode }
+    $null = $httpError | Add-Member -MemberType NoteProperty -Name Response -Value $response
+    return $httpError
+}
+
 function Set-MensorCadTestSeams {
     param(
         [string]$TempRoot,
@@ -410,6 +488,9 @@ function Set-MensorCadTestSeams {
         [string]$LatestTag = 'v9.9.9',
         [switch]$AllowApi,
         [switch]$FailApi,
+        [switch]$FailDownload,
+        [int]$ApiHttpStatus = 0,
+        [int]$DownloadHttpStatus = 0,
         [int]$ChildExitCode = 0,
         [string]$ChildStdOut = 'salida simulada del instalador extraido',
         [string]$ChildStdErr = ''
@@ -417,6 +498,7 @@ function Set-MensorCadTestSeams {
     $script:SeamCalls = New-Object 'System.Collections.Generic.List[object]'
     $script:SeamChildCalls = New-Object 'System.Collections.Generic.List[object]'
     $script:SeamErrors = New-Object 'System.Collections.Generic.List[string]'
+    $script:SeamSuccessCalls = New-Object 'System.Collections.Generic.List[object]'
     $script:SeamRelayedOut = ''
     $script:SeamRelayedErr = ''
     $script:SeamTempRoot = $TempRoot
@@ -424,6 +506,9 @@ function Set-MensorCadTestSeams {
     $script:SeamLatestTag = $LatestTag
     $script:SeamApiAllowed = $AllowApi.IsPresent
     $script:SeamApiFails = $FailApi.IsPresent
+    $script:SeamFailDownload = $FailDownload.IsPresent
+    $script:SeamApiHttpStatus = $ApiHttpStatus
+    $script:SeamDownloadHttpStatus = $DownloadHttpStatus
     $script:SeamZipPath = $ZipPath
     $script:SeamSidecarPath = $SidecarPath
     $script:SeamChildExitCode = $ChildExitCode
@@ -443,6 +528,18 @@ function Set-MensorCadTestSeams {
         param([string]$Message)
         $script:SeamErrors.Add([string]$Message)
     }
+    function script:Write-MensorCadSuccess {
+        # El resumen de exito se registra en lugar de pintarse: la prueba mide
+        # cuando el padre lo produce, no como se ve en una terminal real.
+        param([string]$Message, [string]$Headline, [string]$Detail, [string]$NextAction, [string]$Metadata)
+        $script:SeamSuccessCalls.Add([pscustomobject]@{
+            Message = [string]$Message
+            Headline = [string]$Headline
+            Detail = [string]$Detail
+            NextAction = [string]$NextAction
+            Metadata = [string]$Metadata
+        })
+    }
     function script:Write-MensorCadRelayedOutput {
         param([string]$Text, [switch]$IsError)
         if ($IsError) { $script:SeamRelayedErr += [string]$Text }
@@ -451,6 +548,9 @@ function Set-MensorCadTestSeams {
     function script:Get-MensorCadRemoteText {
         param([string]$Uri)
         $script:SeamCalls.Add([pscustomobject]@{ Kind = 'text'; Uri = $Uri })
+        if ($script:SeamApiHttpStatus -gt 0) {
+            throw (New-RemoteHttpError -StatusCode $script:SeamApiHttpStatus -Message ('respuesta HTTP ' + $script:SeamApiHttpStatus + ' simulada al consultar la API'))
+        }
         if ($script:SeamApiFails) { throw 'fallo de red simulado al consultar la API' }
         if (-not $script:SeamApiAllowed) { throw ('llamada de red no simulada: ' + $Uri) }
         $assets = @(
@@ -462,6 +562,10 @@ function Set-MensorCadTestSeams {
     function script:Save-MensorCadRemoteFile {
         param([string]$Uri, [string]$DestinationPath)
         $script:SeamCalls.Add([pscustomobject]@{ Kind = 'file'; Uri = $Uri })
+        if ($script:SeamDownloadHttpStatus -gt 0) {
+            throw (New-RemoteHttpError -StatusCode $script:SeamDownloadHttpStatus -Message ('respuesta HTTP ' + $script:SeamDownloadHttpStatus + ' simulada al descargar el asset'))
+        }
+        if ($script:SeamFailDownload) { throw 'fallo de red simulado al descargar el paquete' }
         $name = [System.IO.Path]::GetFileName($Uri)
         $source = ''
         if ($name -eq 'MensorCAD-Windows.zip') { $source = $script:SeamZipPath }
@@ -477,6 +581,7 @@ function Set-MensorCadTestSeams {
             ScriptPath = $ScriptPath
             Arguments = $Arguments
             InstallerPresent = (Test-Path -LiteralPath $ScriptPath -PathType Leaf)
+            UninstallerPresent = (Test-Path -LiteralPath (Join-Path $parent 'Desinstalar.bat') -PathType Leaf)
             ManifestPresent = (Test-Path -LiteralPath (Join-Path $parent 'bundle.sha256') -PathType Leaf)
             BundlePresent = (Test-Path -LiteralPath (Join-Path $parent 'MensorCAD.bundle') -PathType Container)
         })
@@ -496,7 +601,7 @@ function Set-MensorCadTestSeams {
 
 function New-RemoteCaseRoots {
     param([string]$RootPath)
-    $programFiles = Join-Path -Path $RootPath -ChildPath 'ProgramFilesLike'
+    $programFiles = Join-Path -Path $RootPath -ChildPath 'pf'
     $tempRoot = Join-Path -Path $RootPath -ChildPath 'RemoteTemp'
     $null = New-Item -ItemType Directory -Path $programFiles -Force
     $null = New-Item -ItemType Directory -Path $tempRoot -Force
@@ -552,6 +657,30 @@ try {
         }
         finally {
             Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El acceso Desinstalar.bat se admite sin exigirlo en paquetes anteriores' {
+        foreach ($includeLauncher in @($false, $true)) {
+            $root = New-TestCaseRoot
+            try {
+                $release = New-FixtureRelease -RootPath $root -Version 'v1'
+                if ($includeLauncher) {
+                    Add-FixtureZipEntry -ZipPath $release.ZipPath -Name 'Desinstalar.bat' -Content '@echo off'
+                    Write-FixtureSidecar -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath
+                }
+                $roots = New-RemoteCaseRoots -RootPath $root
+                Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath
+                $exit = Invoke-MensorCadCli -FromRelease -Version 'v1.2.3' -NoAnimation 6>$null
+                Assert-Equal 0 $exit 'La entrada remota debe aceptar el paquete con o sin el BAT opcional.'
+                Assert-Equal 1 $script:SeamChildCalls.Count 'Debe ejecutar una sola vez el instalador extraido.'
+                Assert-Equal $includeLauncher $script:SeamChildCalls[0].UninstallerPresent 'La extraccion debe conservar la presencia del BAT.'
+                Assert-Equal 0 @(Get-ChildItem -LiteralPath $roots.ProgramFiles -Force -Recurse).Count 'La inspeccion remota no debe modificar ProgramFiles.'
+                Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
+            }
+            finally {
+                Remove-TestCaseRoot -Path $root
+            }
         }
     }
 
@@ -792,8 +921,16 @@ try {
             Assert-Equal 1 $uninstallExit 'Desinstalar sin instalacion debe seguir fallando con codigo 1.'
             Assert-True ((($script:SeamErrors -join ' ')) -match 'no esta instalado') 'El error debe seguir indicando que no esta instalado.'
 
+            # Conserva la evidencia previa, pero muestra solo los errores nuevos
+            # de esta instalacion, no el rechazo esperado de desinstalar antes.
+            $installErrorOffset = $script:SeamErrors.Count
             $installExit = Invoke-MensorCadCli -NoAnimation 6>$null
-            Assert-Equal 0 $installExit 'La instalacion local sin opciones debe seguir funcionando.'
+            $installErrors = @($script:SeamErrors | Select-Object -Skip $installErrorOffset)
+            $installDiagnostic = 'Sin mensaje de error capturado.'
+            if ($installErrors.Count -gt 0) {
+                $installDiagnostic = $installErrors -join ' | '
+            }
+            Assert-Equal 0 $installExit ('La instalacion local sin opciones debe seguir funcionando. Error del instalador: ' + $installDiagnostic)
             $destination = Join-Path -Path $roots.ProgramFiles -ChildPath 'Autodesk\ApplicationPlugins\MensorCAD.bundle'
             Assert-True (Test-Path -LiteralPath (Join-Path $destination '.mensorcad-install.json') -PathType Leaf) 'La instalacion local debe seguir creando la marca.'
 
@@ -821,6 +958,185 @@ try {
             Assert-Equal 1 $script:SeamChildCalls.Count 'El hijo debe invocarse una sola vez.'
             Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
             Assert-Equal 0 @(Get-ChildItem -LiteralPath $roots.ProgramFiles -Force -Recurse -ErrorAction SilentlyContinue).Count 'Un fallo del hijo no debe dejar escrituras de la entrada remota.'
+        }
+        finally {
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'Un fallo de descarga no valida, no eleva y no deja restos' {
+        $root = New-TestCaseRoot
+        try {
+            $release = New-FixtureRelease -RootPath $root -Version 'v1'
+            $roots = New-RemoteCaseRoots -RootPath $root
+            Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath -AllowApi -FailDownload
+
+            $exit = Invoke-MensorCadCli -FromRelease -Version 'v1.2.3' -NoAnimation 6>$null
+            Assert-Equal 1 $exit 'Un fallo de descarga debe salir con codigo 1.'
+            Assert-True (($script:SeamErrors -join ' ') -match 'No se pudieron descargar') 'El error debe explicar el fallo de descarga.'
+            Assert-Equal 1 (Get-SeamCalls -Kind 'file').Count 'La descarga fallida no debe repetirse.'
+            Assert-Equal 0 $script:SeamChildCalls.Count 'Sin paquete no debe ejecutarse el instalador ni pedir UAC.'
+            Assert-Equal 0 $script:SeamSuccessCalls.Count 'Un fallo de descarga no debe pintar exito.'
+            Assert-Equal 0 $script:SeamRelayedOut.Length 'Un fallo de descarga no debe reenviar salida de un hijo inexistente.'
+            Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
+            Assert-Equal 0 @(Get-ChildItem -LiteralPath $roots.ProgramFiles -Force -Recurse -ErrorAction SilentlyContinue).Count 'Un fallo de descarga no debe escribir el destino.'
+        }
+        finally {
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'Un 404 de la API se explica sin afirmar que la release no existe' {
+        $root = New-TestCaseRoot
+        try {
+            $release = New-FixtureRelease -RootPath $root -Version 'v1'
+            $roots = New-RemoteCaseRoots -RootPath $root
+            Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath -AllowApi -ApiHttpStatus 404
+
+            $exit = Invoke-MensorCadCli -FromRelease -NoAnimation 6>$null
+            Assert-Equal 1 $exit 'Un 404 de la API debe salir con codigo 1.'
+            $errors = $script:SeamErrors -join ' '
+            Assert-True ($errors -match '404') 'El error debe mencionar el estado 404 real.'
+            Assert-True ($errors -match 'credenciales') 'El error debe admitir un repositorio sin acceso.'
+            Assert-True ($errors -match 'publicad') 'El error debe admitir que la release no este publicada.'
+            Assert-True ($errors -notmatch 'no existe') 'Un 404 no debe afirmar que la release no existe.'
+            Assert-Equal 0 (Get-SeamCalls -Kind 'file').Count 'Un 404 de la API no debe descargar assets.'
+            Assert-Equal 0 $script:SeamChildCalls.Count 'Un 404 de la API no debe invocar el instalador.'
+            Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
+        }
+        finally {
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'Un 404 al descargar los assets se informa con el tag fijado' {
+        $root = New-TestCaseRoot
+        try {
+            $release = New-FixtureRelease -RootPath $root -Version 'v1'
+            $roots = New-RemoteCaseRoots -RootPath $root
+            Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath -DownloadHttpStatus 404
+
+            $exit = Invoke-MensorCadCli -FromRelease -Version 'v1.2.3' -NoAnimation 6>$null
+            Assert-Equal 1 $exit 'Un 404 al descargar los assets debe salir con codigo 1.'
+            $errors = $script:SeamErrors -join ' '
+            Assert-True ($errors -match '404') 'El error debe mencionar el estado 404 real.'
+            Assert-True ($errors -match 'v1\.2\.3') 'El error debe indicar el tag que se intento descargar.'
+            Assert-True ($errors -match 'credenciales') 'El error debe admitir un repositorio sin acceso.'
+            Assert-Equal 0 (Get-SeamCalls -Kind 'text').Count 'La version fijada no debe consultar la API.'
+            Assert-Equal 0 $script:SeamChildCalls.Count 'Un 404 de descarga no debe invocar el instalador.'
+            Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
+        }
+        finally {
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El exito remoto se resume en jade solo con el hijo en 0' {
+        $root = New-TestCaseRoot
+        try {
+            $release = New-FixtureRelease -RootPath $root -Version 'v1'
+            $roots = New-RemoteCaseRoots -RootPath $root
+            Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath -AllowApi -ChildExitCode 0 -ChildStdOut 'linea-hijo-ok'
+            $script:MensorCadPlainMode = $false
+
+            $exit = Invoke-MensorCadRemoteInstall -Version 'v1.2.3' 6>$null
+            Assert-Equal 0 $exit 'El hijo con codigo 0 debe conservar el codigo 0.'
+            Assert-Equal 1 $script:SeamSuccessCalls.Count 'Debe haber un unico resumen de exito.'
+            $summary = $script:SeamSuccessCalls[0]
+            Assert-True ($summary.Headline -match 'remota') 'El titular debe referirse a la instalacion remota.'
+            Assert-True ($summary.Metadata -match 'v1\.2\.3') 'El resumen debe mostrar la release resuelta.'
+            Assert-Equal $script:MensorCadAutoCadNextAction $summary.NextAction 'Debe reutilizar la proxima accion compartida.'
+            Assert-True ((($summary.Headline + ' ' + $summary.Detail).ToLower()) -notmatch 'se instal|se actualiz') 'Solo se conoce el codigo 0: no debe afirmar si se instalo o se actualizo.'
+            Assert-True ($script:SeamRelayedOut -match 'linea-hijo-ok') 'La salida del hijo debe reenviarse antes del resumen.'
+            Assert-Equal 0 $script:SeamErrors.Count 'El exito no debe registrar errores del padre.'
+            Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
+        }
+        finally {
+            $script:MensorCadPlainMode = $true
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El fallo del hijo no se pinta como exito ni duplica el error' {
+        $root = New-TestCaseRoot
+        try {
+            $release = New-FixtureRelease -RootPath $root -Version 'v1'
+            $roots = New-RemoteCaseRoots -RootPath $root
+            Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath -AllowApi -ChildExitCode 1 -ChildStdOut 'linea-hijo' -ChildStdErr 'ERROR: AutoCAD esta en ejecucion. Cierre AutoCAD y vuelva a ejecutar el instalador.'
+            $script:MensorCadPlainMode = $false
+
+            $exit = Invoke-MensorCadRemoteInstall -Version 'v1.2.3' 6>$null
+            Assert-Equal 1 $exit 'AutoCAD abierto debe conservar el codigo 1 del hijo.'
+            Assert-Equal 0 $script:SeamSuccessCalls.Count 'Un hijo fallido no debe pintar exito.'
+            Assert-True ($script:SeamRelayedErr -match 'AutoCAD esta en ejecucion') 'El stderr del hijo debe reenviarse intacto.'
+            Assert-True ($script:SeamRelayedOut -match 'linea-hijo') 'El stdout del hijo debe reenviarse intacto.'
+            Assert-Equal 0 $script:SeamErrors.Count 'El padre no debe inventar un segundo ERROR: en stderr.'
+            Assert-NoRemoteLeftovers -TempRoot $roots.TempRoot
+        }
+        finally {
+            $script:MensorCadPlainMode = $true
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'En modo plano el resumen remoto no agrega lineas nuevas' {
+        $root = New-TestCaseRoot
+        try {
+            $release = New-FixtureRelease -RootPath $root -Version 'v1'
+            $roots = New-RemoteCaseRoots -RootPath $root
+            Set-MensorCadTestSeams -TempRoot $roots.TempRoot -ProgramFilesRoot $roots.ProgramFiles -ZipPath $release.ZipPath -SidecarPath $release.SidecarPath
+
+            $script:MensorCadPlainMode = $true
+            $plainRecords = @(Write-MensorCadRemoteResult -ExitCode 0 -Tag 'v1.2.3' 6>&1)
+            Assert-Equal 0 $plainRecords.Count 'En modo plano el resumen del padre no debe imprimir nada.'
+            Assert-Equal 0 $script:SeamSuccessCalls.Count 'En modo plano el exito no lo pinta el padre.'
+
+            $script:MensorCadPlainMode = $false
+            $failedRecords = @(Write-MensorCadRemoteResult -ExitCode 7 -Tag 'v1.2.3' 6>&1)
+            $script:MensorCadPlainMode = $true
+            Assert-True ($failedRecords.Count -ge 3) 'Con color el fallo debe dibujar su propio resumen.'
+            Assert-Equal 0 $script:SeamSuccessCalls.Count 'Un codigo distinto de 0 nunca debe pintar exito.'
+        }
+        finally {
+            $script:MensorCadPlainMode = $true
+            Remove-TestCaseRoot -Path $root
+        }
+    }
+
+    Test-Case 'El comando de una linea publicado se ejecuta en memoria y distingue el primer fallo' {
+        $root = New-TestCaseRoot
+        try {
+            $docsPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'docs\remote-installer.md'
+            $docsText = [System.IO.File]::ReadAllText($docsPath)
+            $latestBody = Get-DocumentedBootstrapBody -Text $docsText -Kind 'latest'
+            $pinnedBody = Get-DocumentedBootstrapBody -Text $docsText -Kind 'pinned'
+
+            Assert-True (-not ($latestBody -match '\$')) 'El comando publicado no debe contener variables que el shell exterior expanda.'
+            Assert-True (-not ($pinnedBody -match '\$')) 'El comando fijado tampoco debe contener variables.'
+            Assert-True (-not ($latestBody -match '-Version ')) 'La ultima version no debe fijar -Version.'
+            Assert-True ($pinnedBody -match '-Version v0\.1\.0') 'La version fijada debe pasar su tag al instalador.'
+            Assert-True (-not ($pinnedBody -match 'releases/latest')) 'Una version fijada no debe usar el bootstrap de la ultima version.'
+
+            $latestProbe = New-BootstrapProbeScript -RootPath $root -Name 'latest' -Body $latestBody
+            $latest = Invoke-ChildInstaller -ScriptPath $latestProbe -Arguments @()
+            Assert-True ($latest.ExitCode -ne 0) ('Un fallo posterior a la primera descarga debe salir con codigo distinto de 0. stderr: ' + $latest.Stderr)
+            Assert-True ($latest.Stderr -match 'No se pudo consultar la ultima release') ('El instalador en memoria debe llegar a la fase remota. stderr: ' + $latest.Stderr)
+            Assert-True ($latest.Stdout -match '\[1/5\] Resolviendo la release') ('El flujo remoto debe iniciarse sin PSScriptRoot. stdout: ' + $latest.Stdout)
+            Assert-True (-not ($latest.Stdout -match 'UAC')) 'La prueba del comando publicado no debe llegar a pedir UAC.'
+
+            $firstFailProbe = New-BootstrapProbeScript -RootPath $root -Name 'firstfail' -Body $latestBody
+            $firstFail = Invoke-ChildInstaller -ScriptPath $firstFailProbe -Arguments @('-FailFirstFetch')
+            Assert-True ($firstFail.ExitCode -ne 0) ('Un 404 en la primera descarga debe salir con codigo distinto de 0. stderr: ' + $firstFail.Stderr)
+            Assert-True ($firstFail.Stderr -match 'ERROR: no se pudo descargar el instalador') ('El primer fallo debe traer su propio ERROR: en espanol. stderr: ' + $firstFail.Stderr)
+            Assert-True (-not ($firstFail.Stderr -match 'No se pudo consultar la ultima release')) 'El primer fallo no debe confundirse con un fallo del instalador.'
+            Assert-True (-not ($firstFail.Stdout -match 'Resolviendo la release')) 'Sin instalador descargado no debe iniciarse el flujo remoto.'
+
+            $pinnedProbe = New-BootstrapProbeScript -RootPath $root -Name 'pinned' -Body $pinnedBody
+            $pinned = Invoke-ChildInstaller -ScriptPath $pinnedProbe -Arguments @()
+            Assert-True ($pinned.ExitCode -ne 0) ('La version fijada en memoria debe propagar el fallo de red. stderr: ' + $pinned.Stderr)
+            Assert-True ($pinned.Stderr -match "assets de la release 'v0\.1\.0'") ('El tag documentado debe llegar al instalador en memoria. stderr: ' + $pinned.Stderr)
+            Assert-True ($pinned.Stdout -match '\[2/5\] Descargando') 'La version fijada debe llegar a la descarga sin consultar la API.'
+            Assert-True (-not ($pinned.Stdout -match 'UAC')) 'La version fijada tampoco debe pedir UAC en la prueba.'
         }
         finally {
             Remove-TestCaseRoot -Path $root

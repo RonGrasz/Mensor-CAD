@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "Install-MensorCAD.ps1"
@@ -22,6 +22,11 @@ REMOTE_DOCS = ROOT / "docs" / "remote-installer.md"
 LOCAL_DOCS = ROOT / "docs" / "local-installer.md"
 
 REMOTE_MARKER = "# Entrada remota: descarga y verificacion de releases de GitHub"
+
+# URL publica del bootstrap: la ultima version usa el alias latest y una version
+# fijada usa la ruta del tag. Ambas se documentan como comandos de una linea.
+LATEST_BOOTSTRAP = "releases/latest/download/Install-MensorCAD.ps1"
+PINNED_BOOTSTRAP = re.compile(r"/releases/download/v\d+\.\d+\.\d+/Install-MensorCAD\.ps1")
 
 DOWNLOAD_VERBS = (
     "Invoke-WebRequest",
@@ -116,6 +121,54 @@ class RemoteInstallerStructureTests(unittest.TestCase):
         end = text.index("\n)", start)
         return text[start : end + 2]
 
+    def test_fixture_staging_paths_fit_classic_windows_limits(self) -> None:
+        # Presupuesto de los fixtures: no ejecuta File.Copy ni accede a Windows.
+        # Deriva los nombres reales y exige conservar los GUID completos.
+        def guid_component(text: str, variable: str) -> str:
+            pattern = (
+                re.escape(variable)
+                + r" = [^\r\n]*-ChildPath \('([^']+)' \+ \[guid\]::NewGuid\(\)\.ToString\('N'\)\)"
+            )
+            match = re.search(pattern, text)
+            self.assertIsNotNone(match, f"falta el GUID completo de {variable}")
+            return match.group(1) + ("a" * 32)
+
+        suite = guid_component(self.remote_tests, "$script:TestRoot")
+        case = guid_component(function_body(self.remote_tests, "New-TestCaseRoot"), "$path")
+        transaction = guid_component(self.installer, "$transactionRoot")
+        roots = function_body(self.remote_tests, "New-RemoteCaseRoots")
+        program_files = re.search(r"\$programFiles = [^\r\n]*-ChildPath '([^']+)'", roots)
+        self.assertIsNotNone(program_files)
+        fixture = function_body(self.remote_tests, "New-FixturePackageSource")
+        relative_files = re.findall(r"Join-Path \$bundleRoot '([^']+)'", fixture)
+        self.assertTrue(relative_files, "faltan archivos reales del fixture")
+        for temp in (
+            r"C:\Users\TestUser\AppData\Local\Temp",
+            r"C:\Users\LongProfileName\AppData\Local\Temp",
+        ):
+            for relative in relative_files:
+                staging = PureWindowsPath(
+                    temp, suite, case, program_files.group(1),
+                    "Autodesk", "ApplicationPlugins", transaction,
+                    "staging", "MensorCAD.bundle", relative,
+                )
+                with self.subTest(temp=temp, relative=relative):
+                    self.assertLess(len(str(staging)), 260, str(staging))
+                    self.assertLess(len(str(staging.parent)), 248, str(staging.parent))
+
+    def test_local_compatibility_failure_reports_only_new_install_errors(self) -> None:
+        start = self.remote_tests.index("    Test-Case 'Las opciones locales siguen intactas sin -FromRelease'")
+        end = self.remote_tests.index("    Test-Case 'El codigo de salida del hijo", start)
+        case = self.remote_tests[start:end]
+        offset = "$installErrorOffset = $script:SeamErrors.Count"
+        self.assertIn(offset, case, "falta separar los errores de la instalacion de los rechazos previos")
+        self.assertLess(case.index(offset), case.index("$installExit = Invoke-MensorCadCli"))
+        self.assertIn("@($script:SeamErrors | Select-Object -Skip $installErrorOffset)", case)
+        self.assertIn("Error del instalador: ", case, "la asercion debe mostrar el error real")
+        self.assertIn("Sin mensaje de error capturado.", case)
+        self.assertIn("+ $installDiagnostic)", case, "el diagnostico debe formar parte de la asercion")
+        self.assertNotIn("$script:SeamErrors.Clear()", case, "no se debe borrar evidencia de otros pasos")
+
     def test_remote_files_exist(self) -> None:
         for path in (INSTALLER, REMOTE_TESTS, REMOTE_DOCS, LOCAL_DOCS):
             self.assertTrue(path.is_file(), f"falta {path}")
@@ -207,6 +260,17 @@ class RemoteInstallerStructureTests(unittest.TestCase):
             self.assertIn(root, self.remote_branch, f"la lista congelada del ZIP debe incluir {root}")
         self.assertIn(r"Contents/Lisp/[^/]+\.lsp", self.remote_branch)
         self.assertIn("fuera del paquete distribuido", self.remote_branch)
+
+    def test_uninstall_launcher_is_allowed_but_not_required_in_old_archives(self) -> None:
+        optional = re.search(
+            r"\$script:MensorCadReleaseOptionalFiles = @\((.*?)\)",
+            self.remote_branch, re.DOTALL,
+        )
+        self.assertIsNotNone(optional)
+        self.assertEqual(re.findall(r"'([^']+)'", optional.group(1)), ["Desinstalar.bat"])
+        validator = function_body(self.remote_branch, "Get-MensorCadReleaseArchiveEntries")
+        self.assertIn("$script:MensorCadReleaseOptionalFiles -ccontains $validated.RelativePath", validator)
+        self.assertIn("foreach ($required in $script:MensorCadReleaseFixedFiles)", validator)
 
     def test_extraction_stays_inside_the_owned_workspace(self) -> None:
         extraction = function_body(self.remote_branch, "Expand-MensorCadReleaseArchive")
@@ -617,6 +681,159 @@ class RemoteInstallerStructureTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.remote_branch, f"no se debe imponer un control de host final: {forbidden}")
         self.assertIn("$script:MensorCadReleaseHost = 'https://github.com'", self.remote_branch)
         self.assertIn("$script:MensorCadReleaseApiHost = 'https://api.github.com'", self.remote_branch)
+
+    def test_documented_remote_commands_are_guarded_one_liners(self) -> None:
+        # El comando de una linea deja la PRIMERA descarga fuera del instalador:
+        # sin try/catch propio, un 404 o un fallo de red del bootstrap saldria
+        # como error crudo, sin el prefijo ERROR: ni codigo distinto de cero.
+        for origen, text in (
+            ("docs/remote-installer.md", self.remote_docs),
+            ("README.md", read_text(ROOT / "README.md")),
+        ):
+            lines = [line.strip() for line in text.splitlines() if line.strip().startswith("powershell.exe")]
+            latest = [line for line in lines if LATEST_BOOTSTRAP in line]
+            pinned = [line for line in lines if PINNED_BOOTSTRAP.search(line)]
+            self.assertTrue(latest, f"{origen} debe publicar el comando de la ultima version")
+            self.assertTrue(pinned, f"{origen} debe publicar el comando de una version fijada")
+            for line in latest + pinned:
+                for fragment in (
+                    "try {",
+                    "catch {",
+                    "-ErrorAction Stop",
+                    "[Net.SecurityProtocolType]::Tls12",
+                    "[scriptblock]::Create(",
+                    "[Console]::Error.WriteLine(",
+                    "ERROR: ",
+                    "exit 1",
+                ):
+                    self.assertIn(fragment, line, f"{origen}: falta {fragment} en el comando")
+                self.assertNotIn(
+                    "$",
+                    line,
+                    f"{origen}: el comando no debe contener variables que el shell exterior expanda",
+                )
+                self.assertLess(
+                    line.index("[Net.SecurityProtocolType]::Tls12"),
+                    line.index("Invoke-RestMethod"),
+                    f"{origen}: TLS 1.2 debe fijarse antes de la primera descarga",
+                )
+                self.assertLess(
+                    line.index("try {"),
+                    line.index("Invoke-RestMethod"),
+                    f"{origen}: la primera descarga debe ocurrir dentro del try",
+                )
+            for line in pinned:
+                tag = re.search(r"/releases/download/(v\d+\.\d+\.\d+)/Install-MensorCAD\.ps1", line)
+                self.assertIsNotNone(tag, f"{origen}: el comando fijado debe usar la URL del tag")
+                self.assertIn("-Version " + tag.group(1), line, f"{origen}: el tag de la URL debe pasarse al instalador")
+                self.assertNotIn("releases/latest", line, f"{origen}: un tag fijado no debe usar el bootstrap de la ultima version")
+            for line in latest:
+                self.assertNotIn("-Version ", line, f"{origen}: la ultima version no debe fijar -Version")
+
+    def test_documented_pinned_example_is_labelled_as_not_published(self) -> None:
+        # El ejemplo fijado usa v0.1.0, que no esta publicado: la documentacion
+        # no puede presentarlo como una descarga que ya funciona.
+        docs = self.remote_docs
+        self.assertIn("v0.1.0", docs)
+        self.assertIn(LATEST_BOOTSTRAP, docs)
+        self.assertTrue(
+            re.search(r"v0\.1\.0[^\n]*(no publicado|no esta publicado|no está publicado|ejemplo|ilustrativ)", docs)
+            or re.search(r"(ejemplo|ilustrativ)[^\n]*v0\.1\.0", docs),
+            "el ejemplo v0.1.0 debe marcarse como ilustrativo y no publicado",
+        )
+        self.assertIn("credenciales", docs, "la documentacion debe explicar el 404 por acceso")
+        self.assertIn("primera descarga", docs, "la documentacion debe explicar el limite del bootstrap")
+        self.assertIn("ya ejecuta", docs, "la documentacion debe explicar que el bootstrap ya ejecuta codigo remoto")
+
+    def test_remote_404_guidance_is_defensive_and_does_not_overstate(self) -> None:
+        status = function_body(self.remote_branch, "Get-MensorCadRemoteHttpStatus")
+        self.assertIn("StatusCode", status, "la deteccion debe leer el estado HTTP real")
+        self.assertIn("Response", status)
+        self.assertIn("catch {", status, "la deteccion no puede lanzar mientras maneja otro error")
+        self.assertIn("return 0", status, "sin estado legible se conserva la guia generica")
+        hint = function_body(self.remote_branch, "Get-MensorCadRemoteStatusHint")
+        self.assertIn("404", hint)
+        self.assertIn("credenciales", hint, "un 404 tambien puede ser un repositorio sin acceso")
+        self.assertIn("publicad", hint, "un 404 tambien puede ser una release sin publicar")
+        self.assertNotIn("no existe", hint, "un 404 no demuestra que la release no exista")
+        resolver = function_body(self.remote_branch, "Resolve-MensorCadReleaseTag")
+        self.assertIn("Get-MensorCadRemoteHttpStatus", resolver)
+        self.assertIn(
+            "No se pudo consultar la ultima release en GitHub",
+            resolver,
+            "la guia generica debe conservarse para el resto de errores",
+        )
+        install = function_body(self.remote_branch, "Invoke-MensorCadRemoteInstall")
+        self.assertIn("Get-MensorCadRemoteHttpStatus", install, "la descarga tambien debe distinguir un 404")
+        self.assertIn("No se pudieron descargar los assets de la release", install)
+
+    def test_parent_result_is_plain_safe_and_success_only_on_zero(self) -> None:
+        result = function_body(self.remote_branch, "Write-MensorCadRemoteResult")
+        self.assertIn("if ($script:MensorCadPlainMode)", result, "el resumen debe callarse en modo plano")
+        self.assertLess(
+            result.index("if ($script:MensorCadPlainMode)"),
+            result.index("Write-MensorCadSuccess"),
+            "en modo plano no se debe llegar al bloque de exito",
+        )
+        self.assertLess(
+            result.index("if ($ExitCode -eq 0)"),
+            result.index("Write-MensorCadSuccess"),
+            "el exito solo puede pintarse con un codigo 0 real",
+        )
+        self.assertNotIn("Console]::Error", result, "el resumen del padre no debe duplicar el ERROR: del hijo")
+        self.assertNotIn("Write-MensorCadFailure", result, "el fallo del hijo conserva su propio stderr")
+        for claim in ("se instalo", "se instala", "se actualizo", "se actualiza"):
+            self.assertNotIn(
+                claim,
+                result.lower(),
+                "el padre solo conoce el codigo 0, no si se instalo o se actualizo",
+            )
+        install = function_body(self.remote_branch, "Invoke-MensorCadRemoteInstall")
+        self.assertIn("Write-MensorCadRemoteResult", install)
+        self.assertLess(
+            install.index("Write-MensorCadRelayedOutput -Text $child.StdOut"),
+            install.index("Write-MensorCadRemoteResult"),
+            "la salida del hijo se reenvia antes del resumen del padre",
+        )
+        self.assertLess(
+            install.index("Write-MensorCadRelayedOutput -Text $child.StdErr -IsError"),
+            install.index("Write-MensorCadRemoteResult"),
+            "el error del hijo se conserva antes del resumen del padre",
+        )
+
+    def test_remote_phases_add_friendly_titles_without_changing_technical_text(self) -> None:
+        install = function_body(self.remote_branch, "Invoke-MensorCadRemoteInstall")
+        self.assertEqual(5, install.count("-Number "), "la entrada remota debe conservar sus cinco fases")
+        self.assertEqual(5, len(re.findall(r"-Title '[^']+'", install)), "cada fase debe tener titulo amigable")
+        self.assertEqual(5, len(re.findall(r"-Hint '[^']+'", install)), "cada fase debe tener una pista")
+        for message in (
+            "Resolviendo la release de GitHub",
+            "Descargando el paquete y su SHA-256 sin permisos de administrador",
+            "Verificando el SHA-256 y las entradas del ZIP",
+            "Extrayendo el paquete verificado en una carpeta temporal propia",
+        ):
+            self.assertIn(message, install, f"el texto tecnico del modo plano debe conservarse: {message}")
+        self.assertIn("$script:MensorCadRemoteChildActivityMessage -Title", install)
+
+    def test_remote_windows_tests_cover_public_bootstrap_and_download_failures(self) -> None:
+        text = self.remote_tests
+        for fragment in (
+            "New-BootstrapProbeScript",
+            "Get-DocumentedBootstrapBody",
+            "bootstrap-body",
+            "FailFirstFetch",
+            "New-RemoteHttpError",
+            "FailDownload",
+            "ApiHttpStatus",
+            "DownloadHttpStatus",
+            "SeamSuccessCalls",
+            "Write-MensorCadRemoteResult",
+            "la primera descarga",
+            "assets de la release",
+            "no debe afirmar",
+        ):
+            self.assertIn(fragment, text, f"faltan pruebas remotas de Windows para: {fragment}")
+        self.assertNotIn("Invoke-RestMethod -UseBasicParsing 'https://github.com", text, "la prueba no debe descargar de verdad")
 
     def test_workspace_cleanup_is_attempted_not_guaranteed(self) -> None:
         install = function_body(self.remote_branch, "Invoke-MensorCadRemoteInstall")

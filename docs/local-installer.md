@@ -29,6 +29,18 @@ No ejecute `Install-MensorCAD.ps1` desde dentro del ZIP: primero extraiga todos
 los archivos, porque el instalador necesita `bundle.sha256` y la carpeta
 `MensorCAD.bundle` juntos.
 
+## Desinstalación por doble clic
+
+Guarde sus dibujos, cierre AutoCAD y haga doble clic en **`Desinstalar.bat`**
+desde la carpeta del ZIP extraído. Acepte UAC. Mantenga el BAT junto a
+`Instalar.bat` e `Install-MensorCAD.ps1`: transfiere el control a
+`Instalar.bat -Uninstall`, conserva su resultado y reutiliza sus validaciones,
+permisos y pausa final. No borra las entidades creadas en los dibujos.
+
+La detección de ventana única descrita más abajo se limita al lanzamiento
+directo de `Instalar.bat`; el acceso de desinstalación puede usar la elevación
+clásica, sin omitir UAC ni las comprobaciones de AutoCAD cerrado.
+
 ## Requisitos
 
 | Requisito | Detalle |
@@ -36,7 +48,7 @@ los archivos, porque el instalador necesita `bundle.sha256` y la carpeta
 | Sistema | Windows de 64 bits con AutoCAD y ActiveX/VLA. |
 | Shell | Windows PowerShell 5.1 de 64 bits (`powershell.exe`). |
 | Permisos | Administrador para instalar o desinstalar en Program Files. |
-| Paquete | `Install-MensorCAD.ps1`, `Instalar.bat`, `bundle.sha256` y `MensorCAD.bundle/` en la raíz extraída. |
+| Paquete | `Install-MensorCAD.ps1`, `Instalar.bat`, `Desinstalar.bat`, `bundle.sha256` y `MensorCAD.bundle/` en la raíz extraída. |
 | AutoCAD | Debe estar cerrado. El instalador nunca cierra AutoCAD por su cuenta. |
 
 El host debe ser de 64 bits: se rechaza Windows de 32 bits y también PowerShell
@@ -68,6 +80,86 @@ en un host de 64 bits usa `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershe
 
 También se desactiva la animación automáticamente cuando la salida está
 redirigida, para que los registros de consola sigan siendo legibles.
+
+## Presentación de la consola
+
+La identidad visual sigue el artboard `design/cli-installer/01-jade-banner.html`
+de MensorCAD. Con una consola interactiva y color habilitado se muestra un
+**banner de bloques** con `MENSOR` en verde jade y `CAD` en verde menta, una
+bienvenida breve y fases numeradas con una pista cada una. Los colores jade,
+menta, ámbar y rojo se pintan con ANSI de color verdadero solo cuando la propia
+terminal ya tiene habilitado **VT**; el instalador solo lee ese estado, nunca
+habilita VT, no escribe preferencias de Windows Terminal y no cambia la
+codificación de salida. Si la sonda no es concluyente se usa el respaldo
+`ConsoleColor` (verde, cian, gris, amarillo y rojo) y el glifo ASCII `#` en lugar
+de `█`, sin suponer que `WT_SESSION` prueba nada.
+
+El badge de versión es rectangular: fondo jade sólido con texto oscuro cuando
+hay VT, `ConsoleColor` con fondo verde y texto negro como respaldo, y una
+etiqueta compacta sin fondo cuando el ancho es angosto o desconocido; siempre
+cierra con reinicio ANSI. La versión mostrada está **estampada** en
+`Install-MensorCAD.ps1` durante el build; en runtime no se lee XML, destino
+instalado, red ni variable de entorno. La plantilla sin construir muestra
+«desarrollo» de forma honesta. El manifiesto sigue validándose en el build y el
+motor runtime conserva todas sus comprobaciones de integridad; solo se retiró el
+lector de presentación. `-NoAnimation` y la salida redirigida no dibujan badge.
+La entrada remota no muestra la versión local del bootstrap: tras resolver el
+tag muestra el **tag del release** como etiqueta, sin llamarlo versión descargada.
+La desinstalación no muestra versión de instalación. El detalle de estampado y
+los artefactos idénticos está en `docs/build-bundle.md`.
+
+El banner completo tiene cinco filas y 54 columnas visibles (56 con sangría);
+las letras van separadas por columnas en blanco, incluida la unión `R`/`C`.
+Tiene una fila de terminal vacía real entre el encabezado y los bloques y otra
+entre los bloques y la introducción, además del padding de las secciones. Por
+debajo de 58 columnas, o cuando `RawUI` no permite conocer el ancho, se dibuja
+un encabezado **compacto** con el mismo juego de tonos para no partir líneas.
+El indicador de actividad limita el conjunto visible (texto más relleno de
+limpieza) al ancho actual, no solo el texto nuevo; los escapes ANSI no cuentan
+como celdas. Con ancho desconocido (`RawUI` no disponible) o con 1–4 columnas no
+se puede garantizar una línea sin wrap ni redibujar en el sitio: se emite como
+máximo una sola **actividad estática** por fase (ninguna si no cabe ni un
+carácter), sin retorno de carro, y se deja de actualizar hasta completarla. No
+hay demoras artificiales ni porcentajes globales inventados: la fracción que se
+muestra es el conteo real de cada fase.
+
+Al terminar una etapa que realmente tuvo éxito, el indicador se reemplaza por
+`✓` (o `[OK]` sin VT) con un cierre corto; el texto y el relleno se limitan al
+mismo ancho que la actividad. Un UAC cancelado, una validación que lanza, un
+hijo con código distinto de 0 o un estado ausente nunca reciben `✓`. La etapa
+de permisos solo se completa cuando la sesión ya es administradora, no al
+lanzar UAC; la espera remota y el catch usan la **compleción** neutral. El
+comportamiento por defecto de `Complete-MensorCadActivity` sigue siendo el salto
+de línea histórico.
+
+Los resultados se distinguen entre instalado, actualizado, ya actualizado y
+desinstalado. El éxito con color abre con una **regla** fina y discreta, acotada
+al ancho actual con una columna de margen; sin VT usa `-` y con VT una línea
+Unicode. Debajo hay padding entre regla/título, detalle y acción final. El bloque
+amigable se separa de la ubicación o el conteo, que se muestran como
+**metadato** bajo; no se repite la frase técnica completa del éxito. Instalar, actualizar y «sin cambios»
+terminan una sola vez con «Todo listo. Abrí AutoCAD para empezar.» como última
+acción; la instrucción duplicada de abrir AutoCAD queda solo en modo plano.
+Desinstalar conserva una acción distinta y no afirma que las herramientas ya
+estén disponibles. Las fases de instalación usan **títulos** legibles
+(«Revisando el paquete», «Permiso de Windows», «Última comprobación»,
+«Instalando MensorCAD») solo con color; el modo plano conserva el mensaje
+técnico exacto. Las tildes nuevas (versión, ubicación, después, sí, operación,
+estén, ciérralo) son solo de presentación y no alteran los mensajes técnicos.
+Si AutoCAD está abierto, el detalle original sigue saliendo por `stderr` con el
+prefijo `ERROR:` y el código de salida continúa siendo `1`; además, con color se
+agrega una guía accionable para cerrar AutoCAD y repetir `Instalar.bat` o
+`Desinstalar.bat`.
+
+Con `-NoAnimation`, `-Help` en modo plano o cualquier salida redirigida no se
+dibuja el banner de bloques y no se emite ninguna secuencia ANSI ni retorno de
+carro de presentación: el texto técnico, las fases, los resultados y los errores
+se conservan byte a byte para automatizaciones y registros. La ayuda mantiene
+exactamente el mismo contenido; solo cambia el color de su encabezado cuando hay
+color disponible. La comprobación visual real en Windows PowerShell 5.1 y en la
+consola clásica sigue pendiente y no se declara superada. Las fallas anteriores
+de las suites Windows no se consideran resueltas por estas comprobaciones
+estructurales.
 
 `Instalar.bat` reenvía todas las opciones (`%*`) al mismo
 `Install-MensorCAD.ps1`, conserva su código de salida y muestra un resumen. El
@@ -343,9 +435,11 @@ los assets del release.
 | Prueba | Dónde | Estado |
 |--------|-------|--------|
 | Estructura del instalador, BAT y documentación | `python3 -m unittest discover -s tests -p 'test_installer_structure.py' -v` | Se ejecuta en Linux. No demuestra comportamiento funcional. |
+| Contrato estructural de la presentación (banner, respaldos, texto plano) | `python3 -m unittest discover -s tests -p 'test_installer_style.py' -v` | Se ejecuta en Linux. No demuestra cómo se ve la terminal. |
 | Instalación, actualización, desinstalación, rollback, rechazos y flags | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1` | Requiere Windows PowerShell 5.1. Usa destinos temporales aislados. |
 | Ventana única (entrega con sentinel, espera no bloqueante, `-HoldResult`, camino síncrono, `/c` de este BAT y BAT real con stub) | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1` | Requiere Windows PowerShell 5.1. Consola, UAC y proceso simulado; no demuestra el resultado visual. |
 | Entrada remota | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1` | Requiere Windows PowerShell 5.1. Red y proceso hijo simulados. |
+| Presentación jade (banner amplio y compacto, VT y respaldo, resultados, actividad, texto plano) | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerStyle.ps1` | Requiere Windows PowerShell 5.1. Usa el host de la prueba y costuras locales; no demuestra el aspecto final en una terminal real. |
 
 Las pruebas de Windows nunca escriben en Program Files ni abren AutoCAD. Los
 casos que necesitan symlinks/junctions se omiten si el entorno no permite

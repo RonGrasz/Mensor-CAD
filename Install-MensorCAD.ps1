@@ -71,6 +71,21 @@ $script:MensorCadSpinnerIndex = 0
 # Longitud del ultimo texto dibujado por el indicador. Se usa solo para rellenar
 # el sufijo que quedaria visible cuando la linea siguiente es mas corta.
 $script:MensorCadActivityLength = 0
+# Una actividad ya emitida como linea estatica (ancho desconocido o demasiado
+# angosto) no vuelve a redibujarse hasta que se complete.
+$script:MensorCadActivityStatic = $false
+# Presentacion jade: el banner de bloques solo se dibuja cuando el ancho real
+# alcanza; sin ancho legible se usa el encabezado compacto. El reinicio ANSI se
+# guarda una sola vez para no repetir secuencias en cada linea.
+$script:MensorCadBannerMinimumWidth = 58
+$script:MensorCadEscape = [string][char]27
+$script:MensorCadAnsiReset = $script:MensorCadEscape + '[0m'
+# Cierre unico de una instalacion/actualizacion correcta. Se usa una sola vez
+# por ejecucion y solo en la presentacion con color.
+$script:MensorCadAutoCadNextAction = 'Todo listo. Abrí AutoCAD para empezar.'
+# La version mostrada se estampa en tiempo de build reemplazando solo este
+# valor. Sin build, el marcador hace que la interfaz muestre "desarrollo".
+$script:MensorCadReleaseVersion = '__MENSORCAD_RELEASE_VERSION__'
 # Tipo nativo de la sonda de consola. Se resuelve de forma perezosa: cargar el
 # archivo con dot-source no registra tipos ni toca ninguna ventana.
 $script:MensorCadConsoleNativeType = $null
@@ -843,27 +858,308 @@ function Uninstall-MensorCadBundle {
 # Interfaz de consola
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Presentacion jade: banner, tonos y copia amigable
+# ---------------------------------------------------------------------------
+# Toda esta capa es solo de presentacion. El modo plano (-NoAnimation o salida
+# redirigida) no la ejecuta: conserva byte a byte el texto tecnico anterior.
+# Los helpers de color no habilitan VT, no escriben la configuracion de la
+# terminal y no tocan la codificacion de salida; si la sonda no es concluyente
+# caen a ConsoleColor y al glifo ASCII '#'.
+
+$script:MensorCadBannerRows = @(
+    [pscustomobject]@{ Jade = '█   █ █████ █   █  ████  ███  ████   '; Cad = ' ████  ███  ████ ' },
+    [pscustomobject]@{ Jade = '██ ██ █     ██  █ █     █   █ █   █  '; Cad = '█     █   █ █   █' },
+    [pscustomobject]@{ Jade = '█ █ █ ████  █ █ █  ███  █   █ ████   '; Cad = '█     █████ █   █' },
+    [pscustomobject]@{ Jade = '█   █ █     █  ██     █ █   █ █  █   '; Cad = '█     █   █ █   █' },
+    [pscustomobject]@{ Jade = '█   █ █████ █   █ ████   ███  █   █  '; Cad = ' ████ █   █ ████ ' }
+)
+
+function Get-MensorCadConsoleWidth {
+    # Ancho real de la ventana. Sin RawUI legible devuelve 0: el banner prefiere
+    # el encabezado compacto antes que asumir que los bloques caben.
+    param([scriptblock]$RawUIProbe = { $Host.UI.RawUI.WindowSize.Width })
+    try {
+        $width = [int](& $RawUIProbe)
+        if ($width -gt 0) {
+            return $width
+        }
+    }
+    catch {
+        return 0
+    }
+    return 0
+}
+
+function Get-MensorCadConsoleModeFlags {
+    # Lectura pura del modo de la consola. No habilita VT ni modifica ninguna
+    # preferencia: solo informa si el terminal ya tiene el procesamiento ANSI.
+    $native = Get-MensorCadConsoleNativeType
+    if ($null -eq $native) {
+        return $null
+    }
+    try {
+        $handle = $native::GetStdHandle(-11)
+        if ($handle -eq [IntPtr]::Zero) {
+            return $null
+        }
+        $mode = [uint32]0
+        if (-not $native::GetConsoleMode($handle, [ref]$mode)) {
+            return $null
+        }
+        return [uint32]$mode
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-MensorCadVirtualTerminal {
+    # Sonda defensiva: salida redirigida nunca usa ANSI; si el host expone
+    # SupportsVirtualTerminal se respeta; en Windows PowerShell 5.1 se consulta
+    # el modo ya configurado. Cualquier duda devuelve $false.
+    param(
+        [scriptblock]$RedirectProbe = { [Console]::IsOutputRedirected },
+        [scriptblock]$HostProbe = { $Host.UI },
+        [scriptblock]$ModeProbe = { Get-MensorCadConsoleModeFlags }
+    )
+    try {
+        if (& $RedirectProbe) {
+            return $false
+        }
+        $ui = & $HostProbe
+        if ($null -eq $ui) {
+            return $false
+        }
+        $property = $ui.PSObject.Properties['SupportsVirtualTerminal']
+        if ($null -ne $property) {
+            return [bool]$property.Value
+        }
+        $mode = & $ModeProbe
+        if ($null -eq $mode) {
+            return $false
+        }
+        return ((([uint32]$mode) -band 0x0004) -ne 0)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-MensorCadAnsiSequence {
+    param([string]$Tone)
+    switch ($Tone) {
+        'jade' { return ($script:MensorCadEscape + '[38;2;50;214;160m') }
+        'mint' { return ($script:MensorCadEscape + '[38;2;150;234;211m') }
+        'muted' { return ($script:MensorCadEscape + '[38;2;171;189;182m') }
+        'amber' { return ($script:MensorCadEscape + '[38;2;241;205;122m') }
+        'red' { return ($script:MensorCadEscape + '[38;2;255;170;170m') }
+        default { return '' }
+    }
+}
+
+function Get-MensorCadConsoleColor {
+    param([string]$Tone)
+    switch ($Tone) {
+        'jade' { return [ConsoleColor]::Green }
+        'mint' { return [ConsoleColor]::Cyan }
+        'muted' { return [ConsoleColor]::DarkGray }
+        'amber' { return [ConsoleColor]::Yellow }
+        'red' { return [ConsoleColor]::Red }
+        default { return [ConsoleColor]::Gray }
+    }
+}
+
+function Format-MensorCadAnsiText {
+    param([string]$Text, [string]$Tone = 'text')
+    return ((Get-MensorCadAnsiSequence -Tone $Tone) + $Text + $script:MensorCadAnsiReset)
+}
+
+function Write-MensorCadToneLine {
+    # Escribe una linea con tono jade o cae a ConsoleColor. El tono 'text' deja
+    # el color de primer plano elegido por el host, conservando su fondo.
+    param([string]$Text, [string]$Tone = 'text', [switch]$NoNewline)
+    if ($script:MensorCadPlainMode) {
+        Write-Host $Text -NoNewline:$NoNewline
+        return
+    }
+    if (Test-MensorCadVirtualTerminal) {
+        Write-Host (Format-MensorCadAnsiText -Text $Text -Tone $Tone) -NoNewline:$NoNewline
+        return
+    }
+    if ($Tone -eq 'text') {
+        Write-Host $Text -NoNewline:$NoNewline
+    }
+    else {
+        Write-Host $Text -ForegroundColor (Get-MensorCadConsoleColor -Tone $Tone) -NoNewline:$NoNewline
+    }
+}
+
+function Get-MensorCadBannerGlyph {
+    # Sin VT se usa '#' para no depender de un glifo Unicode en la fuente de la
+    # consola clasica; con VT se conserva el bloque del artboard.
+    param([switch]$VirtualTerminal)
+    if ($VirtualTerminal) {
+        return [string][char]0x2588
+    }
+    return '#'
+}
+
+function Get-MensorCadDisplayVersion {
+    # Texto de version solo para mostrar: corto, sin controles ni escapes y con
+    # al menos un digito. No se interpreta, compara ni escribe en ningun sitio.
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $null
+    }
+    $text = $Value.Trim()
+    if ($text.Length -eq 0 -or $text.Length -gt 32) {
+        return $null
+    }
+    if ($text -notmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]*$') {
+        return $null
+    }
+    if ($text -notmatch '[0-9]') {
+        return $null
+    }
+    return $text
+}
+
+function Get-MensorCadEmbeddedVersion {
+    # Valor local estampado por tools/build_bundle.py. No hay lectura de XML,
+    # destino instalado, red ni variable de entorno.
+    $value = [string]$script:MensorCadReleaseVersion
+    if ($value -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+        return $null
+    }
+    return $value
+}
+
+function Write-MensorCadVersionBadge {
+    # Badge rectangular estilo Astro: jade solido con texto oscuro cuando hay
+    # VT; ConsoleColor con fondo legible sin VT; etiqueta compacta sin fondo en
+    # consolas angostas o de ancho desconocido. Siempre termina con reinicio.
+    param([string]$Version, [string]$Label = 'MensorCAD', [switch]$Development)
+    if ($script:MensorCadPlainMode) {
+        return
+    }
+    $versionText = Get-MensorCadDisplayVersion -Value $Version
+    if ($Development) {
+        $fullText = ' ' + $Label + ' · desarrollo '
+    }
+    elseif ($null -ne $versionText) {
+        $fullText = ' ' + $Label + ' ' + $versionText + ' '
+    }
+    else {
+        $fullText = ' ' + $Label + ' · versión no disponible '
+    }
+    $width = Get-MensorCadConsoleWidth
+    if ($width -gt 0 -and ($width - 2) -ge $fullText.Length) {
+        if (Test-MensorCadVirtualTerminal) {
+            $sequence = $script:MensorCadEscape + '[48;2;50;214;160m' + $script:MensorCadEscape + '[38;2;9;14;13m'
+            Write-Host ($sequence + $fullText + $script:MensorCadAnsiReset)
+        }
+        else {
+            Write-Host $fullText -ForegroundColor Black -BackgroundColor Green
+        }
+        return
+    }
+    $compact = $Label
+    if ($width -gt 0) {
+        $candidate = $Label
+        if ($Development) {
+            $candidate += ' desarrollo'
+        }
+        elseif ($null -ne $versionText) {
+            $candidate += ' ' + $versionText
+        }
+        if (($width - 2) -ge $candidate.Length) {
+            $compact = $candidate
+        }
+    }
+    Write-MensorCadToneLine -Text ('  ' + $compact) -Tone 'jade'
+}
+
+function Write-MensorCadReleaseVersionBadge {
+    if ($script:MensorCadPlainMode) {
+        return
+    }
+    $version = Get-MensorCadEmbeddedVersion
+    if ($null -eq $version) {
+        Write-MensorCadVersionBadge -Development
+    }
+    else {
+        Write-MensorCadVersionBadge -Version $version
+    }
+}
+
+function Write-MensorCadCompactBanner {
+    # Encabezado compacto para consolas angostas o de ancho desconocido.
+    Write-MensorCadToneLine -Text '  MENSOR' -Tone 'jade' -NoNewline
+    Write-MensorCadToneLine -Text 'CAD' -Tone 'mint'
+    Write-MensorCadToneLine -Text '  Instalador para AutoCAD' -Tone 'muted'
+    Write-MensorCadToneLine -Text '  Vamos a preparar tus herramientas.' -Tone 'muted'
+}
+
 function Write-MensorCadBanner {
+    param([switch]$ShowVersion)
     if ($script:MensorCadPlainMode) {
         Write-Host 'MensorCAD - Instalador local para AutoCAD'
         return
     }
     Write-Host ''
-    Write-Host '  ======================================================' -ForegroundColor DarkCyan
-    Write-Host '     M E N S O R C A D   |   Instalador para AutoCAD' -ForegroundColor Cyan
-    Write-Host '     Plugins LISP y CUIX en Program Files' -ForegroundColor DarkCyan
-    Write-Host '  ======================================================' -ForegroundColor DarkCyan
+    $width = Get-MensorCadConsoleWidth
+    # Sin ancho legible (0) o con menos columnas que el banner completo se evita
+    # el corte de linea: el encabezado compacto siempre cabe en una terminal
+    # estrecha y conserva la identidad jade.
+    if ($width -lt $script:MensorCadBannerMinimumWidth) {
+        Write-MensorCadCompactBanner
+    }
+    else {
+        $virtualTerminal = Test-MensorCadVirtualTerminal
+        $glyph = Get-MensorCadBannerGlyph -VirtualTerminal:$virtualTerminal
+        Write-MensorCadToneLine -Text '  MENSORCAD / AUTOCAD' -Tone 'jade' -NoNewline
+        Write-MensorCadToneLine -Text '  INSTALADOR' -Tone 'muted'
+        Write-Host ''
+        foreach ($row in $script:MensorCadBannerRows) {
+            $jadeRow = '  ' + $row.Jade.Replace([string][char]0x2588, $glyph)
+            $cadRow = $row.Cad.Replace([string][char]0x2588, $glyph)
+            Write-MensorCadToneLine -Text $jadeRow -Tone 'jade' -NoNewline
+            Write-MensorCadToneLine -Text $cadRow -Tone 'mint'
+        }
+        Write-Host ''
+        Write-MensorCadToneLine -Text '  Vamos a preparar tus herramientas para AutoCAD.' -Tone 'muted'
+    }
+    if ($ShowVersion) {
+        Write-MensorCadReleaseVersionBadge
+    }
+    # Separacion explicita entre el bloque de identidad y la primera fase.
+    Write-Host ''
 }
 
 function Write-MensorCadStep {
-    param([int]$Number, [int]$Total, [string]$Message)
+    # $Message es el texto tecnico que se conserva en modo plano; $Title es la
+    # copia interactiva y nunca se imprime sin color.
+    param([int]$Number, [int]$Total, [string]$Message, [string]$Title, [string]$Hint)
     $line = '  [{0}/{1}] {2}' -f $Number, $Total, $Message
     if ($script:MensorCadPlainMode) {
         Write-Host $line
+        return
+    }
+    $titleText = $Message
+    if (-not [string]::IsNullOrWhiteSpace($Title)) {
+        $titleText = $Title
+    }
+    Write-Host ''
+    if (Test-MensorCadVirtualTerminal) {
+        Write-MensorCadToneLine -Text ('  [{0}/{1}]' -f $Number, $Total) -Tone 'jade' -NoNewline
+        Write-MensorCadToneLine -Text (' ' + $titleText)
     }
     else {
-        Write-Host ''
-        Write-Host $line -ForegroundColor Yellow
+        Write-Host ('  [{0}/{1}] {2}' -f $Number, $Total, $titleText) -ForegroundColor Yellow
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Hint)) {
+        Write-MensorCadToneLine -Text ('      ' + $Hint) -Tone 'muted'
     }
 }
 
@@ -873,23 +1169,89 @@ function Write-MensorCadInfo {
         Write-Host ('  ' + $Message)
     }
     else {
-        Write-Host ('  ' + $Message) -ForegroundColor DarkGray
+        Write-MensorCadToneLine -Text ('  ' + $Message) -Tone 'muted'
+    }
+}
+
+function Write-MensorCadResultRule {
+    # Regla fina y discreta sobre el resultado. Se limita al ancho actual con
+    # una columna de margen; sin VT usa solo ASCII. En modo plano no existe.
+    if ($script:MensorCadPlainMode) {
+        return
+    }
+    $width = Get-MensorCadConsoleWidth
+    if ($width -lt 5) {
+        return
+    }
+    $length = $width - 3
+    if ($length -gt 48) {
+        $length = 48
+    }
+    if ($length -lt 1) {
+        return
+    }
+    if (Test-MensorCadVirtualTerminal) {
+        $line = [string][char]0x2500
+        $rule = $line * $length
+        Write-MensorCadToneLine -Text ('  ' + $rule) -Tone 'muted'
+    }
+    else {
+        Write-Host ('  ' + ('-' * $length)) -ForegroundColor DarkGray
     }
 }
 
 function Write-MensorCadSuccess {
-    param([string]$Message)
+    # La copia amigable (Headline/Detail/NextAction/Metadata) solo se dibuja con
+    # color. $Message es la frase tecnica completa y en modo plano es lo unico
+    # que se imprime; con color se sustituye por ubicacion/conteo como metadato
+    # bajo, sin repetir la frase de exito.
+    param([string]$Message, [string]$Headline, [string]$Detail, [string]$NextAction, [string]$Metadata)
     if ($script:MensorCadPlainMode) {
         Write-Host $Message
+        return
     }
-    else {
-        Write-Host ('  ' + $Message) -ForegroundColor Green
+    $headlineText = $Headline
+    if ([string]::IsNullOrWhiteSpace($headlineText)) {
+        $headlineText = 'Listo.'
+    }
+    Write-Host ''
+    Write-MensorCadResultRule
+    Write-Host ''
+    Write-Host ''
+    Write-MensorCadToneLine -Text ('  ' + $headlineText) -Tone 'mint'
+    if (-not [string]::IsNullOrWhiteSpace($Detail)) {
+        Write-Host ''
+        Write-MensorCadToneLine -Text ('  ' + $Detail)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Metadata)) {
+        Write-Host ''
+        Write-MensorCadToneLine -Text ('  ' + $Metadata) -Tone 'muted'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NextAction)) {
+        Write-Host ''
+        Write-MensorCadToneLine -Text ('  ' + $NextAction) -Tone 'jade'
     }
 }
 
 function Write-MensorCadFailure {
-    param([string]$Message)
+    # El detalle del error conserva exactamente el prefijo ERROR: en stderr. La
+    # guia accionable es solo presentacion: nunca cambia el texto de stderr ni
+    # el codigo de salida.
+    param([string]$Message, [string]$Headline, [string]$Guidance)
     [Console]::Error.WriteLine('ERROR: ' + $Message)
+    if ($script:MensorCadPlainMode) {
+        return
+    }
+    $headlineText = $Headline
+    if ([string]::IsNullOrWhiteSpace($headlineText)) {
+        $headlineText = 'No se pudo completar la operacion.'
+    }
+    Write-Host ''
+    Write-Host ''
+    Write-MensorCadToneLine -Text ('  ' + $headlineText) -Tone 'red'
+    if (-not [string]::IsNullOrWhiteSpace($Guidance)) {
+        Write-MensorCadToneLine -Text ('  ' + $Guidance)
+    }
 }
 
 function Write-MensorCadActivity {
@@ -902,20 +1264,121 @@ function Write-MensorCadActivity {
     $frame = $frames[$script:MensorCadSpinnerIndex % $frames.Count]
     $script:MensorCadSpinnerIndex = $script:MensorCadSpinnerIndex + 1
     $line = '  {0} {1}' -f $frame, $Message
-    # El indicador se redibuja en la misma linea con retorno de carro: si el
-    # texto nuevo es mas corto, se rellena con espacios para borrar el sufijo
-    # que quedaria visible del texto anterior.
+    $width = Get-MensorCadConsoleWidth
+    # Sin ancho conocido (0) no se puede garantizar que la linea no haga wrap, y
+    # con 1-4 columnas no hay espacio para redibujar: se emite una sola linea
+    # estatica por actividad, sin retorno de carro ni intentos posteriores.
+    if ($width -lt 5) {
+        if ($script:MensorCadActivityStatic) {
+            return
+        }
+        $script:MensorCadActivityStatic = $true
+        $script:MensorCadActivityLength = 0
+        if ($width -gt 1 -and $line.Length -gt ($width - 1)) {
+            $line = $line.Substring(0, $width - 1)
+        }
+        if ($width -le 1) {
+            return
+        }
+        if (Test-MensorCadVirtualTerminal) {
+            Write-MensorCadToneLine -Text $line -Tone 'mint'
+        }
+        else {
+            Write-Host $line -ForegroundColor DarkCyan
+        }
+        return
+    }
+    $script:MensorCadActivityStatic = $false
+    # El ancho util se queda una columna antes del borde y el recorte se aplica
+    # al texto antes de contar celdas; los escapes ANSI no cuentan.
+    $maxVisible = $width - 1
+    if ($line.Length -gt $maxVisible) {
+        $keep = [Math]::Max(1, $maxVisible - 3)
+        $line = $line.Substring(0, $keep) + '...'
+    }
+    # El relleno de limpieza tambien ocupa celdas: nunca puede empujar la linea
+    # visible por encima del ancho actual aunque la anterior fuera mas larga.
     $padding = [Math]::Max(0, [int]$script:MensorCadActivityLength - $line.Length)
+    $padding = [Math]::Min($padding, [Math]::Max(0, $maxVisible - $line.Length))
     $script:MensorCadActivityLength = $line.Length
-    Write-Host ("`r" + $line + (' ' * $padding)) -NoNewline -ForegroundColor DarkCyan
+    if (Test-MensorCadVirtualTerminal) {
+        $painted = "`r" + (Format-MensorCadAnsiText -Text ($line + (' ' * $padding)) -Tone 'mint')
+        Write-Host $painted -NoNewline
+    }
+    else {
+        Write-Host ("`r" + $line + (' ' * $padding)) -NoNewline -ForegroundColor DarkCyan
+    }
+}
+
+function Get-MensorCadCompletionGlyph {
+    # VT permite el check Unicode; la consola clasica usa un texto ASCII legible.
+    param([switch]$VirtualTerminal)
+    if ($VirtualTerminal) {
+        return [string][char]0x2713
+    }
+    return '[OK]'
 }
 
 function Complete-MensorCadActivity {
-    if (-not $script:MensorCadPlainMode) {
+    # Sin -Success conserva exactamente el comportamiento historico. Con -Success
+    # solo reescribe la linea activa (o agrega una) despues de una etapa que ya
+    # termino bien; nunca se usa desde catch, espera o salida desconocida.
+    param([switch]$Success, [string]$Text)
+    if ($script:MensorCadPlainMode) {
+        $script:MensorCadActivityLength = 0
+        $script:MensorCadActivityStatic = $false
+        return
+    }
+    if (-not $Success) {
+        Write-Host ''
+        $script:MensorCadActivityLength = 0
+        $script:MensorCadActivityStatic = $false
+        return
+    }
+    $width = Get-MensorCadConsoleWidth
+    if ($width -lt 5) {
+        # Sin ancho util no se puede garantizar el check ni su limpieza.
+        Write-Host ''
+        $script:MensorCadActivityLength = 0
+        $script:MensorCadActivityStatic = $false
+        return
+    }
+    $maxVisible = $width - 1
+    $virtualTerminal = Test-MensorCadVirtualTerminal
+    $glyph = Get-MensorCadCompletionGlyph -VirtualTerminal:$virtualTerminal
+    $completionText = $Text
+    if ([string]::IsNullOrWhiteSpace($completionText)) {
+        $completionText = 'Listo'
+    }
+    $line = '  {0} {1}' -f $glyph, $completionText
+    if ($line.Length -gt $maxVisible) {
+        $keep = [Math]::Max(1, $maxVisible - 3)
+        $line = $line.Substring(0, $keep) + '...'
+    }
+    $previousLength = [Math]::Min([int]$script:MensorCadActivityLength, $maxVisible)
+    if ($previousLength -gt 0) {
+        $padding = [Math]::Max(0, $previousLength - $line.Length)
+        $padding = [Math]::Min($padding, [Math]::Max(0, $maxVisible - $line.Length))
+        if ($virtualTerminal) {
+            Write-Host ("`r" + (Format-MensorCadAnsiText -Text ($line + (' ' * $padding)) -Tone 'jade')) -NoNewline
+        }
+        else {
+            Write-Host ("`r" + $line + (' ' * $padding)) -NoNewline -ForegroundColor Green
+        }
         Write-Host ''
     }
-    # La linea quedo completada: el proximo indicador no necesita relleno.
+    else {
+        if ($virtualTerminal) {
+            Write-Host (Format-MensorCadAnsiText -Text $line -Tone 'jade')
+        }
+        else {
+            Write-Host $line -ForegroundColor Green
+        }
+    }
+    # La linea quedo completada: el proximo indicador no necesita relleno y una
+    # actividad estatica puede volver a emitirse.
     $script:MensorCadActivityLength = 0
+    $script:MensorCadActivityStatic = $false
 }
 
 function Write-MensorCadProgress {
@@ -933,14 +1396,16 @@ function Write-MensorCadUsage {
         Write-Host 'MensorCAD - Instalador local para AutoCAD'
     }
     else {
-        Write-Host 'MensorCAD - Instalador local para AutoCAD' -ForegroundColor Cyan
+        Write-MensorCadToneLine -Text 'MensorCAD - Instalador local para AutoCAD' -Tone 'mint'
     }
     Write-Host ''
     Write-Host 'Uso:'
     Write-Host '  Instalar.bat [-NoAnimation]'
     Write-Host '  Instalar.bat -Uninstall [-NoAnimation]'
+    Write-Host '  Desinstalar.bat (doble clic para desinstalar)'
     Write-Host '  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-MensorCAD.ps1 [-Uninstall] [-NoAnimation] [-Help]'
     Write-Host '  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-MensorCAD.ps1 -FromRelease [-Version <tag>] [-NoAnimation]'
+    Write-Host '  Comando remoto de una linea (ultima version o -Version <tag>): docs/remote-installer.md'
     Write-Host ''
     Write-Host 'Opciones:'
     Write-Host '  -Uninstall    Desinstala la copia propia de MensorCAD.'
@@ -988,6 +1453,8 @@ $script:MensorCadReleaseFixedFiles = @(
     'LICENSE',
     'bundle.sha256'
 )
+# Opcional para seguir aceptando los ZIP anteriores sin acceso por doble clic.
+$script:MensorCadReleaseOptionalFiles = @('Desinstalar.bat')
 $script:MensorCadReleaseAllowedDirectories = @(
     'MensorCAD.bundle',
     'MensorCAD.bundle/Contents',
@@ -1053,6 +1520,40 @@ function Get-MensorCadReleaseAssetUri {
     return ($script:MensorCadReleaseHost + '/' + $script:MensorCadReleaseRepository + '/releases/download/' + $Tag + '/' + $AssetName)
 }
 
+function Get-MensorCadRemoteHttpStatus {
+    # Codigo HTTP del error de red, o 0 cuando no se puede leer. Se ejecuta
+    # dentro de bloques catch bajo StrictMode 2.0: nunca lanza y cualquier
+    # lectura fallida devuelve 0 para conservar la guia generica.
+    param($ErrorRecord)
+    try {
+        if ($null -eq $ErrorRecord) { return 0 }
+        $exceptionProperty = $ErrorRecord.PSObject.Properties['Exception']
+        if ($null -eq $exceptionProperty -or $null -eq $exceptionProperty.Value) { return 0 }
+        $responseProperty = $exceptionProperty.Value.PSObject.Properties['Response']
+        if ($null -eq $responseProperty -or $null -eq $responseProperty.Value) { return 0 }
+        $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+        if ($null -eq $statusProperty -or $null -eq $statusProperty.Value) { return 0 }
+        return [int]$statusProperty.Value
+    }
+    catch {
+        return 0
+    }
+}
+
+function Get-MensorCadRemoteStatusHint {
+    # Guia accionable solo para un 404 real. Un 404 de GitHub tambien puede
+    # significar un repositorio privado o sin acceso anonimo, asi que nunca se
+    # afirma que la release no exista. Con cualquier otro estado no hay guia
+    # propia: se conserva el mensaje generico con el detalle subyacente.
+    param([int]$StatusCode, [string]$Action, [string]$Tag)
+    if ($StatusCode -ne 404) { return '' }
+    $target = ''
+    if (-not [string]::IsNullOrWhiteSpace($Tag)) {
+        $target = " de la release '$Tag'"
+    }
+    return ('GitHub respondio 404 al ' + $Action + $target + ': puede que la release o el asset no esten publicados, o que el repositorio no sea accesible sin credenciales.')
+}
+
 function Resolve-MensorCadReleaseTag {
     param([string]$Version)
     if (-not [string]::IsNullOrWhiteSpace($Version)) {
@@ -1064,6 +1565,11 @@ function Resolve-MensorCadReleaseTag {
         $json = Get-MensorCadRemoteText -Uri $uri
     }
     catch {
+        $status = Get-MensorCadRemoteHttpStatus -ErrorRecord $_
+        $hint = Get-MensorCadRemoteStatusHint -StatusCode $status -Action 'consultar la ultima release'
+        if (-not [string]::IsNullOrWhiteSpace($hint)) {
+            throw ($hint + ' No se descargo ni se modifico nada. Detalle: ' + $_.Exception.Message)
+        }
         throw ('No se pudo consultar la ultima release en GitHub: ' + $_.Exception.Message + ' No se descargo ni se modifico nada.')
     }
     $release = $null
@@ -1238,7 +1744,7 @@ function Get-MensorCadReleaseArchiveEntries {
                 $fileMap[$entry.FullName] = $validated
             }
             else {
-                $allowed = ($script:MensorCadReleaseFixedFiles -ccontains $validated.RelativePath) -or ($validated.RelativePath -cmatch $script:MensorCadReleaseLispPattern)
+                $allowed = ($script:MensorCadReleaseFixedFiles -ccontains $validated.RelativePath) -or ($script:MensorCadReleaseOptionalFiles -ccontains $validated.RelativePath) -or ($validated.RelativePath -cmatch $script:MensorCadReleaseLispPattern)
                 if (-not $allowed) {
                     throw ("El ZIP contiene una entrada fuera del paquete distribuido: '" + $validated.RelativePath + "'. No se extrajo nada ni se modifico el destino.")
                 }
@@ -1432,6 +1938,32 @@ function Invoke-MensorCadRemoteChild {
     }
 }
 
+function Write-MensorCadRemoteResult {
+    # Presentacion del resultado de la entrada remota. Solo se dibuja con color:
+    # en modo plano la unica salida nueva sigue siendo el texto tecnico que ya
+    # existia, porque la salida del hijo y el codigo de salida no cambian.
+    # El exito solo se pinta con un codigo 0 real del hijo inmediato; como ese
+    # codigo no distingue una instalacion de una actualizacion, el resumen no
+    # afirma cual de las dos ocurrio.
+    param([int]$ExitCode, [string]$Tag)
+    if ($script:MensorCadPlainMode) {
+        return
+    }
+    if ($ExitCode -eq 0) {
+        Write-MensorCadSuccess -Message 'La instalacion remota termino con codigo 0.' -Headline 'La instalación remota terminó.' -Detail 'El instalador del paquete terminó sin errores.' -NextAction $script:MensorCadAutoCadNextAction -Metadata ('Release: ' + $Tag)
+        return
+    }
+    Write-Host ''
+    Write-MensorCadResultRule
+    Write-Host ''
+    Write-Host ''
+    Write-MensorCadToneLine -Text '  La instalación remota no terminó.' -Tone 'red'
+    Write-Host ''
+    Write-MensorCadToneLine -Text ('  El instalador del paquete salió con código ' + $ExitCode + '. No se da la instalación por hecha.')
+    Write-Host ''
+    Write-MensorCadToneLine -Text '  Revisa el mensaje anterior y vuelve a intentarlo.' -Tone 'jade'
+}
+
 function Write-MensorCadRelayedOutput {
     param([string]$Text, [switch]$IsError)
     if ([string]::IsNullOrEmpty($Text)) { return }
@@ -1459,10 +1991,11 @@ function Invoke-MensorCadRemoteInstall {
     }
 
     $totalSteps = 5
-    Write-MensorCadStep -Number 1 -Total $totalSteps -Message 'Resolviendo la release de GitHub'
+    Write-MensorCadStep -Number 1 -Total $totalSteps -Message 'Resolviendo la release de GitHub' -Title 'Buscando la última versión' -Hint 'Consultamos GitHub una sola vez para fijar la versión exacta.'
     $tag = Resolve-MensorCadReleaseTag -Version $Version
     Write-MensorCadInfo ('Release seleccionada: ' + $tag)
-    Complete-MensorCadActivity
+    Write-MensorCadVersionBadge -Label 'MensorCAD release' -Version $tag
+    Complete-MensorCadActivity -Success -Text 'Release resuelta'
 
     $tempRoot = Get-MensorCadRemoteTempRoot
     if ([string]::IsNullOrWhiteSpace($tempRoot) -or -not (Test-Path -LiteralPath $tempRoot -PathType Container)) {
@@ -1479,33 +2012,49 @@ function Invoke-MensorCadRemoteInstall {
         $stdOutPath = Join-Path -Path $workspace -ChildPath 'install.stdout.log'
         $stdErrPath = Join-Path -Path $workspace -ChildPath 'install.stderr.log'
 
-        Write-MensorCadStep -Number 2 -Total $totalSteps -Message 'Descargando el paquete y su SHA-256 sin permisos de administrador'
-        $null = Save-MensorCadRemoteFile -Uri (Get-MensorCadReleaseAssetUri -Tag $tag -AssetName $script:MensorCadReleaseZipAssetName) -DestinationPath $zipPath
-        $null = Save-MensorCadRemoteFile -Uri (Get-MensorCadReleaseAssetUri -Tag $tag -AssetName $script:MensorCadReleaseChecksumAssetName) -DestinationPath $sidecarPath
-        Complete-MensorCadActivity
+        Write-MensorCadStep -Number 2 -Total $totalSteps -Message 'Descargando el paquete y su SHA-256 sin permisos de administrador' -Title 'Descargando MensorCAD' -Hint 'La descarga no pide permisos; el paquete se guarda en una carpeta temporal propia.'
+        try {
+            $null = Save-MensorCadRemoteFile -Uri (Get-MensorCadReleaseAssetUri -Tag $tag -AssetName $script:MensorCadReleaseZipAssetName) -DestinationPath $zipPath
+            $null = Save-MensorCadRemoteFile -Uri (Get-MensorCadReleaseAssetUri -Tag $tag -AssetName $script:MensorCadReleaseChecksumAssetName) -DestinationPath $sidecarPath
+        }
+        catch {
+            $status = Get-MensorCadRemoteHttpStatus -ErrorRecord $_
+            $hint = Get-MensorCadRemoteStatusHint -StatusCode $status -Action 'descargar los assets' -Tag $tag
+            if (-not [string]::IsNullOrWhiteSpace($hint)) {
+                throw ($hint + ' No se extrajo nada ni se modifico el destino. Detalle: ' + $_.Exception.Message)
+            }
+            throw ("No se pudieron descargar los assets de la release '" + $tag + "': " + $_.Exception.Message + ' No se extrajo nada ni se modifico el destino.')
+        }
+        Complete-MensorCadActivity -Success -Text 'Paquete descargado'
 
-        Write-MensorCadStep -Number 3 -Total $totalSteps -Message 'Verificando el SHA-256 y las entradas del ZIP'
+        Write-MensorCadStep -Number 3 -Total $totalSteps -Message 'Verificando el SHA-256 y las entradas del ZIP' -Title 'Verificando el paquete' -Hint 'Comprobamos que la descarga esté completa y que su contenido sea el esperado.'
         $null = Assert-MensorCadReleaseArchiveHash -ArchivePath $zipPath -SidecarPath $sidecarPath
         $archiveEntries = Get-MensorCadReleaseArchiveEntries -ArchivePath $zipPath
         Write-MensorCadInfo 'SHA-256 verificado: detecta corrupcion, no autentica al publicador.'
-        Complete-MensorCadActivity
+        Complete-MensorCadActivity -Success -Text 'SHA-256 verificado'
 
-        Write-MensorCadStep -Number 4 -Total $totalSteps -Message 'Extrayendo el paquete verificado en una carpeta temporal propia'
+        Write-MensorCadStep -Number 4 -Total $totalSteps -Message 'Extrayendo el paquete verificado en una carpeta temporal propia' -Title 'Preparando la instalación' -Hint 'Extraemos solo en la carpeta temporal y revalidamos el paquete extraído.'
         $null = Expand-MensorCadReleaseArchive -ArchivePath $zipPath -DestinationRoot $extractRoot -Entries $archiveEntries -TrustedBoundary $workspace
         $null = Test-MensorCadSource -SourceRoot $extractRoot
-        Complete-MensorCadActivity
+        Complete-MensorCadActivity -Success -Text 'Paquete extraído'
 
-        Write-MensorCadStep -Number 5 -Total $totalSteps -Message $script:MensorCadRemoteChildActivityMessage
+        Write-MensorCadStep -Number 5 -Total $totalSteps -Message $script:MensorCadRemoteChildActivityMessage -Title 'Instalando MensorCAD' -Hint 'Si Windows muestra un aviso de UAC, elige Sí para continuar.'
         Write-MensorCadInfo 'Si Windows muestra UAC, el proceso elevado abrira su propia ventana de diagnostico.'
         $childScript = Join-Path -Path $extractRoot -ChildPath $script:MensorCadReleaseInstallerAssetName
         $childArguments = @()
         if ($NoAnimation) { $childArguments += '-NoAnimation' }
         $child = Invoke-MensorCadRemoteChild -ScriptPath $childScript -Arguments $childArguments -StdOutPath $stdOutPath -StdErrPath $stdErrPath
+        if ($child.ExitCode -eq 0) {
+            Complete-MensorCadActivity -Success -Text 'Instalación remota completada'
+        }
         Write-MensorCadRelayedOutput -Text $child.StdOut
         Write-MensorCadRelayedOutput -Text $child.StdErr -IsError
         if ($child.ExitCode -eq 0) {
-            Write-MensorCadInfo 'Recuerde abrir AutoCAD para cargar el bundle instalado.'
+            if ($script:MensorCadPlainMode) {
+                Write-MensorCadInfo 'Recuerde abrir AutoCAD para cargar el bundle instalado.'
+            }
         }
+        Write-MensorCadRemoteResult -ExitCode ([int]$child.ExitCode) -Tag $tag
         return [int]$child.ExitCode
     }
     finally {
@@ -1579,6 +2128,12 @@ namespace MensorCadConsoleHost
     {
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern uint GetConsoleProcessList(uint[] processList, uint processCount);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetStdHandle(int stdHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool GetConsoleMode(IntPtr consoleHandle, out uint mode);
     }
 }
 '@
@@ -1830,6 +2385,9 @@ function Wait-MensorCadResultHold {
     if (-not $StreamsInteractive) { return }
     if (-not [string]::IsNullOrEmpty($NoPause)) { return }
     try {
+        if (-not $script:MensorCadPlainMode) {
+            Write-Host ''
+        }
         $null = Read-Host 'Pulse Enter para cerrar esta ventana.'
     }
     catch {
@@ -1967,7 +2525,12 @@ function Invoke-MensorCadCli {
         # La entrega elevada conserva el banner completo para el usuario: el
         # resultado que queda visible no puede perder el estilo de la CLI.
         if ((-not $ElevatedProcess) -or $HoldResult) {
-            Write-MensorCadBanner
+            if ($FromRelease -or $Uninstall) {
+                Write-MensorCadBanner
+            }
+            else {
+                Write-MensorCadBanner -ShowVersion
+            }
         }
         $programFilesRoot = Get-MensorCadProgramFilesRoot
         $destinationRoot = Get-MensorCadDestinationRoot
@@ -1979,7 +2542,7 @@ function Invoke-MensorCadCli {
         $sourceRoot = $script:MensorCadScriptRoot
 
         if ($Uninstall) {
-            Write-MensorCadStep -Number 1 -Total 3 -Message 'Comprobando la instalacion existente'
+            Write-MensorCadStep -Number 1 -Total 3 -Message 'Comprobando la instalacion existente' -Hint 'Verificamos que la copia instalada sea de MensorCAD.'
             $marker = Assert-MensorCadOwnedDestination -DestinationRoot $destinationRoot
             if ($null -eq $marker) {
                 throw "MensorCAD no esta instalado en '$destinationRoot'."
@@ -1990,11 +2553,11 @@ function Invoke-MensorCadCli {
                 }
                 return (Invoke-MensorCadElevatedSelf -Uninstall -NoAnimation:$NoAnimation -BatLauncher:$BatLauncher)
             }
-            Write-MensorCadStep -Number 2 -Total 3 -Message 'Comprobando que AutoCAD este cerrado'
-            Write-MensorCadStep -Number 3 -Total 3 -Message 'Desinstalando MensorCAD'
+            Write-MensorCadStep -Number 2 -Total 3 -Message 'Comprobando que AutoCAD este cerrado' -Hint 'No cerramos AutoCAD por ti: guarda tus dibujos y ciérralo.'
+            Write-MensorCadStep -Number 3 -Total 3 -Message 'Desinstalando MensorCAD' -Hint 'Eliminamos solo los archivos registrados por MensorCAD.'
             $result = Uninstall-MensorCadBundle -DestinationRoot $destinationRoot -TrustedBoundary $programFilesRoot -AutoCadProbe { Test-MensorCadAutoCadRunning }
-            Complete-MensorCadActivity
-            Write-MensorCadSuccess ('MensorCAD se desinstalo correctamente. Archivos eliminados: {0}.' -f $result.RemovedFiles)
+            Complete-MensorCadActivity -Success -Text 'MensorCAD desinstalado'
+            Write-MensorCadSuccess -Message ('MensorCAD se desinstalo correctamente. Archivos eliminados: {0}.' -f $result.RemovedFiles) -Headline 'MensorCAD se desinstaló.' -Detail 'Se eliminaron solo los archivos propios; tus dibujos quedaron intactos.' -NextAction 'Puedes volver a instalar cuando quieras.' -Metadata ('Archivos eliminados: {0}' -f $result.RemovedFiles)
             return 0
         }
 
@@ -2003,46 +2566,70 @@ function Invoke-MensorCadCli {
             Write-MensorCadProgress -Phase $phase -Current $current -Total $total -Path $path
         }
 
-        Write-MensorCadStep -Number 1 -Total 4 -Message 'Validando el paquete local antes de pedir permisos'
+        Write-MensorCadStep -Number 1 -Total 4 -Message 'Validando el paquete local antes de pedir permisos' -Title 'Revisando el paquete' -Hint 'Comprobamos que los archivos estén completos.'
         $null = Test-MensorCadSource -SourceRoot $sourceRoot -ProgressCallback $progressCallback
-        Complete-MensorCadActivity
+        Complete-MensorCadActivity -Success -Text 'Paquete validado'
 
-        Write-MensorCadStep -Number 2 -Total 4 -Message 'Comprobando permisos de administrador'
+        Write-MensorCadStep -Number 2 -Total 4 -Message 'Comprobando permisos de administrador' -Title 'Permiso de Windows' -Hint 'Si Windows muestra un aviso, elige Sí para continuar.'
         if (-not (Test-MensorCadAdministrator)) {
             if ($ElevatedProcess) {
                 throw 'La sesion elevada no tiene permisos de administrador. La instalacion no se realizo.'
             }
             return (Invoke-MensorCadElevatedSelf -NoAnimation:$NoAnimation -BatLauncher:$BatLauncher)
         }
+        Complete-MensorCadActivity -Success -Text 'Permisos listos'
 
-        Write-MensorCadStep -Number 3 -Total 4 -Message 'Revalidando el paquete despues de la elevacion'
+        Write-MensorCadStep -Number 3 -Total 4 -Message 'Revalidando el paquete despues de la elevacion' -Title 'Última comprobación' -Hint 'Volvemos a revisar el paquete después del permiso.'
         $null = Test-MensorCadSource -SourceRoot $sourceRoot -ProgressCallback $progressCallback
-        Complete-MensorCadActivity
+        Complete-MensorCadActivity -Success -Text 'Paquete revalidado'
 
-        Write-MensorCadStep -Number 4 -Total 4 -Message 'Instalando en Program Files'
+        Write-MensorCadStep -Number 4 -Total 4 -Message 'Instalando en Program Files' -Title 'Instalando MensorCAD' -Hint 'Preparamos tus herramientas para AutoCAD.'
         $result = Install-MensorCadBundle -SourceRoot $sourceRoot -DestinationRoot $destinationRoot -TrustedBoundary $programFilesRoot -AutoCadProbe { Test-MensorCadAutoCadRunning } -ProgressCallback $progressCallback
-        Complete-MensorCadActivity
+        Complete-MensorCadActivity -Success -Text 'MensorCAD instalado'
 
-        if ($result.Status -eq 'unchanged') {
-            Write-MensorCadSuccess ('MensorCAD ya estaba actualizado en {0}. No se reescribieron archivos.' -f $result.DestinationRoot)
-        }
-        elseif ($result.Status -eq 'updated') {
-            Write-MensorCadSuccess ('MensorCAD se actualizo correctamente en {0}. Archivos: {1}.' -f $result.DestinationRoot, $result.FileCount)
-        }
-        else {
-            Write-MensorCadSuccess ('MensorCAD se instalo correctamente en {0}. Archivos: {1}.' -f $result.DestinationRoot, $result.FileCount)
-        }
-        foreach ($warning in @($result.CleanupWarnings)) {
-            if (-not [string]::IsNullOrWhiteSpace($warning)) {
-                Write-MensorCadInfo ('Aviso: ' + $warning)
+        $cleanupWarnings = @($result.CleanupWarnings)
+        if (-not $script:MensorCadPlainMode) {
+            foreach ($warning in $cleanupWarnings) {
+                if (-not [string]::IsNullOrWhiteSpace($warning)) {
+                    Write-MensorCadInfo ('Aviso: ' + $warning)
+                }
             }
         }
-        Write-MensorCadInfo 'Abra AutoCAD para cargar el bundle instalado.'
+        if ($result.Status -eq 'unchanged') {
+            Write-MensorCadSuccess -Message ('MensorCAD ya estaba actualizado en {0}. No se reescribieron archivos.' -f $result.DestinationRoot) -Headline 'MensorCAD ya estaba actualizado.' -Detail 'No se reescribió ningún archivo.' -NextAction $script:MensorCadAutoCadNextAction -Metadata ('Ubicación: {0}' -f $result.DestinationRoot)
+        }
+        elseif ($result.Status -eq 'updated') {
+            Write-MensorCadSuccess -Message ('MensorCAD se actualizo correctamente en {0}. Archivos: {1}.' -f $result.DestinationRoot, $result.FileCount) -Headline 'MensorCAD se actualizó.' -Detail 'La versión anterior se respaldó y la nueva quedó lista.' -NextAction $script:MensorCadAutoCadNextAction -Metadata ('Ubicación: {0} - Archivos: {1}' -f $result.DestinationRoot, $result.FileCount)
+        }
+        else {
+            Write-MensorCadSuccess -Message ('MensorCAD se instalo correctamente en {0}. Archivos: {1}.' -f $result.DestinationRoot, $result.FileCount) -Headline 'MensorCAD está instalado.' -Detail 'No necesitas repetir la instalación.' -NextAction $script:MensorCadAutoCadNextAction -Metadata ('Ubicación: {0} - Archivos: {1}' -f $result.DestinationRoot, $result.FileCount)
+        }
+        if ($script:MensorCadPlainMode) {
+            foreach ($warning in $cleanupWarnings) {
+                if (-not [string]::IsNullOrWhiteSpace($warning)) {
+                    Write-MensorCadInfo ('Aviso: ' + $warning)
+                }
+            }
+            Write-MensorCadInfo 'Abra AutoCAD para cargar el bundle instalado.'
+        }
         return 0
     }
     catch {
         Complete-MensorCadActivity
-        Write-MensorCadFailure $_.Exception.Message
+        # La guia accionable es solo presentacion: stderr conserva el mensaje
+        # original con prefijo ERROR: y el codigo de salida sigue siendo 1.
+        $failureHeadline = 'No se pudo completar la operación.'
+        $failureGuidance = ''
+        if ($_.Exception.Message -match 'AutoCAD esta en ejecucion') {
+            $failureHeadline = 'Cierra AutoCAD para continuar.'
+            if ($Uninstall) {
+                $failureGuidance = 'Guarda tus dibujos y cierra AutoCAD. Después, vuelve a ejecutar Desinstalar.bat.'
+            }
+            else {
+                $failureGuidance = 'Guarda tus dibujos y cierra AutoCAD. Después, vuelve a ejecutar Instalar.bat.'
+            }
+        }
+        Write-MensorCadFailure -Message $_.Exception.Message -Headline $failureHeadline -Guidance $failureGuidance
         return 1
     }
 }
