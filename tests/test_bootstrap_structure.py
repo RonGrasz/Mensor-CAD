@@ -74,10 +74,15 @@ class BootstrapStructureTests(unittest.TestCase):
         cls.build_docs = read_text(BUILD_DOCS)
         cls.testing_docs = read_text(TESTING_DOCS)
 
-    def test_bootstrap_existe_con_bom_y_salto_de_linea_final(self) -> None:
+    def test_bootstrap_existe_sin_bom_y_con_salto_de_linea_final(self) -> None:
+        # El asset se entrega por HTTP y se ejecuta con [scriptblock]::Create: un
+        # BOM UTF-8 no se reconoce ahi, llega como texto mojibake delante de
+        # param y el arranque se rompe. Por eso el archivo es ASCII puro y no
+        # lleva BOM; el instalador real conserva el suyo porque tiene Unicode.
         self.assertTrue(BOOTSTRAP.is_file(), f"falta {BOOTSTRAP}")
         self.assertEqual(BOOTSTRAP.name, "install.ps1", "el asset debe ser minusculo")
-        self.assertTrue(self.raw.startswith(b"\xef\xbb\xbf"), "falta el BOM UTF-8")
+        self.assertFalse(self.raw.startswith(b"\xef\xbb\xbf"), "el bootstrap no debe llevar BOM")
+        self.assertTrue(all(byte < 0x80 for byte in self.raw), "el bootstrap debe ser ASCII")
         self.assertTrue(fin_de_linea_ps51_valido(self.raw), "hay CR sueltos")
         self.assertTrue(self.raw.endswith(b"\n"), "falta el salto de linea final")
 

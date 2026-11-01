@@ -1,4 +1,4 @@
-﻿# Bootstrap corto de la entrada remota de MensorCAD.
+# Bootstrap corto de la entrada remota de MensorCAD.
 #
 # Uso previsto, cuando un humano publique los cuatro assets del release
 # (todavia no estan publicados):
