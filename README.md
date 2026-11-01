@@ -1,337 +1,238 @@
-![MensorCAD — herramientas para topografía y catastro](docs/images/mensor-cad-title.png)
+<a id="inicio"></a>
 
-# MensorCAD™
+<div align="center">
+  <img src="docs/images/mensor-cad-title.png" width="900" alt="MensorCAD — herramientas para topografía y catastro en AutoCAD">
+</div>
 
-Herramientas LISP para agilizar el trabajo topográfico y catastral en AutoCAD: calcula superficies, genera tablas de coordenadas, anota planos, subdivide parcelas e importa o exporta puntos. Cada comando se carga de forma independiente, y la mayoría ofrece un cuadro de opciones para configurar el resultado.
+<p align="center">
+  Calcula superficies, prepara tablas de coordenadas y completa tus planos.<br>
+  <strong>Herramientas para topografía y catastro, directamente en AutoCAD.</strong>
+</p>
 
-[Instalación](#instalación) · [Comandos](#comandos) · [Desinstalación](#desinstalación) · [Guía de pruebas de instalación](docs/installation-testing.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/AutoCAD-Windows_64_bits-0CB587?style=for-the-badge&amp;labelColor=073F35" alt="Para AutoCAD de Windows de 64 bits">
+  <img src="https://img.shields.io/badge/Herramientas-13-00785E?style=for-the-badge&amp;labelColor=073F35" alt="13 herramientas">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/Licencia-MIT-0CB587?style=for-the-badge&amp;labelColor=073F35" alt="Licencia MIT"></a>
+</p>
 
-## Plataformas y requisitos
+<p align="center">
+  <strong>
+    <a href="#instalacion">Instalación</a> &nbsp;·&nbsp;
+    <a href="#herramientas">Herramientas</a> &nbsp;·&nbsp;
+    <a href="#vista-previa">Vista previa</a> &nbsp;·&nbsp;
+    <a href="#ayuda">Ayuda</a>
+  </strong>
+</p>
 
-- **AutoCAD para Windows 64 bits**, con soporte AutoLISP y ActiveX/VLA.
-- **Windows PowerShell 5.1 de 64 bits** para el instalador del paquete.
-- **Administrador** (UAC) para instalar, actualizar o desinstalar en `Program Files`; AutoCAD debe estar cerrado.
-- Los archivos `.lsp` de la carpeta [`lisp/`](lisp/).
-- Para estructuras y operaciones con superficies, disponibilidad de las funciones nativas REGION, operaciones booleanas y Offset utilizadas por cada herramienta.
+---
 
-No se garantiza compatibilidad con AutoCAD para Mac, AutoCAD Web, AutoCAD LT ni una versión mínima concreta de AutoCAD. Las funciones de curvas y agua ondulada dependen de las capacidades de la versión instalada.
+| 📐 Calcula y organiza | 📍 Trabaja con coordenadas | 🌿 Completa la presentación |
+|---|---|---|
+| Superficies, subdivisiones y tablas de rumbos y distancias. | Importación de puntos, exportación de coordenadas y etiquetas de vértices. | Linderos, edificaciones, vegetación y cuerpos de agua. |
 
-> **Antes de comenzar:** trabaja sobre una copia de tu dibujo. MensorCAD no transforma sistemas de coordenadas ni convierte unidades. Las herramientas que expresan distancias y áreas en metros requieren un dibujo preparado en metros; `MCTRANSFORM` utiliza unidades de dibujo al cuadrado.
+<a id="requisitos"></a>
+
+## Antes de instalar
+
+- **AutoCAD para Windows de 64 bits**, con soporte para AutoLISP y ActiveX. No se garantiza compatibilidad con Mac, AutoCAD Web ni AutoCAD LT.
+- Para instalar el paquete completo: **Windows PowerShell 5.1 de 64 bits** y permisos de administrador. Windows incluye PowerShell; no necesitas saber programar.
+- **Guarda tus dibujos y cierra AutoCAD** antes de instalar, actualizar o desinstalar el paquete.
+
+> **Antes de trabajar:** usa una copia de tu dibujo y revisa sus unidades y sistema de coordenadas. MensorCAD no los convierte automáticamente. Para trabajar con metros y m², prepara el dibujo en metros.
+
+<a id="instalacion"></a>
 
 ## Instalación
 
-La vía recomendada es el **paquete ZIP offline** para AutoCAD de Windows: instala el bundle completo, carga el CUIX y deja disponibles los comandos `MC*` sin usar `APPLOAD`.
+Elige la forma que te resulte más cómoda. **Si quieres todas las herramientas y su menú, usa el ZIP.**
 
-> **Los assets del release todavía no están publicados.** Hasta que un humano publique `MensorCAD-Windows.zip`, `MensorCAD-Windows.zip.sha256`, `Install-MensorCAD.ps1` e `install.ps1`, no hay una descarga pública para usuarios ni el comando remoto funciona. El artifact de GitHub Actions es solo para pruebas de mantenedores: no es un release ni reemplaza esos cuatro assets.
+<p align="center">
+  <a href="https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/MensorCAD-Windows.zip"><img src="https://img.shields.io/badge/Descargar-MensorCAD_para_Windows-0CB587?style=for-the-badge&amp;labelColor=073F35" alt="Descargar MensorCAD para Windows en ZIP"></a>
+  <br>
+  <a href="https://github.com/RonGrasz/Mensor-CAD/releases/latest">Ver la última versión y sus novedades</a>
+</p>
 
-### Ruta rápida con el ZIP
+<a id="instalacion-manual"></a>
 
-1. **Descarga y extrae.** Cuando el release esté publicado, descarga `MensorCAD-Windows.zip` desde <https://github.com/RonGrasz/Mensor-CAD/releases>, extrae el ZIP completo en una carpeta normal y no ejecutes nada desde dentro del ZIP.
-2. **Cierra AutoCAD** por completo y guarda tus dibujos. El instalador no cierra AutoCAD por su cuenta.
-3. **Ejecuta el instalador con permisos de administrador.** Haz doble clic en `Instalar.bat` y acepta el aviso de UAC. El instalador valida el paquete y escribe en `<Program Files>\Autodesk\ApplicationPlugins\MensorCAD.bundle`.
-4. **Abre AutoCAD** y comprueba que el CUIX y los comandos `MC*` están disponibles. Para actualizar, cierra AutoCAD y repite el paso 3 con el ZIP nuevo.
+### 1. Manual · Descargando el ZIP
 
-### Qué hace el instalador
+**La opción recomendada: descargar, extraer e instalar con doble clic.**
 
-- Valida el SHA-256 del paquete antes de pedir permisos. El hash detecta corrupción o modificaciones de la descarga; no autentica al publicador.
-- Mientras trabaja, la terminal muestra una animación de actividad. La elevación por UAC abre una **ventana de diagnóstico** separada; su salida no se reenvía a la terminal, aunque el código de salida final sí vuelve.
-- `-ExecutionPolicy Bypass` se usa solo para el proceso del instalador; no se cambia la política global. El paquete tampoco modifica `SECURELOAD`, `TRUSTEDPATHS` ni `APPAUTOLOAD`.
+1. **[Descarga MensorCAD para Windows](https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/MensorCAD-Windows.zip)**. El archivo se llama **`MensorCAD-Windows.zip`**; no es el archivo «Source code (zip)» de GitHub.
+2. Descárgalo, haz clic derecho sobre él y elige **Extraer todo**. Conserva juntos todos los archivos extraídos; no ejecutes el instalador desde dentro del ZIP.
+3. Con AutoCAD cerrado, abre la carpeta extraída y haz doble clic en **`Instalar.bat`**.
+4. Acepta el aviso de permisos de Windows y espera el mensaje final del instalador.
+5. Abre AutoCAD. Tendrás disponibles el menú de MensorCAD y sus comandos.
 
-La instalación manual del ZIP local fue verificada por el usuario en Windows, incluida la carga del CUIX y de los comandos. Esa comprobación no certifica la ruta remota ni las suites automatizadas de Windows, que siguen pendientes. Para compilar, ejecutar las pruebas y recopilar evidencia, consulta la [guía de pruebas de instalación](docs/installation-testing.md).
+**Pruébalo:** escribe `MCHELP` en la línea de comandos de AutoCAD. Si aparece la ventana de MensorCAD, ya puedes empezar.
 
-### Instalación manual con APPLOAD (alternativa)
+<a id="instalacion-cli"></a>
 
-Si prefieres no instalar el bundle, la carga sigue siendo **manual mediante `APPLOAD`**, igual para todos los comandos:
+### 2. CLI · Desde PowerShell
 
-1. Guarda en tu equipo los archivos de la carpeta `lisp/`.
-2. En AutoCAD, escribe `APPLOAD` y presiona Enter.
-3. Busca el archivo `.lsp` de la herramienta que quieras usar, selecciónalo y pulsa **Cargar**. Después, cierra la ventana.
-4. Escribe el comando correspondiente en la línea de comandos. Por ejemplo, carga `MC-AREA.lsp` y ejecuta `MCAREA`.
+**La alternativa para instalar la última versión desde la terminal, sin descargar el ZIP a mano.** Necesitas conexión a Internet.
 
-Repite estos pasos para las herramientas que necesites en el dibujo donde vas a trabajar. No hace falta cargar todos los scripts ni seguir un orden específico.
-
-### Instalación remota (cuando exista un release publicado)
-
-El comando remoto no funciona todavía: requiere que un humano publique los cuatro assets del release. El recomendado es el comando corto: descarga `install.ps1` del release y lo ejecuta. Ese bootstrap **no instala nada por sí mismo**: descarga el `Install-MensorCAD.ps1` real a una carpeta temporal propia, lo lanza en un proceso Windows PowerShell aparte con `-FromRelease` y reenvía su salida. La verificación SHA-256, el ZIP, el destino fijo y el UAC siguen siendo los del instalador real: no hay un segundo motor.
-
-Última versión publicada:
+1. Guarda tus dibujos y cierra AutoCAD.
+2. En el menú Inicio de Windows, busca y abre **Windows PowerShell** de 64 bits.
+3. Copia esta línea completa, pégala en PowerShell y presiona **Enter**:
 
 ```powershell
 irm 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/install.ps1' -ea Stop | iex
 ```
 
-Una versión concreta (**`v0.1.0` es solo un ejemplo y no está publicado**; reemplácelo en las dos apariciones, URL y `-Version`):
+4. Acepta el aviso de permisos de Windows y espera a que el instalador termine.
+5. Abre AutoCAD y escribe `MCHELP` para comprobar la instalación.
 
-```powershell
-&([scriptblock]::Create((irm 'https://github.com/RonGrasz/Mensor-CAD/releases/download/v0.1.0/install.ps1' -ea Stop))) -Version v0.1.0
-```
+Este comando descarga y ejecuta el instalador oficial de **RonGrasz/Mensor-CAD**. Úsalo únicamente si confías en el proyecto.
 
-El `-ea Stop` protege **solo la primera descarga**, la de `install.ps1`: un `404` o un fallo de red se convierte en un error visible en vez de seguir con un script vacío. Esa descarga ocurre **antes del wrapper**: si falla, el wrapper nunca se ejecuta y no fija `$LASTEXITCODE`, que puede conservar un valor anterior (incluso `0`). Solo los fallos que ocurren dentro del wrapper (la descarga del instalador real, el tag inválido o el hijo) dejan un código distinto de cero. Esa primera descarga usa la configuración TLS del equipo: el bootstrap recién fija TLS 1.2 después, para bajar el instalador real. Si el equipo no negocia TLS 1.2 con `Invoke-RestMethod`, use el comando completo, que lo fija antes de la primera descarga. La primera descarga ya ejecuta código del repositorio, así que la confianza empieza en `RonGrasz/Mensor-CAD`. Una versión fijada no se consigue descargando el bootstrap de la última versión: la URL del tag y `-Version` tienen que coincidir.
+<a id="instalacion-personalizada"></a>
 
-#### Código de salida del comando corto
+### 3. Personalizada · Solo las herramientas que necesitas
 
-El bootstrap **nunca llama a `exit`**, porque `iex` ejecuta el archivo en el ámbito del llamador y cerraría la sesión. El código real del proceso hijo queda en `$LASTEXITCODE`, que el instalador fija incluso cuando el hijo falla o no informa estado. Un `0` solo significa que el instalador real terminó con `0`: el bootstrap no afirma por su cuenta que se instaló o actualizó.
+**Descarga los scripts y cárgalos con APPLOAD, sin instalar el paquete completo.** Esta opción no añade el menú de MensorCAD.
 
-Para automatizar con un código de salida del sistema operativo:
+1. Abre la carpeta **[`lisp/`](lisp/)** y elige el archivo de la herramienta que quieras usar. Más abajo tienes la [lista de comandos y archivos](#herramientas).
+2. Abre el archivo en GitHub y usa **Download raw file / Descargar archivo sin formato**. Guárdalo en una carpeta de tu equipo, conservando la extensión **`.lsp`**.
+3. En AutoCAD, escribe **`APPLOAD`** y presiona Enter.
+4. Busca el archivo descargado, selecciónalo y pulsa **Cargar**. Después, cierra la ventana.
+5. Escribe el comando de esa herramienta en AutoCAD. Por ejemplo: carga **`MC-AREA.lsp`** y ejecuta **`MCAREA`**.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '& .\install.ps1; exit $LASTEXITCODE'
-```
+Repite la carga para cada herramienta que necesites, en el dibujo donde vas a trabajar. **No hace falta cargar todos los archivos ni seguir un orden.** Al volver a abrir AutoCAD, tendrás que cargarlos nuevamente.
 
-Las comillas simples son importantes al pegar desde PowerShell: con comillas dobles, el proceso exterior expandiría `$LASTEXITCODE` antes de que el hijo lo lea. Desde `cmd.exe` conviene el comando completo de más abajo, que ya trae su propio `exit`.
+<a id="herramientas"></a>
 
-#### Comando completo (compatibilidad, automatización y TLS)
+## Una herramienta para cada parte del trabajo
 
-El comando anterior sigue disponible para quien prefiera un único proceso `powershell.exe` y protege la primera descarga con su propio `try/catch`:
+Con el paquete completo, abre una herramienta desde el menú o escribe su comando en AutoCAD. Si elegiste la instalación personalizada, carga primero el archivo indicado.
 
-Última versión publicada:
+| Herramienta | Comando | ¿Qué puedes hacer? | Archivo para APPLOAD |
+|---|---|---|---|
+| <img src="docs/icons/mcarea32.png" width="24" alt=""> **Áreas** | `MCAREA` | Calcular y rotular la superficie de una parcela. | [MC-AREA.lsp](lisp/MC-AREA.lsp) |
+| <img src="docs/icons/mctable32.png" width="24" alt=""> **Tablas** | `MCTABLE` | Generar tablas de coordenadas, rumbos y distancias. | [MC-TABLE.lsp](lisp/MC-TABLE.lsp) |
+| <img src="docs/icons/mcvector32.png" width="24" alt=""> **Rumbos y distancias** | `MCVECTOR` | Anotar los tramos de un contorno o pares de puntos. | [MC-VECTOR.lsp](lisp/MC-VECTOR.lsp) |
+| <img src="docs/icons/mccoord32.png" width="24" alt=""> **Coordenadas** | `MCCOORD` | Colocar una tabla de coordenadas de un punto con línea de referencia. | [MC-COORD.lsp](lisp/MC-COORD.lsp) |
+| <img src="docs/icons/mcvertex32.png" width="24" alt=""> **Vértices** | `MCVERTEX` | Marcar y numerar los vértices de un contorno. | [MC-VERTEX.lsp](lisp/MC-VERTEX.lsp) |
+| <img src="docs/icons/mcsubdiv32.png" width="24" alt=""> **Subdivisión** | `MCSUBDIV` | Dividir una parcela por superficie, porcentaje o partes iguales. | [MC-SUBDIV.lsp](lisp/MC-SUBDIV.lsp) |
+| <img src="docs/icons/mctransform32.png" width="24" alt=""> **Escala por superficie** | `MCTRANSFORM` | Crear una copia de un contorno con el área que necesitas. | [MC-TRANSFORM.lsp](lisp/MC-TRANSFORM.lsp) |
+| <img src="docs/icons/mcimport32.png" width="24" alt=""> **Importar puntos** | `MCIMPORT` | Llevar puntos de un archivo TXT o CSV al dibujo. | [MC-IMPORT.lsp](lisp/MC-IMPORT.lsp) |
+| <img src="docs/icons/mcexportex32.png" width="24" alt=""> **Exportar coordenadas** | `MCEXPORTEX` | Guardar coordenadas de vértices o posiciones de textos en TXT o CSV. | [MC-EXPORTEX.lsp](lisp/MC-EXPORTEX.lsp) |
+| <img src="docs/icons/mcfix32.png" width="24" alt=""> **Preparar polilíneas** | `MCFIX` | Convertir polilíneas antiguas compatibles para trabajar con ellas. | [MC-FIX.lsp](lisp/MC-FIX.lsp) |
+| <img src="docs/icons/mccolind32.png" width="24" alt=""> **Colindancias** | `MCCOLIND` | Representar linderos y colocar nombres de colindantes. | [MC-COLIND.lsp](lisp/MC-COLIND.lsp) |
+| <img src="docs/icons/mcelements32.png" width="24" alt=""> **Elementos del terreno** | `MCELEMENTS` | Dibujar edificaciones, vegetación, masas de agua y ríos. | [MC-ELEMENTS.lsp](lisp/MC-ELEMENTS.lsp) |
+| **Acerca de MensorCAD** | `MCHELP` | Consultar la versión y abrir la página del proyecto. | [MC-HELP.lsp](lisp/MC-HELP.lsp) |
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing -ErrorAction Stop 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/Install-MensorCAD.ps1'))) -FromRelease } catch { [Console]::Error.WriteLine('ERROR: no se pudo descargar el instalador de MensorCAD desde GitHub. Compruebe su conexion y que la release este publicada y sea accesible sin credenciales; no se instalo nada.'); exit 1 }"
-```
+<a id="vista-previa"></a>
 
-Una versión concreta (reemplace `v0.1.0` en las dos apariciones; **ese tag es solo un ejemplo y no está publicado**):
+## Mira las herramientas por dentro
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing -ErrorAction Stop 'https://github.com/RonGrasz/Mensor-CAD/releases/download/v0.1.0/Install-MensorCAD.ps1'))) -FromRelease -Version v0.1.0 } catch { [Console]::Error.WriteLine('ERROR: no se pudo descargar el instalador de MensorCAD desde GitHub. Compruebe su conexion y que la version v0.1.0 este publicada y sea accesible sin credenciales; no se instalo nada.'); exit 1 }"
-```
+Consulta las opciones de cada herramienta. Puedes plegar las secciones si lo prefieres.
 
-La primera descarga ya ejecuta código del repositorio: la confianza empieza en `RonGrasz/Mensor-CAD`. El SHA-256 del ZIP detecta corrupción o modificación de la descarga; no autentica al publicador. La verificación, el destino y el aviso de UAC son los del instalador local; la descarga es propia de la ruta remota. Los detalles y sus límites están en [`docs/remote-installer.md`](docs/remote-installer.md).
+<details open>
+<summary><strong>📐 Superficies y subdivisión de parcelas</strong></summary>
 
-## Comandos
+### Cálculo de áreas
 
-### Resumen de herramientas
+Elige el formato del área, los decimales y el tamaño del texto.
 
-| Comando | ¿Para qué sirve? | Archivo que debes cargar |
-|---|---|---|
-| [MCAREA](#mcarea--áreas-catastrales) | Calcular y rotular superficies | `MC-AREA.lsp` |
-| [MCTABLE](#mctable--tablas-de-coordenadas-rumbos-y-distancias) | Crear tablas y numerar vértices | `MC-TABLE.lsp` |
-| [MCVECTOR](#mcvector--rumbos-y-distancias-sobre-el-plano) | Anotar los tramos de una polilínea o pares de puntos | `MC-VECTOR.lsp` |
-| [MCCOORD](#mccoord--coordenadas-de-un-punto) | Insertar una tabla de coordenadas con línea de referencia | `MC-COORD.lsp` |
-| [MCVERTEX](#mcvertex--símbolos-y-etiquetas-de-vértices) | Marcar y numerar vértices | `MC-VERTEX.lsp` |
-| [MCSUBDIV](#mcsubdiv--subdivisión-por-superficie) | Dividir parcelas por área, porcentaje o partes iguales | `MC-SUBDIV.lsp` |
-| [MCTRANSFORM](#mctransform--escala-por-superficie) | Crear una copia de un contorno con otra superficie | `MC-TRANSFORM.lsp` |
-| [MCIMPORT](#mcimport--importar-puntos) | Dibujar puntos y etiquetas desde TXT o CSV | `MC-IMPORT.lsp` |
-| [MCEXPORTEX](#mcexportex--exportar-coordenadas) | Exportar coordenadas de vértices o inserciones de texto | `MC-EXPORTEX.lsp` |
-| [MCFIX](#mcfix--normalizar-polilíneas) | Convertir polilíneas antiguas compatibles a ligeras | `MC-FIX.lsp` |
-| [MCCOLIND](#mccolind--simbología-de-colindancias) | Representar linderos y nombrar colindancias | `MC-COLIND.lsp` |
-| [MCELEMENTS](#mcelements--estructuras-y-elementos-del-terreno) | Dibujar edificaciones, vegetación y agua | `MC-ELEMENTS.lsp` |
-| [MCHELP](#mchelp--acerca-de-mensorcad) | Consultar información de MensorCAD y abrir su repositorio | `MC-HELP.lsp` |
+<img src="docs/images/Area.png" width="660" alt="Ventana de MCAREA con opciones de cálculo y rotulación de superficies" loading="lazy">
 
-### MCAREA — Áreas catastrales
+### Subdivisión
 
-Calcula la superficie de una polilínea cerrada y coloca su valor en el centroide del polígono.
+Configura cortes paralelos o en abanico y define cómo repartir la superficie.
 
-**Uso:** ejecuta `MCAREA`, configura el formato y selecciona la polilínea o indica un punto interior para detectar su contorno.
+<img src="docs/images/Subdividir.png" width="660" alt="Ventana de MCSUBDIV para dividir parcelas" loading="lazy">
 
-**Opciones:** método **Predeterminado (Coordenadas Originales)**, o **Estándar (redondeo 2 dec.)**, que redondea las coordenadas a dos decimales antes del cálculo; precisión de 0 a 4 decimales, altura de texto y sufijo `m²` opcional.
+</details>
 
-![Opciones de cálculo de áreas](docs/images/Area.png)
+<details open>
+<summary><strong>📍 Tablas, rumbos y vértices</strong></summary>
 
-### MCTABLE — Tablas de coordenadas, rumbos y distancias
+### Tablas de coordenadas
 
-Genera una tabla de coordenadas Este/Norte y otra de rumbos y distancias a partir de una polilínea cerrada. También dibuja círculos y etiquetas en sus vértices.
+Ajusta las columnas, el recorrido y las etiquetas de los vértices.
 
-**Uso:** ejecuta `MCTABLE`, elige el contorno y el vértice de origen, configura las tablas e indica dónde colocarlas.
+<img src="docs/images/Tabla-de-coordenadas.png" width="660" alt="Ventana de MCTABLE para preparar tablas de coordenadas" loading="lazy">
 
-**Opciones:** orden de columnas X/Y, precisión decimal, recorrido horario —predeterminado— o antihorario, prefijo, radio y fuente de las etiquetas. Los rumbos se expresan como `N DD° MM' SS" E`.
+### Rumbos y distancias
 
-Las etiquetas se colocan por fuera del contorno. Si una no cabe, se omite con un aviso y se conserva su círculo. Las anotaciones requieren una polilínea horizontal con normal `+Z`; con arcos, la colocación se comprueba respecto de las cuerdas, no de la curva real.
+Elige entre recorrer un contorno o indicar pares de puntos manualmente.
 
-![Opciones de tablas de coordenadas](docs/images/Tabla-de-coordenadas.png)
+<img src="docs/images/Rumbo-y-distancia.png" width="660" alt="Ventana de MCVECTOR para anotar rumbos y distancias" loading="lazy">
 
-### MCVECTOR — Rumbos y distancias sobre el plano
+### Símbolos de vértices
 
-Anota el rumbo y la distancia de cada tramo con textos orientados para facilitar su lectura.
+Elige el símbolo, su tamaño y la numeración que vas a usar.
 
-**Uso:** ejecuta `MCVECTOR` y elige **Polígono**, para recorrer una polilínea desde un vértice de inicio, o **Manual**, para indicar pares de puntos hasta terminar con Esc.
+<img src="docs/images/Etiqueta-de-vertice.png" width="660" alt="Ventana de MCVERTEX con símbolos y etiquetas de vértices" loading="lazy">
 
-**Opciones:** sentido de recorrido directo o inverso y precisión de la distancia de 0 a 8 decimales.
+</details>
 
-![Opciones de anotación de rumbos y distancias](docs/images/Rumbo-y-distancia.png)
+<details open>
+<summary><strong>📂 Importación y exportación de puntos</strong></summary>
 
-### MCCOORD — Coordenadas de un punto
+### Importar puntos
 
-Inserta una tabla con Este, Norte y Altura, a tres decimales, y una línea que la conecta con el punto elegido.
+Selecciona el archivo, el orden de las coordenadas y la apariencia de los puntos.
 
-**Uso:** ejecuta `MCCOORD`, indica un punto, nodo o vértice y luego la ubicación de la tabla.
+<img src="docs/images/Importar-puntos.png" width="660" alt="Ventana de MCIMPORT para importar puntos desde TXT o CSV" loading="lazy">
 
-Al desplazar la tabla con `MOVE` o pinzamientos, la línea se reajusta al terminar el comando, no durante el arrastre. Las coordenadas corresponden al punto elegido originalmente: editar después la geometría de origen no las recalcula. La reasociación al copiar, rotar o escalar la tabla no está garantizada.
+### Exportar coordenadas
 
-> El título de la tabla es `COORDENADAS UTM 19 NORTE`, pero los valores se toman en WCS: el dibujo ya debe estar en el sistema de coordenadas correcto.
+Elige los objetos de origen y guarda sus coordenadas en un archivo.
 
-### MCVERTEX — Símbolos y etiquetas de vértices
+<img src="docs/images/Exportar-puntos.png" width="660" alt="Ventana de MCEXPORTEX para exportar coordenadas" loading="lazy">
 
-Marca vértices con símbolos locales y etiquetas opcionales como `E-1`. Admite líneas horizontales, polilíneas ligeras abiertas o cerradas y contornos detectados desde un punto interior.
+</details>
 
-**Uso:** ejecuta `MCVERTEX`, selecciona la geometría, elige el origen y ajusta la apariencia. Los contornos cerrados se recorren en sentido horario; en fuentes abiertas, el origen es el extremo más cercano al clic.
+<details open>
+<summary><strong>🌿 Colindancias y elementos del terreno</strong></summary>
 
-**Opciones:** 20 símbolos con previsualización, radio, prefijo, etiquetas activadas o desactivadas, número inicial positivo, tolerancia de fusión y cantidad de vértices a omitir entre puntos.
+### Colindancias
 
-- La tolerancia inicial es `0.001 m`: fusiona anotaciones de vértices adyacentes próximos, sin mover la fuente ni fusionar vértices no adyacentes.
-- La omisión se aplica desde cinco vértices conservados. Con omisión `2` e inicio `1`, las etiquetas son `E-1`, `E-4`, `E-7…`: los vértices omitidos no renumeran los demás.
-- Las etiquetas que no encuentran espacio se omiten con un aviso. El símbolo invisible requiere etiquetas activas.
+Elige el estilo de lindero y el nombre de la colindancia.
 
-Los símbolos no son puntos COGO ni entidades POINT y no cambian `PDMODE` ni `PDSIZE`. Se usa la capa y el estilo de texto actuales. Solo se admite geometría horizontal con normal `+Z`; los arcos se consideran por sus cuerdas para colocar etiquetas, por lo que conviene revisar el resultado en contornos curvos.
+<img src="docs/images/Estilo-de-colindancia.png" width="660" alt="Ventana de MCCOLIND con estilos de colindancias" loading="lazy">
 
-![Opciones de símbolos y etiquetas de vértices](docs/images/Etiqueta-de-vertice.png)
+### Elementos del terreno
 
-### MCSUBDIV — Subdivisión por superficie
+Agrega edificaciones, áreas verdes y agua con sus opciones de presentación.
 
-Divide una parcela mediante cortes **paralelos** o **anclados en abanico**, conservando la polilínea original.
+<img src="docs/images/Estructuras.png" width="660" alt="Ventana de MCELEMENTS para dibujar elementos del terreno" loading="lazy">
 
-**Uso:** ejecuta `MCSUBDIV`, selecciona el contorno, elige el método, define una guía mediante dos puntos o vértices y pulsa **Subdividir**.
+</details>
 
-| Opción | Resultado |
+<a id="ayuda"></a>
+
+## Ayuda rápida
+
+| Si te pasa esto… | Prueba lo siguiente |
 |---|---|
-| Partes iguales | La cantidad indicada de parcelas con igual superficie |
-| Área + resto | Una parcela con el área solicitada y otra con el resto |
-| Porcentaje + resto | Una parcela con el porcentaje solicitado y otra con el resto |
-| Paralelo | Cortes que conservan la dirección de la guía; permite rotarla con ángulo y pivote |
-| Anclado | Cortes que comparten un vértice real del contorno como ancla |
+| AutoCAD dice «Comando desconocido». | Si usaste APPLOAD, carga el archivo correspondiente en ese dibujo. Si instalaste el paquete, cierra y vuelve a abrir AutoCAD. |
+| El instalador pide cerrar AutoCAD. | Guarda tus dibujos, cierra todas las ventanas de AutoCAD y ejecuta nuevamente el instalador. |
+| La descarga del ZIP o la instalación por CLI falla. | Revisa tu conexión y vuelve a intentarlo desde la [página de descargas](https://github.com/RonGrasz/Mensor-CAD/releases/latest). |
+| Una herramienta no acepta el contorno. | Revisa los mensajes de AutoCAD. Algunas herramientas necesitan una polilínea cerrada, plana y sin cruces. |
 
-También permite elegir el lado objetivo, tolerancia de área —inicialmente `0.01 m²`—, altura y decimales de las etiquetas. Los lados Norte/Sur/Este/Oeste se interpretan respecto de WCS. Los decimales de las etiquetas no cambian la precisión de los cortes.
+**¿Necesitas reportar un problema?** Cuéntanos qué comando usaste, tu versión de AutoCAD y qué ocurrió en **[Problemas y consultas](https://github.com/RonGrasz/Mensor-CAD/issues)**. Una captura del mensaje ayuda.
 
-Genera contornos cerrados, líneas divisorias y etiquetas. Una fuente abierta se cierra solo en una copia de trabajo, que también se conserva como resultado. Solo admite polilíneas ligeras simples, horizontales, con normal `+Z`, tramos rectos y sin huecos. Rechaza divisiones que produzcan parcelas desconectadas; si un ancla no permite resolver el abanico, prueba otro vértice o el modo paralelo. Un `UNDO` retira los resultados de la ejecución.
+<a id="actualizacion"></a>
 
-![Opciones de subdivisión de parcelas](docs/images/Subdividir.png)
+## Actualizar
 
-### MCTRANSFORM — Escala por superficie
+Cierra AutoCAD e instala la versión nueva por ZIP o CLI. **No necesitas desinstalar primero.** Si usas APPLOAD, reemplaza tus archivos por los nuevos y vuelve a cargarlos después de reiniciar AutoCAD.
 
-Crea una copia cerrada verde de un contorno y la amplía o reduce hasta el área indicada, manteniendo su forma y el centroide de su superficie.
+<a id="desinstalacion"></a>
 
-**Uso:** ejecuta `MCTRANSFORM`, selecciona una polilínea ligera e introduce un área objetivo positiva. Enter o Esc cancela y retira la copia.
+## Desinstalar
 
-El área se expresa en **unidades de dibujo al cuadrado**: si trabajas en metros, corresponde a m². Por ejemplo, un contorno de `100 m²` reducido a `25 m²` tendrá sus longitudes a la mitad.
+- **Paquete completo:** cierra AutoCAD y haz doble clic en **`Desinstalar.bat`**, en la carpeta donde extrajiste el ZIP. Conserva ese archivo junto a `Instalar.bat` e `Install-MensorCAD.ps1` y acepta el aviso de permisos. Si instalaste por CLI y no tienes esa carpeta, descarga y extrae el ZIP para acceder al desinstalador.
+- **Carga con APPLOAD:** cierra AutoCAD y no vuelvas a cargar los scripts. Si ya no los necesitas, puedes borrar los archivos descargados.
 
-Admite fuentes abiertas o cerradas, simples, horizontales, con normal `+Z` y sin arcos. Las abiertas se cierran únicamente en la copia. La fuente permanece intacta; el resultado usa la capa actual y no copia etiquetas ni asociaciones. Un `UNDO` retira la copia.
+Las tablas, textos y símbolos que ya creaste **permanecen en tus dibujos**. Las funciones automáticas que dependan de una herramienta dejarán de ejecutarse si no está cargada.
 
-### MCIMPORT — Importar puntos
+---
 
-Importa coordenadas desde archivos TXT o CSV y crea símbolos con número y descripción opcionales, agrupados por punto.
-
-**Uso:** ejecuta `MCIMPORT`, busca el archivo, selecciona el orden de columnas y configura símbolo, tamaño, color y etiquetas. Al importar se ajusta la vista a los resultados.
-
-**Opciones:** 20 símbolos con previsualización; tamaño común para símbolo y texto; colores ACI, Por capa o RGB personalizado en formato HEX, como `#FF8000`; número y descripción independientes.
-
-#### Preparar el archivo
-
-Usa **comas como separador**, punto decimal y un punto por línea, también si la extensión es `.txt`. No se admiten separadores de tabulación ni punto y coma.
-
-`E = X` · `N = Y` · `Z = altura` · `P = identificador` · `D = descripción`.
-
-- Formatos: `EN`, `NE`, `ENZ`, `NEZ`, `PEN`, `PNE`, `PENZ`, `PNEZ`, `END`, `NED`, `ENZD`, `NEZD`, `PEND`, `PNED`, `PENZD` y **`PNEZD` —predeterminado—**.
-- Si falta Z se usa `0`; si falta P se numera desde `1`. Los identificadores conservan sus ceros iniciales.
-- La cabecera es opcional y debe coincidir con las letras del formato elegido. Las descripciones con comas deben ir entre comillas.
-
-Ejemplo en formato **PNEZD**:
-
-```csv
-P,N,E,Z,D
-1,2151544.225,343872.683,346.931,alambrada
-2,2151550.000,343880.000,347.000,"poste, lado norte"
-```
-
-El primer punto tendrá X `343872.683`, Y `2151544.225` y Z `346.931`. Se conservan las coordenadas WCS, sin transformación geodésica.
-
-El archivo completo se valida antes de dibujar. Los símbolos no son POINT ni objetos COGO; las etiquetas son textos editables en la capa y estilo actuales. Para seleccionar cada grupo completo, usa `PICKSTYLE = 1` o `3`; `Ctrl+H` alterna la selección de grupos. Un `UNDO` retira la importación.
-
-![Opciones de importación de puntos](docs/images/Importar-puntos.png)
-
-### MCEXPORTEX — Exportar coordenadas
-
-Exporta coordenadas XY de los vértices de una `LWPOLYLINE` o de los puntos de inserción de entidades `TEXT` y `MTEXT`. **No interpreta el contenido escrito en los textos ni exporta alturas Z.**
-
-**Uso:** ejecuta `MCEXPORTEX`, elige **Polígono** o **Texto**, pulsa **Seleccionar Origen / Entidades...**, configura la salida y acepta para elegir dónde guardar el archivo.
-
-**Opciones:** recorrido horario o antihorario en modo polígono, vértice de origen, precisión de 0 a 8 decimales y formato TXT o CSV. En modo texto, los puntos se ordenan de mayor a menor Y.
-
-| Formato | Separador | Orden de cada registro |
-|---|---|---|
-| TXT | Tabulación | Número, X, Y; incluye cabecera de coordenadas |
-| CSV | Coma | Número, Y, X; sin cabecera |
-
-> **Revisa el orden de columnas:** el CSV corresponde al orden `PNE` de `MCIMPORT`; el TXT tabulado no se puede importar directamente con esa herramienta. La extracción no convierte entre OCS, UCS y WCS: comprueba las coordenadas antes de utilizar el archivo, especialmente con un UCS rotado o fuentes fuera del plano XY mundial.
-
-![Opciones de exportación de coordenadas](docs/images/Exportar-puntos.png)
-
-### MCFIX — Normalizar polilíneas
-
-Convierte polilíneas antiguas 2D y polilíneas 3D horizontales compatibles a polilíneas ligeras (`LWPOLYLINE`). Las que ya son ligeras no se modifican.
-
-**Uso:** ejecuta `MCFIX` y elige **Seleccion**, para procesar entidades concretas, **Todo**, para recorrer el espacio actual, o **Ayuda**, para consultar los límites.
-
-**Opción visual:** **Configurar puntos → Si** aplica `PDMODE=32` y `PDSIZE=1` a **todos los POINT del dibujo**. Está desactivada por defecto; elige **No** para conservar su apariencia.
-
-No aplana alturas, no cierra contornos ni elimina vértices o autointersecciones. Las polilíneas 3D deben tener exactamente la misma Z en todos sus vértices. Se omiten, entre otras, fuentes en capas bloqueadas, mallas y entidades con asociaciones que no puedan conservarse con seguridad.
-
-La conversión reemplaza la entidad por otra con un identificador nuevo. Consulta el resumen de convertidas, compatibles, omitidas y fallidas; un `UNDO` permite recuperar las fuentes de una ejecución con cambios.
-
-### MCCOLIND — Simbología de colindancias
-
-Aplica un patrón a un tramo de una línea o polilínea y añade dos etiquetas: el tipo de lindero en el interior y el nombre de la colindancia en el exterior, sin modificar la fuente.
-
-**Uso:** ejecuta `MCCOLIND`, selecciona la geometría y, si está abierta, señala el lado interior. Elige el estilo y el nombre exterior; pulsa **Aplicar a dos puntos...** para delimitar el tramo. Confirma la vista previa con Enter o Espacio; en fuentes cerradas, `I` invierte el recorrido.
-
-**Estilos:** Alambrada, Lindero, Pared propia, Pared medianera, Pared colindante, Malla ciclónica y Lindero de árboles vivos.
-
-**Opciones:** tamaño automático según la geometría completa o medidas manuales de papel —escala `1:N`, altura de texto, repetición, ancho de franja y separación—. El modo manual supone que el dibujo está en metros.
-
-Puedes aplicar varios tramos, **Deshacer última aplicación** y **Aceptar** para conservarlos. **Cancelar o Esc descarta toda la ejecución**, incluidas las aplicaciones anteriores de esa sesión. Si las etiquetas no caben automáticamente, se solicita una ubicación manual; si no existe una ubicación válida, se descarta la ejecución.
-
-Solo admite líneas y polilíneas ligeras horizontales, con normal `+Z` y tramos rectos, sin cruces ni superposiciones. El patrón de cada aplicación se agrupa; las etiquetas quedan separadas para editarlas. Usa `PICKSTYLE = 1` o `3` para seleccionar el patrón completo. El resultado es estático: editar la fuente no lo actualiza. Un `UNDO` retira una ejecución aceptada.
-
-![Opciones de simbología de colindancias](docs/images/Estilo-de-colindancia.png)
-
-### MCELEMENTS — Estructuras y elementos del terreno
-
-Dibuja edificaciones de uno o dos niveles, una edificación octagonal, áreas verdes, masas de agua y ríos, sin seleccionar ni modificar objetos anteriores.
-
-**Uso:** ejecuta `MCELEMENTS`, elige la estructura y sus opciones y marca los puntos. En polígonos, Enter cierra el contorno; en ríos, termina el recorrido abierto. Para el octágono se indica centro y radio.
-
-**Opciones principales:**
-
-- **Factor visual positivo:** ajusta trama y rótulo, no el tamaño del contorno ni la separación del agua.
-- **Rótulo:** ninguno, texto o círculo con tag para polígonos; ninguno o texto paralelo para ríos. Si un rótulo interior no cabe, puede reubicarse o reducirse; si no se encuentra sitio, se cancela la ejecución.
-- **Agua recta u ondulada:** la forma ondulada es una curva suavizada y puede apartarse de los puntos indicados.
-- **Ríos por centro o límite:** el total de líneas incluye la original. En centro debe ser impar; en límite se indica el lado de las copias. La separación ondulada es aproximada y puede reducirse para evitar cruces.
-
-Edificaciones y vegetación producen contorno y trama; el agua utiliza curvas. Cada estructura usa su propia capa, y los resultados son estáticos y editables: modificar el contorno no recalcula el patrón ni los rótulos.
-
-> **Agua y geometrías complejas:** las operaciones dependen del motor REGION/Offset de AutoCAD. El agua ondulada requiere funciones de SPLINE compatibles; una región aceptada no garantiza que conserve todo el recorrido de una curva compleja. Si aparece **«relleno completo NO certificado»**, revisa el contorno final y sus desfases antes de utilizar el resultado. Los ríos ondulados muy cerrados o en U pueden rechazarse; prueba un recorrido más simple o la forma recta.
-
-![Opciones de estructuras y elementos del terreno](docs/images/Estructuras.png)
-
-### MCHELP — Acerca de MensorCAD
-
-Ejecuta `MCHELP` para consultar una descripción de la herramienta, su versión, autor y repositorio.
-
-**Abrir repositorio** intenta abrir GitHub en el navegador; requiere conexión para consultar la página. **Cerrar**, Esc o la X cierran el cuadro sin abrir el navegador. No modifica el dibujo.
-
-## Desinstalación
-
-Si instalaste el bundle, guarda tus dibujos y **cierra AutoCAD por completo**. En la carpeta donde extrajiste el ZIP, haz doble clic en **`Desinstalar.bat`** y acepta el aviso de permisos de administrador. Mantén ese archivo junto a `Instalar.bat` y `Install-MensorCAD.ps1`; no lo ejecutes desde dentro del ZIP.
-
-No necesitas abrir una terminal. Si prefieres usarla, el comando equivalente sigue siendo:
-
-```bat
-Instalar.bat -Uninstall
-```
-
-o, de forma equivalente:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-MensorCAD.ps1 -Uninstall
-```
-
-Acepta el aviso de UAC. La desinstalación elimina **solo los archivos registrados** y la marca del paquete; no borra carpetas padre como `Autodesk` o `ApplicationPlugins` ni archivos ajenos. Si AutoCAD está abierto, se detiene sin borrar nada.
-
-Para actualizar no hace falta desinstalar: cierra AutoCAD y vuelve a ejecutar `Instalar.bat` con el ZIP nuevo.
-
-La carga manual con `APPLOAD` no instala un paquete ni dispone de un botón para descargar los comandos LISP ya cargados. Para dejar de usarlos, guarda tus dibujos y **cierra por completo AutoCAD**. Al abrirlo de nuevo, no vuelvas a cargar los archivos con `APPLOAD`. Si ya no los necesitas, puedes eliminar de tu equipo las copias de los archivos `.lsp`.
-
-**No borra las tablas, textos, símbolos ni demás entidades creadas en los dibujos**. Las actualizaciones que dependen de un script dejan de ejecutarse mientras no esté cargado.
-
-## Licencia
-
-MensorCAD se distribuye bajo la [licencia MIT](LICENSE).
+<p align="center">
+  <strong>MensorCAD™ · Topografía y catastro en AutoCAD</strong><br>
+  Distribuido bajo la <a href="LICENSE">licencia MIT</a>.<br><br>
+  <a href="#inicio">↑ Volver al inicio</a>
+</p>
