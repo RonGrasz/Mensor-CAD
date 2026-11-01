@@ -22,7 +22,7 @@ No se garantiza compatibilidad con AutoCAD para Mac, AutoCAD Web, AutoCAD LT ni 
 
 La vía recomendada es el **paquete ZIP offline** para AutoCAD de Windows: instala el bundle completo, carga el CUIX y deja disponibles los comandos `MC*` sin usar `APPLOAD`.
 
-> **Los assets del release todavía no están publicados.** Hasta que un humano publique `MensorCAD-Windows.zip`, `MensorCAD-Windows.zip.sha256` e `Install-MensorCAD.ps1`, no hay una descarga pública para usuarios ni el comando remoto funciona. El artifact de GitHub Actions es solo para pruebas de mantenedores: no es un release ni reemplaza esos tres assets.
+> **Los assets del release todavía no están publicados.** Hasta que un humano publique `MensorCAD-Windows.zip`, `MensorCAD-Windows.zip.sha256`, `Install-MensorCAD.ps1` e `install.ps1`, no hay una descarga pública para usuarios ni el comando remoto funciona. El artifact de GitHub Actions es solo para pruebas de mantenedores: no es un release ni reemplaza esos cuatro assets.
 
 ### Ruta rápida con el ZIP
 
@@ -52,13 +52,51 @@ Repite estos pasos para las herramientas que necesites en el dibujo donde vas a 
 
 ### Instalación remota (cuando exista un release publicado)
 
-El comando remoto no funciona todavía: requiere que un humano publique los tres assets del release. Cuando exista, el comando previsto es:
+El comando remoto no funciona todavía: requiere que un humano publique los cuatro assets del release. El recomendado es el comando corto: descarga `install.ps1` del release y lo ejecuta. Ese bootstrap **no instala nada por sí mismo**: descarga el `Install-MensorCAD.ps1` real a una carpeta temporal propia, lo lanza en un proceso Windows PowerShell aparte con `-FromRelease` y reenvía su salida. La verificación SHA-256, el ZIP, el destino fijo y el UAC siguen siendo los del instalador real: no hay un segundo motor.
+
+Última versión publicada:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/Install-MensorCAD.ps1'))) -FromRelease"
+irm 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/install.ps1' -ea Stop | iex
 ```
 
-La verificación, el destino y el aviso de UAC son los del instalador local; la descarga es propia de la ruta remota. Los detalles y sus límites están en [`docs/remote-installer.md`](docs/remote-installer.md).
+Una versión concreta (**`v0.1.0` es solo un ejemplo y no está publicado**; reemplácelo en las dos apariciones, URL y `-Version`):
+
+```powershell
+&([scriptblock]::Create((irm 'https://github.com/RonGrasz/Mensor-CAD/releases/download/v0.1.0/install.ps1' -ea Stop))) -Version v0.1.0
+```
+
+El `-ea Stop` protege **solo la primera descarga**, la de `install.ps1`: un `404` o un fallo de red se convierte en un error visible en vez de seguir con un script vacío. Esa descarga ocurre **antes del wrapper**: si falla, el wrapper nunca se ejecuta y no fija `$LASTEXITCODE`, que puede conservar un valor anterior (incluso `0`). Solo los fallos que ocurren dentro del wrapper (la descarga del instalador real, el tag inválido o el hijo) dejan un código distinto de cero. Esa primera descarga usa la configuración TLS del equipo: el bootstrap recién fija TLS 1.2 después, para bajar el instalador real. Si el equipo no negocia TLS 1.2 con `Invoke-RestMethod`, use el comando completo, que lo fija antes de la primera descarga. La primera descarga ya ejecuta código del repositorio, así que la confianza empieza en `RonGrasz/Mensor-CAD`. Una versión fijada no se consigue descargando el bootstrap de la última versión: la URL del tag y `-Version` tienen que coincidir.
+
+#### Código de salida del comando corto
+
+El bootstrap **nunca llama a `exit`**, porque `iex` ejecuta el archivo en el ámbito del llamador y cerraría la sesión. El código real del proceso hijo queda en `$LASTEXITCODE`, que el instalador fija incluso cuando el hijo falla o no informa estado. Un `0` solo significa que el instalador real terminó con `0`: el bootstrap no afirma por su cuenta que se instaló o actualizó.
+
+Para automatizar con un código de salida del sistema operativo:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '& .\install.ps1; exit $LASTEXITCODE'
+```
+
+Las comillas simples son importantes al pegar desde PowerShell: con comillas dobles, el proceso exterior expandiría `$LASTEXITCODE` antes de que el hijo lo lea. Desde `cmd.exe` conviene el comando completo de más abajo, que ya trae su propio `exit`.
+
+#### Comando completo (compatibilidad, automatización y TLS)
+
+El comando anterior sigue disponible para quien prefiera un único proceso `powershell.exe` y protege la primera descarga con su propio `try/catch`:
+
+Última versión publicada:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing -ErrorAction Stop 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/Install-MensorCAD.ps1'))) -FromRelease } catch { [Console]::Error.WriteLine('ERROR: no se pudo descargar el instalador de MensorCAD desde GitHub. Compruebe su conexion y que la release este publicada y sea accesible sin credenciales; no se instalo nada.'); exit 1 }"
+```
+
+Una versión concreta (reemplace `v0.1.0` en las dos apariciones; **ese tag es solo un ejemplo y no está publicado**):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing -ErrorAction Stop 'https://github.com/RonGrasz/Mensor-CAD/releases/download/v0.1.0/Install-MensorCAD.ps1'))) -FromRelease -Version v0.1.0 } catch { [Console]::Error.WriteLine('ERROR: no se pudo descargar el instalador de MensorCAD desde GitHub. Compruebe su conexion y que la version v0.1.0 este publicada y sea accesible sin credenciales; no se instalo nada.'); exit 1 }"
+```
+
+La primera descarga ya ejecuta código del repositorio: la confianza empieza en `RonGrasz/Mensor-CAD`. El SHA-256 del ZIP detecta corrupción o modificación de la descarga; no autentica al publicador. La verificación, el destino y el aviso de UAC son los del instalador local; la descarga es propia de la ruta remota. Los detalles y sus límites están en [`docs/remote-installer.md`](docs/remote-installer.md).
 
 ## Comandos
 
@@ -272,7 +310,9 @@ Ejecuta `MCHELP` para consultar una descripción de la herramienta, su versión,
 
 ## Desinstalación
 
-Si instalaste el bundle, guarda tus dibujos y **cierra AutoCAD por completo**. Desde la carpeta donde extrajiste el ZIP ejecuta:
+Si instalaste el bundle, guarda tus dibujos y **cierra AutoCAD por completo**. En la carpeta donde extrajiste el ZIP, haz doble clic en **`Desinstalar.bat`** y acepta el aviso de permisos de administrador. Mantén ese archivo junto a `Instalar.bat` y `Install-MensorCAD.ps1`; no lo ejecutes desde dentro del ZIP.
+
+No necesitas abrir una terminal. Si prefieres usarla, el comando equivalente sigue siendo:
 
 ```bat
 Instalar.bat -Uninstall
