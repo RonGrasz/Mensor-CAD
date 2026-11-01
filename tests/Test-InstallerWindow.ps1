@@ -99,6 +99,7 @@ function script:Start-Process {
         [switch]$Wait,
         [switch]$PassThru,
         [switch]$NoNewWindow,
+        [string]$WorkingDirectory,
         [string]$RedirectStandardOutput,
         [string]$RedirectStandardError
     )
@@ -109,6 +110,7 @@ function script:Start-Process {
         if (-not [string]::IsNullOrEmpty($Verb)) { $arguments['Verb'] = $Verb }
         if ($Wait) { $arguments['Wait'] = $true }
         if ($NoNewWindow) { $arguments['NoNewWindow'] = $true }
+        if (-not [string]::IsNullOrEmpty($WorkingDirectory)) { $arguments['WorkingDirectory'] = $WorkingDirectory }
         if (-not [string]::IsNullOrEmpty($RedirectStandardOutput)) { $arguments['RedirectStandardOutput'] = $RedirectStandardOutput }
         if (-not [string]::IsNullOrEmpty($RedirectStandardError)) { $arguments['RedirectStandardError'] = $RedirectStandardError }
         return & $script:RealStartProcess @arguments
@@ -281,7 +283,11 @@ function Invoke-BatCommand {
     $commandLine += '"'
     $stdoutPath = Join-Path -Path $script:TestRoot -ChildPath ('bo-' + [guid]::NewGuid().ToString('N') + '.txt')
     $stderrPath = Join-Path -Path $script:TestRoot -ChildPath ('be-' + [guid]::NewGuid().ToString('N') + '.txt')
-    $process = Start-Process -FilePath $commandShell -ArgumentList $commandLine -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $workingDirectory = Split-Path -Parent $BatPath
+    if ([string]::IsNullOrWhiteSpace($workingDirectory)) {
+        throw 'ASSERT: no se pudo derivar la carpeta del BAT copiado'
+    }
+    $process = Start-Process -FilePath $commandShell -ArgumentList $commandLine -WorkingDirectory $workingDirectory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $stdout = ''
     $stderr = ''
     if (Test-Path -LiteralPath $stdoutPath) { $stdout = [System.IO.File]::ReadAllText($stdoutPath) }
@@ -1195,7 +1201,13 @@ exit 42
 
     Test-Case 'El redibujado del indicador borra el sufijo de una linea mas corta' {
         $previousPlain = $script:MensorCadPlainMode
+        $previousVt = Get-Item -LiteralPath 'Function:\Test-MensorCadVirtualTerminal' -ErrorAction SilentlyContinue
+        $previousWidth = Get-Item -LiteralPath 'Function:\Get-MensorCadConsoleWidth' -ErrorAction SilentlyContinue
         try {
+            # La prueba fija el respaldo sin VT y un ancho amplio para no depender
+            # del terminal donde se ejecute la suite.
+            function script:Test-MensorCadVirtualTerminal { return $false }
+            function script:Get-MensorCadConsoleWidth { return 120 }
             $script:MensorCadPlainMode = $false
             $script:MensorCadSpinnerIndex = 0
             $script:MensorCadActivityLength = 0
@@ -1233,6 +1245,12 @@ exit 42
         finally {
             $script:MensorCadPlainMode = $previousPlain
             $script:MensorCadActivityLength = 0
+            if ($null -ne $previousVt) {
+                Set-Item -Path 'Function:\script:Test-MensorCadVirtualTerminal' -Value $previousVt.ScriptBlock -Force
+            }
+            if ($null -ne $previousWidth) {
+                Set-Item -Path 'Function:\script:Get-MensorCadConsoleWidth' -Value $previousWidth.ScriptBlock -Force
+            }
         }
     }
 }
