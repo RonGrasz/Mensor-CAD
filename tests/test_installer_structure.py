@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "Install-MensorCAD.ps1"
@@ -21,9 +21,30 @@ DOCS = ROOT / "docs" / "local-installer.md"
 
 REMOTE_SECTION_MARKER = "# Entrada remota: descarga y verificacion de releases de GitHub"
 
+# Base temporal de Windows con la misma forma que la ruta real donde se observo
+# el fallo local, pero con un usuario generico y dos caracteres mas largo: el
+# presupuesto queda conservador y la prueba no depende de una maquina concreta.
+WINDOWS_TEMP_BASE = PureWindowsPath("C:/Users/Example/AppData/Local/Temp")
+WINDOWS_MAX_PATH = 260
+FIXTURE_GUID = "0" * 32
+
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
+
+
+def between(text: str, start_marker: str, end_marker: str) -> str:
+    """Devuelve el fragmento entre dos marcadores ya presentes en el archivo."""
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    return text[start:end]
+
+
+def single_match(pattern: str, text: str, description: str) -> str:
+    match = re.search(pattern, text, flags=re.DOTALL)
+    if match is None:
+        raise AssertionError(f"no se pudo derivar {description} de las fuentes")
+    return match.group(1)
 
 
 class InstallerStructureTests(unittest.TestCase):
@@ -700,6 +721,215 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertIn("Write-Host ('  ' + $Message)", activity, "el texto plano debe seguir igual")
         for forbidden in ("Clear-Host", "[Console]::Clear"):
             self.assertNotIn(forbidden, installer, f"el indicador no debe usar {forbidden}")
+
+    def test_local_suite_fixture_paths_fit_in_windows_max_path(self) -> None:
+        # La ejecucion local fallo con File.Copy y "No se puede encontrar una
+        # parte de la ruta de acceso": la ruta transitoria del motor superaba
+        # MAX_PATH. Las rutas se derivan de las fuentes reales (prefijos del
+        # harness, sufijo de transaccion del instalador y archivos del fixture)
+        # para que el presupuesto no dependa de valores escritos a mano.
+        harness = self.windows_tests
+        test_root_prefix = single_match(
+            r"GetTempPath\(\)\) -ChildPath \('([^']+)' \+ \[guid\]::NewGuid\(\)",
+            harness,
+            "el prefijo de la raiz de pruebas",
+        )
+        case_root_prefix = single_match(
+            r"function New-TestCaseRoot \{.*?ChildPath \('([^']+)' \+ \[guid\]::NewGuid\(\)",
+            harness,
+            "el prefijo de la raiz de cada caso",
+        )
+        fixture_destination = PureWindowsPath(
+            single_match(
+                r"function Get-FixtureDestination \{.*?ChildPath '([^']+)'",
+                harness,
+                "el destino simulado del fixture",
+            ).replace("\\", "/")
+        )
+        fixture_files = re.findall(
+            r"Join-Path \$bundleRoot '([^']+)'",
+            between(harness, "function New-FixtureSource", "function Get-PayloadInventory"),
+        )
+        self.assertTrue(fixture_files, "el fixture debe declarar archivos reales")
+
+        transaction_prefix = single_match(
+            r"ChildPath \('(\.mensorcad-tx-)' \+ \[guid\]::NewGuid\(\)",
+            self.installer,
+            "el prefijo de la transaccion del motor",
+        )
+        staging_folder = single_match(
+            r"\$stagingRoot = Join-Path -Path \$transactionRoot -ChildPath '([^']+)'",
+            self.installer,
+            "la carpeta de etapa del motor",
+        )
+        bundle_folder = single_match(
+            r"\$script:MensorCadBundleFolderName = '([^']+)'",
+            self.installer,
+            "el nombre de la carpeta del paquete",
+        )
+
+        test_root = WINDOWS_TEMP_BASE / (test_root_prefix + FIXTURE_GUID)
+        case_root = test_root / (case_root_prefix + FIXTURE_GUID)
+        staged_root = (
+            case_root
+            / fixture_destination.parent
+            / (transaction_prefix + FIXTURE_GUID)
+            / staging_folder
+            / bundle_folder
+        )
+        for relative in fixture_files:
+            staged_path = staged_root / PureWindowsPath(relative.replace("\\", "/"))
+            measured = len(str(staged_path))
+            self.assertLess(
+                measured,
+                WINDOWS_MAX_PATH,
+                (
+                    "la ruta transitoria del fixture supera el limite de Windows "
+                    f"({measured} >= {WINDOWS_MAX_PATH}): {staged_path}"
+                ),
+            )
+
+        # Los nombres compactos deben usarse en todos los puntos del fixture,
+        # incluida la ruta del junction del caso de reanalisis del padre.
+        self.assertEqual(
+            [],
+            [nombre for nombre in ("ProgramFilesLike", "MensorCadInstallerTests-") if nombre in harness],
+            "quedan prefijos de fixture largos en las pruebas locales",
+        )
+
+    def test_local_suite_bat_runner_uses_owned_local_working_directory(self) -> None:
+        # CMD no acepta una ruta UNC como directorio actual: al lanzar el BAT
+        # copiado desde una ruta UNC, cmd.exe escribe un aviso en stderr y la
+        # asercion de stderr vacio falla. El lanzador debe fijar como directorio
+        # de trabajo la carpeta local del propio BAT copiado, sin cambiar el CWD
+        # del usuario ni filtrar el aviso.
+        harness = self.windows_tests
+        runner = between(harness, "function Invoke-BatCommand", "function Copy-InstallerTo")
+        self.assertIn("-WorkingDirectory", runner, "el lanzador del BAT debe fijar el directorio de trabajo")
+        self.assertIn(
+            "Split-Path -Parent $BatPath",
+            runner,
+            "el directorio de trabajo debe derivarse del BAT copiado, no heredarse del invocador",
+        )
+        self.assertIn("-WorkingDirectory $workingDirectory", runner)
+        self.assertLess(
+            runner.index("Split-Path -Parent $BatPath"),
+            runner.index("Start-Process"),
+            "el directorio local debe conocerse antes de lanzar cmd.exe",
+        )
+        self.assertIn("RedirectStandardOutput", runner)
+        self.assertIn("RedirectStandardError", runner)
+        for forbidden in ("Set-Location", "Push-Location", "chdir", "SystemRoot"):
+            self.assertNotIn(
+                forbidden,
+                runner,
+                f"el lanzador no debe inventar un CWD alternativo para cmd.exe: {forbidden}",
+            )
+        # Tampoco puede filtrar ni silenciar el aviso real de cmd.exe.
+        for forbidden in ("Where-Object", "Select-String", "2>&1", "2>$null"):
+            self.assertNotIn(
+                forbidden,
+                runner,
+                f"el lanzador no debe filtrar los flujos del BAT: {forbidden}",
+            )
+
+        caso = between(
+            harness,
+            "Test-Case 'El BAT reenvia opciones",
+            "Test-Case 'La entrada publica instala",
+        )
+        self.assertIn("Assert-Equal '' ($help.Stderr.Trim())", caso)
+        self.assertIn("Assert-Equal 0 $help.ExitCode", caso)
+        self.assertIn("Assert-Equal 1 $failure.ExitCode", caso)
+
+    def test_local_suite_link_cleanup_is_link_only_and_never_prompts(self) -> None:
+        # Remove-Item sin -Recurse sobre un junction con elementos secundarios
+        # pide confirmacion interactiva y puede recorrer el destino. La limpieza
+        # debe borrar solo la entrada del enlace con primitivas de .NET y dejar
+        # intacto el fixture externo.
+        harness = self.windows_tests
+        self.assertIn("function Remove-FixtureLink", harness, "falta el eliminador seguro de enlaces")
+        helper = between(harness, "function Remove-FixtureLink", "function Write-FixtureFile")
+        self.assertIn("ReparsePoint", helper, "la limpieza debe verificar que sea un punto de reanalisis")
+        self.assertIn("[System.IO.Directory]::Delete(", helper)
+        self.assertIn("$false)", helper, "el borrado de un junction debe ser no recursivo")
+        self.assertIn("[System.IO.File]::Delete(", helper)
+        self.assertIn("Test-Path -LiteralPath $Path", helper, "un enlace ausente debe ser un no-op")
+        self.assertIn(
+            "DirectorySeparatorChar",
+            helper,
+            "el limite del fixture debe compararse como directorio, no como prefijo de texto",
+        )
+        for forbidden in ("Remove-Item", "Get-ChildItem", "-Recurse", "RemoveDirectory", "rd /s", "del /f"):
+            self.assertNotIn(forbidden, helper, f"la limpieza del enlace no debe recorrer ni borrar de mas: {forbidden}")
+
+        self.assertNotIn(
+            "Remove-Item -LiteralPath $linkPath",
+            harness,
+            "la limpieza de enlaces no debe usar Remove-Item",
+        )
+        self.assertGreaterEqual(
+            harness.count("Remove-FixtureLink -Path"),
+            3,
+            "ambos casos de enlace deben limpiar con el eliminador seguro",
+        )
+
+        origen = between(
+            harness,
+            "Test-Case 'Rechaza puntos de reanalisis",
+            "Test-Case 'Rechaza un host de 32 bits",
+        )
+        self.assertIn("Remove-FixtureLink -Path $linkPath", origen)
+        self.assertIn("debe eliminar solo la entrada del enlace", origen)
+        self.assertIn("no debe recorrer el destino del enlace", origen)
+
+        padre = between(
+            harness,
+            "Test-Case 'Rechaza un destino bajo un padre con punto de reanalisis",
+            "Test-Case 'Rechaza un destino existente no propio",
+        )
+        self.assertIn("Remove-FixtureLink -Path $linkPath", padre)
+        self.assertIn("centinela fuera del enlace", padre)
+        self.assertIn("no debe recorrer el destino del enlace", padre)
+
+    def test_window_suite_bat_runner_uses_owned_local_working_directory(self) -> None:
+        # El caso "El BAT marca el lanzamiento..." fallo en una ruta UNC porque
+        # cmd.exe heredo el directorio actual del invocador. El lanzador de la
+        # suite Window debe fijar -WorkingDirectory a la carpeta del propio BAT
+        # copiado, sin cambiar el CWD del usuario ni filtrar el stderr.
+        harness = self.window_tests
+        runner = between(harness, "function Invoke-BatCommand", "function Invoke-CliCapturingError")
+        self.assertIn("-WorkingDirectory", runner, "el lanzador del BAT debe fijar el directorio de trabajo")
+        self.assertIn(
+            "Split-Path -Parent $BatPath",
+            runner,
+            "el directorio de trabajo debe derivarse del BAT copiado, no heredarse del invocador",
+        )
+        self.assertIn("-WorkingDirectory $workingDirectory", runner)
+        self.assertLess(
+            runner.index("Split-Path -Parent $BatPath"),
+            runner.index("Start-Process"),
+            "el directorio local debe conocerse antes de lanzar cmd.exe",
+        )
+        for forbidden in ("Set-Location", "Push-Location", "chdir", "SystemRoot"):
+            self.assertNotIn(
+                forbidden,
+                runner,
+                f"el lanzador no debe cambiar el CWD del invocador: {forbidden}",
+            )
+        for forbidden in ("Where-Object", "Select-String", "2>&1", "2>$null"):
+            self.assertNotIn(
+                forbidden,
+                runner,
+                f"el lanzador no debe filtrar los flujos del BAT: {forbidden}",
+            )
+
+        caso = between(
+            harness,
+            "Test-Case 'El BAT marca el lanzamiento",
+            "Test-Case 'El instalador elevado real no retiene",
+        )
+        self.assertIn("Assert-Equal '' $handoff.Stderr.Trim()", caso)
 
     def test_docs_document_single_window_limits_and_manual_proof(self) -> None:
         for fragment in (

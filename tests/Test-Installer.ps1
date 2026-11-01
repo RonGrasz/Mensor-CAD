@@ -25,7 +25,11 @@ $script:CaseSkipped = $false
 $script:FailureMessages = @()
 $script:InstallerPath = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Install-MensorCAD.ps1'
 $script:BatPath = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Instalar.bat'
-$script:TestRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('MensorCadInstallerTests-' + [guid]::NewGuid().ToString('N'))
+$script:TestRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('MCTest-' + [guid]::NewGuid().ToString('N'))
+# Los nombres del fixture se mantienen cortos a proposito: la ruta transitoria
+# que crea el motor ('.mensorcad-tx-<guid>\staging\MensorCAD.bundle\...') suma
+# al prefijo temporal de Windows y debe caber en MAX_PATH (260). Los GUID se
+# conservan completos para no perder unicidad; solo se acortan los prefijos.
 
 if (-not (Test-Path -LiteralPath $script:InstallerPath -PathType Leaf)) {
     Write-Host "ERROR: no se encontro el instalador en '$script:InstallerPath'." -ForegroundColor Red
@@ -102,6 +106,33 @@ function Remove-TestCaseRoot {
     param([string]$Path)
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Remove-FixtureLink {
+    # Limpieza acotada de un enlace del fixture. El borrado recursivo clasico
+    # pide confirmacion cuando el junction tiene elementos secundarios y ademas
+    # recorreria el destino. Aqui se borra unicamente la entrada del enlace con
+    # primitivas de .NET, sin enumerar ni seguir el destino.
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    # La comparacion agrega el separador para no aceptar un hermano cuyo nombre
+    # empiece igual que la raiz (por ejemplo '<raiz>AJENA').
+    $boundary = [System.IO.Path]::GetFullPath($script:TestRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $dentro = $full.StartsWith($boundary + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    Assert-True $dentro ("La limpieza de enlaces solo puede tocar el fixture temporal: '" + $full + "'.")
+    # La entrada se resuelve una sola vez: el fixture es privado de esta corrida y
+    # el borrado no recursivo solo toca el enlace, nunca el destino.
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    $isReparse = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    Assert-True $isReparse ("Se esperaba un punto de reanalisis en '" + $full + "' y se encontro otra entrada.")
+    if ($item.PSIsContainer) {
+        [System.IO.Directory]::Delete($full, $false)
+    }
+    else {
+        [System.IO.File]::Delete($full)
     }
 }
 
@@ -195,7 +226,7 @@ function Invoke-EngineUninstall {
 
 function Get-FixtureDestination {
     param([string]$RootPath)
-    return Join-Path -Path $RootPath -ChildPath 'ProgramFilesLike\Autodesk\ApplicationPlugins\MensorCAD.bundle'
+    return Join-Path -Path $RootPath -ChildPath 'PF\Autodesk\ApplicationPlugins\MensorCAD.bundle'
 }
 
 function Invoke-ChildInstaller {
@@ -230,10 +261,17 @@ function Invoke-BatCommand {
     # igual que Invoke-ChildInstaller.
     # cmd.exe /c con una ruta entre comillas exige el patron ""ruta" args" para
     # que no se pierdan las comillas internas.
+    # cmd.exe no acepta una ruta de red como directorio actual: si hereda el
+    # CWD del invocador escribe un aviso de inicio en stderr y contamina la
+    # asercion de stderr vacio. El proceso se lanza con el directorio local del
+    # propio BAT copiado (su carpeta padre) sin cambiar el CWD del usuario.
     $commandShell = $env:ComSpec
     if ([string]::IsNullOrWhiteSpace($commandShell)) {
         $commandShell = 'cmd.exe'
     }
+    $workingDirectory = Split-Path -Parent $BatPath
+    Assert-True (-not [string]::IsNullOrWhiteSpace($workingDirectory)) ("El BAT copiado debe estar en una carpeta local concreta: '" + $BatPath + "'.")
+    Assert-True (Test-Path -LiteralPath $workingDirectory -PathType Container) ("El BAT copiado debe vivir en una carpeta local existente: '" + $workingDirectory + "'.")
     $commandLine = '/c ""' + $BatPath + '"'
     if ($Arguments.Count -gt 0) {
         $commandLine += ' ' + ($Arguments -join ' ')
@@ -241,7 +279,7 @@ function Invoke-BatCommand {
     $commandLine += '"'
     $stdoutPath = Join-Path -Path $script:TestRoot -ChildPath ('bat-stdout-' + [guid]::NewGuid().ToString('N') + '.txt')
     $stderrPath = Join-Path -Path $script:TestRoot -ChildPath ('bat-stderr-' + [guid]::NewGuid().ToString('N') + '.txt')
-    $process = Start-Process -FilePath $commandShell -ArgumentList $commandLine -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $process = Start-Process -FilePath $commandShell -ArgumentList $commandLine -WorkingDirectory $workingDirectory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $stdout = ''
     $stderr = ''
     if (Test-Path -LiteralPath $stdoutPath) { $stdout = [System.IO.File]::ReadAllText($stdoutPath) }
@@ -352,7 +390,7 @@ try {
         $root = New-TestCaseRoot
         try {
             $source = New-FixtureSource -RootPath $root -Version 'v1'
-            $programFiles = Join-Path $root 'ProgramFilesLike'
+            $programFiles = Join-Path $root 'PF'
             $null = New-Item -ItemType Directory -Path $programFiles -Force
             $script:MensorCadScriptRoot = $source
             $script:MensorCadTestProgramFiles = $programFiles
@@ -611,11 +649,17 @@ try {
             }
             Assert-Throws -Action { Invoke-EngineInstall -SourceRoot $source -DestinationRoot $destination } -Contains 'reanalisis' -Message 'Un punto de reanalisis debe rechazarse'
             Assert-True (-not (Test-Path -LiteralPath $destination)) 'Un origen con reparse points no debe instalar nada.'
+            Assert-Equal 'fuera del bundle' ([System.IO.File]::ReadAllText($outside)) 'El fixture externo no debe modificarse durante la instalacion.'
+
+            # La limpieza del enlace no puede pedir confirmacion ni recorrer el
+            # destino: solo se elimina la entrada del enlace.
+            Remove-FixtureLink -Path $linkPath
+            Assert-True (-not (Test-Path -LiteralPath $linkPath)) 'La limpieza debe eliminar solo la entrada del enlace.'
+            Assert-True (Test-Path -LiteralPath $outside -PathType Leaf) 'La limpieza no debe recorrer el destino del enlace.'
+            Assert-Equal 'fuera del bundle' ([System.IO.File]::ReadAllText($outside)) 'El contenido fuera del bundle debe conservarse intacto.'
         }
         finally {
-            if (-not [string]::IsNullOrWhiteSpace($linkPath) -and (Test-Path -LiteralPath $linkPath)) {
-                Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
-            }
+            Remove-FixtureLink -Path $linkPath
             if (Test-Path -LiteralPath $outsideRoot) {
                 Remove-Item -LiteralPath $outsideRoot -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -627,7 +671,7 @@ try {
         $root = New-TestCaseRoot
         try {
             $source = New-FixtureSource -RootPath $root -Version 'v1'
-            $programFiles = Join-Path $root 'ProgramFilesLike'
+            $programFiles = Join-Path $root 'PF'
             $null = New-Item -ItemType Directory -Path $programFiles -Force
             $script:MensorCadScriptRoot = $source
             $script:MensorCadTestProgramFiles = $programFiles
@@ -679,10 +723,13 @@ try {
     Test-Case 'Rechaza un destino bajo un padre con punto de reanalisis' {
         $root = New-TestCaseRoot
         $outsideRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('MensorCadOutside-' + [guid]::NewGuid().ToString('N'))
-        $linkPath = Join-Path $root 'ProgramFilesLike'
+        $linkPath = Join-Path $root 'PF'
         try {
             $source = New-FixtureSource -RootPath $root -Version 'v1'
             $null = New-Item -ItemType Directory -Path $outsideRoot -Force
+            # Centinela fuera del enlace: la limpieza no debe recorrer el destino.
+            $sentinel = Join-Path $outsideRoot 'centinela.txt'
+            Write-FixtureFile -Path $sentinel -Content 'centinela fuera del enlace'
             $created = $false
             try {
                 $null = New-Item -ItemType Junction -Path $linkPath -Target $outsideRoot -ErrorAction Stop
@@ -698,11 +745,16 @@ try {
             $destination = Join-Path $linkPath 'Autodesk\ApplicationPlugins\MensorCAD.bundle'
             Assert-Throws -Action { Install-MensorCadBundle -SourceRoot $source -DestinationRoot $destination -TrustedBoundary $script:TestRoot -AutoCadProbe { $false } } -Contains 'reanalisis' -Message 'Un padre con reparse point debe rechazarse'
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $outsideRoot 'Autodesk'))) 'No debe escribirse nada a traves del junction.'
+
+            # Un junction con elementos secundarios no puede provocar un pedido
+            # de confirmacion: se elimina solo la entrada del enlace.
+            Remove-FixtureLink -Path $linkPath
+            Assert-True (-not (Test-Path -LiteralPath $linkPath)) 'La limpieza debe eliminar solo la entrada del enlace.'
+            Assert-True (Test-Path -LiteralPath $sentinel -PathType Leaf) 'La limpieza no debe recorrer el destino del enlace.'
+            Assert-Equal 'centinela fuera del enlace' ([System.IO.File]::ReadAllText($sentinel)) 'El centinela fuera del enlace debe conservarse intacto.'
         }
         finally {
-            if (Test-Path -LiteralPath $linkPath) {
-                Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
-            }
+            Remove-FixtureLink -Path $linkPath
             if (Test-Path -LiteralPath $outsideRoot) {
                 Remove-Item -LiteralPath $outsideRoot -Recurse -Force -ErrorAction SilentlyContinue
             }
