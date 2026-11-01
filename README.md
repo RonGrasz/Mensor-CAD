@@ -124,7 +124,7 @@ Calcula la superficie de una polilínea cerrada y coloca su valor en el centroid
 
 **Uso:** ejecuta `MCAREA`, configura el formato y selecciona la polilínea o indica un punto interior para detectar su contorno.
 
-**Opciones:** método estándar con las coordenadas originales, o **MIMP / Mensuras RD**, que redondea las coordenadas a dos decimales antes del cálculo; precisión de 0 a 4 decimales, altura de texto y sufijo `m²` opcional.
+**Opciones:** método **Predeterminado (Coordenadas Originales)**, o **Estándar (redondeo 2 dec.)**, que redondea las coordenadas a dos decimales antes del cálculo; precisión de 0 a 4 decimales, altura de texto y sufijo `m²` opcional.
 
 ![Opciones de cálculo de áreas](docs/images/Area.png)
 

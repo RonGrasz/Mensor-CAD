@@ -24,12 +24,12 @@
       (write-line "      label = \"Método de Cálculo\";" f)
       (write-line "      : radio_button {" f)
       (write-line "        key   = \"rb_estandar\";" f)
-      (write-line "        label = \"Estándar (Coordenadas Originales)\";" f)
+      (write-line "        label = \"Predeterminado (Coordenadas Originales)\";" f)
       (write-line "        value = \"1\";" f)
       (write-line "      }" f)
       (write-line "      : radio_button {" f)
       (write-line "        key   = \"rb_mimp\";" f)
-      (write-line "        label = \"MIMP / Mensuras RD (Redondeo 2 dec.)\";" f)
+      (write-line "        label = \"Estándar (redondeo 2 dec.)\";" f)
       (write-line "        value = \"0\";" f)
       (write-line "      }" f)
       (write-line "    }" f)
@@ -362,7 +362,7 @@
         (progn
           (setq area (vla-get-area vla-obj))
           (setq centroide-ocs (mcarea:centroide-verdadero puntos))
-          (princ (strcat "\n[Estándar] Área: " (rtos area 2 4) " u²"))
+          (princ (strcat "\n[Predeterminado] Área: " (rtos area 2 4) " u²"))
         )
         (progn
           (setq puntos-redondeados
@@ -372,7 +372,7 @@
               puntos))
           (setq area (mcarea:shoelace puntos-redondeados))
           (setq centroide-ocs (mcarea:centroide-verdadero puntos-redondeados))
-          (princ (strcat "\n[MIMP/RD] Área (Redondeada): " (rtos area 2 4) " u²"))
+          (princ (strcat "\n[Estándar/RD] Área (Redondeada): " (rtos area 2 4) " u²"))
         )
       )
 
