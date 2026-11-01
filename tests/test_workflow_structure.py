@@ -25,6 +25,7 @@ ARTIFACT_PATHS = (
     "dist/MensorCAD-Windows.zip",
     "dist/MensorCAD-Windows.zip.sha256",
     "dist/Install-MensorCAD.ps1",
+    "dist/install.ps1",
 )
 
 COMMAND_HEADINGS = (
@@ -133,11 +134,22 @@ class WorkflowStructureTests(unittest.TestCase):
         )
         self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", block)
 
-    def test_both_windows_suites_are_isolated_and_gate_failures(self) -> None:
-        for label, suite in (
+    def test_the_five_windows_suites_are_isolated_and_gate_failures(self) -> None:
+        # Las cinco suites funcionales del repositorio deben pasar por el CI:
+        # una suite escrita pero no agendada es cobertura que no existe.
+        suites = (
             ("Pruebas del instalador local", "Test-Installer.ps1"),
+            ("Pruebas de la ventana del instalador", "Test-InstallerWindow.ps1"),
+            ("Pruebas del estilo del instalador", "Test-InstallerStyle.ps1"),
             ("Pruebas del instalador remoto", "Test-RemoteInstaller.ps1"),
-        ):
+            ("Pruebas del bootstrap remoto", "Test-Bootstrap.ps1"),
+        )
+        for _, suite in suites:
+            self.assertTrue(
+                (ROOT / "tests" / suite).is_file(),
+                f"la suite agendada en el CI debe existir: tests/{suite}",
+            )
+        for label, suite in suites:
             block = self.step_block(label)
             self.assertIn(
                 f"powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/{suite}",
@@ -167,19 +179,29 @@ class WorkflowStructureTests(unittest.TestCase):
     def test_checks_run_before_the_artifact_upload(self) -> None:
         python_suite = self.workflow.index("test_*.py")
         local_suite = self.workflow.index("tests/Test-Installer.ps1")
+        window_suite = self.workflow.index("tests/Test-InstallerWindow.ps1")
+        style_suite = self.workflow.index("tests/Test-InstallerStyle.ps1")
         remote_suite = self.workflow.index("tests/Test-RemoteInstaller.ps1")
+        bootstrap_suite = self.workflow.index("tests/Test-Bootstrap.ps1")
         build = self.workflow.index("tools/build_bundle.py")
         upload = self.workflow.index("actions/upload-artifact@")
-        self.assertEqual(
-            [python_suite, local_suite, remote_suite, build, upload],
-            sorted([python_suite, local_suite, remote_suite, build, upload]),
-        )
+        marks = [
+            python_suite,
+            local_suite,
+            window_suite,
+            style_suite,
+            remote_suite,
+            bootstrap_suite,
+            build,
+            upload,
+        ]
+        self.assertEqual(marks, sorted(marks))
         upload_block = self.step_block("actions/upload-artifact@")
         self.assertNotRegex(upload_block, r"(?m)^\s+if:")
         self.assertNotIn("always()", self.workflow)
         self.assertNotIn("continue-on-error", self.workflow)
 
-    def test_upload_contains_only_the_three_frozen_assets(self) -> None:
+    def test_upload_contains_only_the_four_frozen_assets(self) -> None:
         block = self.step_block("actions/upload-artifact@")
         self.assertIn("if-no-files-found: error", block)
         self.assertIn("path: |", block)
@@ -297,14 +319,37 @@ class InstallationTestingDocTests(unittest.TestCase):
         self.assertIn("Windows PowerShell 5.1", self.doc)
 
     def test_document_has_the_exact_windows_suite_commands(self) -> None:
-        self.assertIn(
+        # La guia debe listar las cinco suites que el CI agenda, en el mismo orden.
+        commands = [
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1",
-            self.doc,
-        )
-        self.assertIn(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerStyle.ps1",
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1",
-            self.doc,
-        )
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Bootstrap.ps1",
+        ]
+        positions = []
+        for command in commands:
+            self.assertIn(command, self.doc)
+            positions.append(self.doc.index(command))
+        self.assertEqual(positions, sorted(positions), "el orden de la guia debe seguir al del CI")
+
+    def test_the_guide_lists_the_five_ci_steps_in_order(self) -> None:
+        markers = [
+            "La suite completa de Python",
+            "tests/Test-Installer.ps1",
+            "tests/Test-InstallerWindow.ps1",
+            "tests/Test-InstallerStyle.ps1",
+            "tests/Test-RemoteInstaller.ps1",
+            "tests/Test-Bootstrap.ps1",
+            "tools/build_bundle.py",
+            "La subida de cuatro archivos como artifact",
+        ]
+        bloque = self.doc[self.doc.index("## CI: qué hace y qué no hace") :]
+        positions = []
+        for marker in markers:
+            self.assertIn(marker, bloque, f"la guia no describe el paso del CI: {marker}")
+            positions.append(bloque.index(marker))
+        self.assertEqual(positions, sorted(positions), "la guia debe respetar el orden real del CI")
 
     def test_document_has_the_local_python_and_build_commands(self) -> None:
         self.assertIn(

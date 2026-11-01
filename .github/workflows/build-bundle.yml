@@ -37,10 +37,28 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Pruebas de la ventana del instalador en Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Pruebas del estilo del instalador en Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerStyle.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Pruebas del instalador remoto en Windows PowerShell 5.1
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Pruebas del bootstrap remoto en Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Bootstrap.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Construir el paquete con la versión del manifiesto
@@ -64,4 +82,5 @@ jobs:
             dist/MensorCAD-Windows.zip
             dist/MensorCAD-Windows.zip.sha256
             dist/Install-MensorCAD.ps1
+            dist/install.ps1
           if-no-files-found: error
