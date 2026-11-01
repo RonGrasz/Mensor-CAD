@@ -22,6 +22,8 @@ CONSTRUCTOR = RAIZ_REPO / "tools" / "build_bundle.py"
 ZIP_SALIDA = "MensorCAD-Windows.zip"
 SIDECAR = "MensorCAD-Windows.zip.sha256"
 RUTA_SCRIPT_STANDALONE = "Install-MensorCAD.ps1"
+RUTA_BOOTSTRAP = "install.ps1"
+MARCADOR_VERSION = b"__MENSORCAD_RELEASE_VERSION__"
 TMP_PREVIO = ".MensorCAD-Windows.zip.tmp"
 RAIZ_BUNDLE = "MensorCAD.bundle/"
 
@@ -93,7 +95,9 @@ class FuentesDePrueba:
         self.cuix_dir = self.raiz / "cuix"
         self.package_contents = self.raiz / "PackageContents.xml"
         self.install_script = self.raiz / "Install-MensorCAD.ps1"
+        self.bootstrap_script = self.raiz / RUTA_BOOTSTRAP
         self.bat_script = self.raiz / "Instalar.bat"
+        self.uninstall_bat_script = self.raiz / "Desinstalar.bat"
         self.license = self.raiz / "LICENSE"
 
         self.lisp_dir.mkdir(parents=True)
@@ -108,9 +112,16 @@ class FuentesDePrueba:
             destino.write_bytes(contenido)
         self.package_contents.write_bytes(manifiesto(version, lisp))
         self.install_script.write_bytes(
-            b"param([switch]$Uninstall)\nWrite-Host 'instalador de prueba'\n"
+            b"param([switch]$Uninstall)\n"
+            b"$script:MensorCadReleaseVersion = '" + MARCADOR_VERSION + b"'\n"
+            b"Write-Host 'instalador de prueba'\n"
+        )
+        self.bootstrap_script.write_bytes(
+            b"\xef\xbb\xbfparam([string]$Version, [switch]$NoAnimation)\r\n"
+            b"Write-Host 'bootstrap de prueba'\r\n"
         )
         self.bat_script.write_bytes(b"@echo off\r\npowershell -File Install-MensorCAD.ps1\r\n")
+        self.uninstall_bat_script.write_bytes(b'@echo off\r\n"%~dp0Instalar.bat" -Uninstall\r\n')
         self.license.write_bytes(b"MIT License\n\nCopyright (c) RonGrasz\n")
 
     def argumentos(self, output_dir: Path | None = None, version: str | None = None):
@@ -125,13 +136,29 @@ class FuentesDePrueba:
             str(self.cuix_dir),
             "--install-script",
             str(self.install_script),
+            "--bootstrap-script",
+            str(self.bootstrap_script),
             "--bat-script",
             str(self.bat_script),
+            "--uninstall-bat-script",
+            str(self.uninstall_bat_script),
             "--license",
             str(self.license),
         ]
         if version is not None:
             argumentos.extend(["--version", version])
+        return argumentos
+
+    def argumentos_con_script(self, output_dir: Path, install_script: Path):
+        argumentos = self.argumentos(output_dir=output_dir)
+        indice = argumentos.index("--install-script") + 1
+        argumentos[indice] = str(install_script)
+        return argumentos
+
+    def argumentos_con_bootstrap(self, output_dir: Path, bootstrap_script: Path):
+        argumentos = self.argumentos(output_dir=output_dir)
+        indice = argumentos.index("--bootstrap-script") + 1
+        argumentos[indice] = str(bootstrap_script)
         return argumentos
 
 
@@ -162,6 +189,15 @@ class CasoBase(unittest.TestCase):
             ),
         )
         return resultado
+
+    def script_esperado(self, fuentes: FuentesDePrueba, version: str = "0.1.0") -> bytes:
+        return fuentes.install_script.read_bytes().replace(
+            MARCADOR_VERSION, version.encode("ascii")
+        )
+
+    def bootstrap_esperado(self, fuentes: FuentesDePrueba) -> bytes:
+        # El bootstrap no se estampa: la cuarta salida es una copia byte a byte.
+        return fuentes.bootstrap_script.read_bytes()
 
     def leer_zip(self, ruta: Path) -> zipfile.ZipFile:
         return zipfile.ZipFile(io.BytesIO(ruta.read_bytes()))
@@ -199,6 +235,7 @@ class InventarioDeSalida(CasoBase):
                 "bundle.sha256",
                 "Install-MensorCAD.ps1",
                 "Instalar.bat",
+                "Desinstalar.bat",
                 "LICENSE",
             }
             self.assertEqual(nombres, esperados)
@@ -209,7 +246,7 @@ class InventarioDeSalida(CasoBase):
                 self.assertNotIn(".git/", nombre)
                 self.assertNotIn("__pycache__", nombre)
 
-    def test_manifiesto_lisp_e_instalador_se_copian_byte_a_byte(self):
+    def test_manifiesto_lisp_y_auxiliares_se_copian_y_script_se_estampa(self):
         fuentes = self.fuentes()
         self.construir(fuentes)
 
@@ -224,8 +261,9 @@ class InventarioDeSalida(CasoBase):
                     (fuentes.lisp_dir / nombre).read_bytes(),
                     msg="se altero " + nombre,
                 )
-            self.assertEqual(zf.read("Install-MensorCAD.ps1"), fuentes.install_script.read_bytes())
+            self.assertEqual(zf.read("Install-MensorCAD.ps1"), self.script_esperado(fuentes))
             self.assertEqual(zf.read("Instalar.bat"), fuentes.bat_script.read_bytes())
+            self.assertEqual(zf.read("Desinstalar.bat"), fuentes.uninstall_bat_script.read_bytes())
             self.assertEqual(zf.read("LICENSE"), fuentes.license.read_bytes())
 
     def test_asset_de_checksum_nombra_el_zip(self):
@@ -241,16 +279,69 @@ class InventarioDeSalida(CasoBase):
             "{}  {}\n".format(sha256_archivo(zip_salida), ZIP_SALIDA),
         )
         generados = sorted(ruta.name for ruta in fuentes.salida.iterdir())
-        self.assertEqual(generados, [RUTA_SCRIPT_STANDALONE, ZIP_SALIDA, SIDECAR])
+        self.assertEqual(
+            generados,
+            sorted([RUTA_SCRIPT_STANDALONE, RUTA_BOOTSTRAP, ZIP_SALIDA, SIDECAR]),
+        )
 
-    def test_script_standalone_se_emite_byte_a_byte(self):
+    def test_script_standalone_se_emite_estampado_e_identico_al_zip(self):
         fuentes = self.fuentes()
         self.construir(fuentes)
 
         standalone = fuentes.salida / RUTA_SCRIPT_STANDALONE
         self.assertTrue(standalone.is_file(), msg="falta " + RUTA_SCRIPT_STANDALONE)
         self.assertFalse(standalone.is_symlink())
-        self.assertEqual(standalone.read_bytes(), fuentes.install_script.read_bytes())
+        self.assertEqual(standalone.read_bytes(), self.script_esperado(fuentes))
+        with self.leer_zip(fuentes.salida / ZIP_SALIDA) as zf:
+            self.assertEqual(zf.read("Install-MensorCAD.ps1"), standalone.read_bytes())
+
+    def test_estampa_version_real_sin_tocar_la_plantilla(self):
+        fuentes = self.fuentes(version="1.2.3")
+        plantilla = fuentes.install_script.read_bytes()
+        self.assertIn(MARCADOR_VERSION, plantilla)
+
+        self.construir(fuentes, version="1.2.3")
+        estampado = self.script_esperado(fuentes, "1.2.3")
+        standalone = (fuentes.salida / RUTA_SCRIPT_STANDALONE).read_bytes()
+        self.assertEqual(standalone, estampado)
+        self.assertIn(b"1.2.3", standalone)
+        self.assertNotIn(MARCADOR_VERSION, standalone)
+        with self.leer_zip(fuentes.salida / ZIP_SALIDA) as zf:
+            self.assertEqual(zf.read("Install-MensorCAD.ps1"), estampado)
+        self.assertEqual(fuentes.install_script.read_bytes(), plantilla, msg="se mutó la plantilla")
+
+    def test_estampa_otra_release_sin_editar_la_plantilla(self):
+        fuentes = self.fuentes(version="0.1.0")
+        plantilla = fuentes.install_script.read_bytes()
+        destino_a = self.base / "release-a"
+        destino_b = self.base / "release-b"
+        self.construir(fuentes, output_dir=destino_a)
+        fuentes.package_contents.write_bytes(manifiesto("2.0.0", LISP_FIXTURE))
+        self.construir(fuentes, output_dir=destino_b, version="2.0.0")
+
+        script_a = (destino_a / RUTA_SCRIPT_STANDALONE).read_bytes()
+        script_b = (destino_b / RUTA_SCRIPT_STANDALONE).read_bytes()
+        self.assertIn(b"0.1.0", script_a)
+        self.assertIn(b"2.0.0", script_b)
+        self.assertNotIn(MARCADOR_VERSION, script_a)
+        self.assertNotIn(MARCADOR_VERSION, script_b)
+        self.assertEqual(fuentes.install_script.read_bytes(), plantilla, msg="se editó la plantilla")
+
+    def test_estampar_preserva_bom_y_fin_de_linea(self):
+        fuentes = self.fuentes()
+        original = (
+            b"\xef\xbb\xbfWrite-Host 'plantilla'\r\n"
+            b"$script:MensorCadReleaseVersion = '" + MARCADOR_VERSION + b"'\r\n"
+        )
+        fuentes.install_script.write_bytes(original)
+        self.construir(fuentes)
+
+        estampado = (fuentes.salida / RUTA_SCRIPT_STANDALONE).read_bytes()
+        self.assertTrue(estampado.startswith(b"\xef\xbb\xbf"), msg="se perdió el BOM")
+        self.assertEqual(estampado.count(b"\r\n"), original.count(b"\r\n"))
+        self.assertIn(b"0.1.0", estampado)
+        self.assertNotIn(MARCADOR_VERSION, estampado)
+        self.assertEqual(fuentes.install_script.read_bytes(), original, msg="se mutó la plantilla")
 
     def test_acepta_manifiesto_con_solo_version_coincidente(self):
         fuentes = self.fuentes()
@@ -270,7 +361,7 @@ class InventarioDeSalida(CasoBase):
         )
         self.assertEqual(
             (fuentes.salida / RUTA_SCRIPT_STANDALONE).read_bytes(),
-            fuentes.install_script.read_bytes(),
+            self.script_esperado(fuentes),
         )
 
     def test_preserva_el_manifiesto_con_fin_de_linea_crlf(self):
@@ -373,12 +464,85 @@ class InventarioDeSalida(CasoBase):
         )
 
 
+class BootstrapDeSalida(CasoBase):
+    """B4: la cuarta salida es una copia del bootstrap, fuera del ZIP."""
+
+    def test_bootstrap_se_copia_byte_a_byte_y_no_se_estampa(self):
+        fuentes = self.fuentes()
+        original = fuentes.bootstrap_script.read_bytes()
+        self.construir(fuentes)
+
+        bootstrap = fuentes.salida / RUTA_BOOTSTRAP
+        self.assertTrue(bootstrap.is_file(), msg="falta " + RUTA_BOOTSTRAP)
+        self.assertFalse(bootstrap.is_symlink())
+        self.assertEqual(bootstrap.read_bytes(), original)
+        self.assertTrue(
+            bootstrap.read_bytes().startswith(b"\xef\xbb\xbf"), msg="se perdió el BOM"
+        )
+        self.assertEqual(
+            fuentes.bootstrap_script.read_bytes(), original, msg="se mutó el bootstrap fuente"
+        )
+        # El bootstrap no duplica la version del producto ni el marcador de la plantilla.
+        self.assertNotIn(MARCADOR_VERSION, bootstrap.read_bytes())
+        self.assertNotIn(b"0.1.0", bootstrap.read_bytes())
+
+    def test_bootstrap_no_agrega_entradas_al_zip(self):
+        fuentes = self.fuentes()
+        self.construir(fuentes)
+
+        with self.leer_zip(fuentes.salida / ZIP_SALIDA) as zf:
+            nombres = zf.namelist()
+            self.assertNotIn(RUTA_BOOTSTRAP, nombres)
+            self.assertFalse(
+                any(nombre.casefold() == RUTA_BOOTSTRAP for nombre in nombres),
+                msg="el bootstrap no viaja dentro del ZIP",
+            )
+            self.assertEqual(len(nombres), 9, msg="se agrego una entrada al inventario")
+            self.assertEqual(len(nombres), len(set(nombres)), msg="entradas duplicadas")
+            self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
+
+    def test_bootstrap_reproducible_entre_construcciones(self):
+        fuentes = self.fuentes()
+        destino_a = self.base / "bootstrap-a"
+        destino_b = self.base / "bootstrap-b"
+        self.construir(fuentes, output_dir=destino_a)
+        self.construir(fuentes, output_dir=destino_b)
+
+        self.assertEqual(
+            (destino_a / RUTA_BOOTSTRAP).read_bytes(),
+            (destino_b / RUTA_BOOTSTRAP).read_bytes(),
+        )
+        self.assertEqual(
+            (destino_a / ZIP_SALIDA).read_bytes(), (destino_b / ZIP_SALIDA).read_bytes()
+        )
+
+    def test_bootstrap_por_defecto_es_el_del_repositorio(self):
+        # Sin --bootstrap-script, la cuarta salida es la copia de install.ps1
+        # de la raiz del repositorio, no una ruta adivinada en dist/.
+        fuentes = self.fuentes()
+        argumentos = fuentes.argumentos()
+        indice = argumentos.index("--bootstrap-script")
+        del argumentos[indice : indice + 2]
+
+        resultado = self.ejecutar(argumentos)
+        self.assertEqual(
+            resultado.returncode,
+            0,
+            msg="STDOUT:\n{}\nSTDERR:\n{}".format(resultado.stdout, resultado.stderr),
+        )
+        self.assertEqual(
+            (fuentes.salida / RUTA_BOOTSTRAP).read_bytes(),
+            (RAIZ_REPO / RUTA_BOOTSTRAP).read_bytes(),
+        )
+
+
 class Rechazos(CasoBase):
     def preparar_salida_previa(self, fuentes: FuentesDePrueba) -> dict[str, bytes]:
         fuentes.salida.mkdir(parents=True, exist_ok=True)
         previos = {
             ZIP_SALIDA: b"ZIP-ANTERIOR-QUE-NO-DEBE-CAMBIAR",
             SIDECAR: b"CHECKSUM-ANTERIOR-QUE-NO-DEBE-CAMBIAR\n",
+            RUTA_BOOTSTRAP: b"BOOTSTRAP-ANTERIOR-QUE-NO-DEBE-CAMBIAR\n",
         }
         for nombre, contenido in previos.items():
             (fuentes.salida / nombre).write_bytes(contenido)
@@ -394,6 +558,185 @@ class Rechazos(CasoBase):
         self.assertEqual(
             sorted(ruta.name for ruta in salida.iterdir()), sorted(previos)
         )
+
+    def preparar_salida_estampado(self, fuentes: FuentesDePrueba) -> dict[str, bytes]:
+        previos = self.preparar_salida_previa(fuentes)
+        previos[RUTA_SCRIPT_STANDALONE] = b"SCRIPT-ANTERIOR-QUE-NO-DEBE-CAMBIAR\n"
+        (fuentes.salida / RUTA_SCRIPT_STANDALONE).write_bytes(
+            previos[RUTA_SCRIPT_STANDALONE]
+        )
+        return previos
+
+    def test_rechaza_marcador_ausente_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuente_sin_marcador = b"param([switch]$Uninstall)\nWrite-Host 'sin marcador'\n"
+        fuentes.install_script.write_bytes(fuente_sin_marcador)
+        previos = self.preparar_salida_estampado(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertIn("marcador", resultado.stderr.lower())
+        self.assert_rechazo(resultado, fuentes.salida, previos, "marcador")
+        self.assertEqual(fuentes.install_script.read_bytes(), fuente_sin_marcador)
+
+    def test_rechaza_marcador_duplicado_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuente_duplicada = (
+            b"$script:MensorCadReleaseVersion = '" + MARCADOR_VERSION + b"'\n"
+            b"$script:OtraCopia = '" + MARCADOR_VERSION + b"'\n"
+        )
+        fuentes.install_script.write_bytes(fuente_duplicada)
+        previos = self.preparar_salida_estampado(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertIn("marcador", resultado.stderr.lower())
+        self.assert_rechazo(resultado, fuentes.salida, previos, "marcador")
+        self.assertEqual(fuentes.install_script.read_bytes(), fuente_duplicada)
+
+    def preparar_colision_plantilla(self, fuentes: FuentesDePrueba, nombre_destino: str):
+        """Coloca la plantilla en una salida y deja sentinelas en las otras tres."""
+        fuentes.salida.mkdir(parents=True, exist_ok=True)
+        plantilla = fuentes.install_script.read_bytes()
+        previos: dict[str, bytes] = {}
+        for nombre in (ZIP_SALIDA, SIDECAR, RUTA_SCRIPT_STANDALONE, RUTA_BOOTSTRAP):
+            contenido = plantilla if nombre == nombre_destino else (
+                "SENTINELA-{}".format(nombre).encode("utf-8")
+            )
+            (fuentes.salida / nombre).write_bytes(contenido)
+            previos[nombre] = contenido
+        return fuentes.salida / nombre_destino, previos
+
+    def assert_colision_plantilla(self, nombre_destino: str):
+        fuentes = self.fuentes()
+        destino, previos = self.preparar_colision_plantilla(fuentes, nombre_destino)
+        resultado = self.ejecutar(
+            fuentes.argumentos_con_script(fuentes.salida, destino)
+        )
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(
+            resultado.stderr,
+            "ERROR: la salida {} no puede ser el mismo archivo que la plantilla fuente: {}\n".format(
+                nombre_destino, destino
+            ),
+        )
+        self.assert_rechazo(resultado, fuentes.salida, previos, "mismo archivo")
+        self.assertEqual(
+            destino.read_bytes(), previos[nombre_destino], msg="se mutó la plantilla fuente"
+        )
+
+    def test_rechaza_plantilla_colisionada_con_el_zip(self):
+        self.assert_colision_plantilla(ZIP_SALIDA)
+
+    def test_rechaza_plantilla_colisionada_con_el_sidecar(self):
+        self.assert_colision_plantilla(SIDECAR)
+
+    def test_rechaza_plantilla_colisionada_con_el_standalone(self):
+        self.assert_colision_plantilla(RUTA_SCRIPT_STANDALONE)
+
+    def test_rechaza_plantilla_colisionada_con_el_bootstrap(self):
+        self.assert_colision_plantilla(RUTA_BOOTSTRAP)
+
+    def preparar_colision_bootstrap(self, fuentes: FuentesDePrueba, nombre_destino: str):
+        """Coloca el bootstrap en una salida y deja sentinelas en las otras tres."""
+        fuentes.salida.mkdir(parents=True, exist_ok=True)
+        bootstrap = fuentes.bootstrap_script.read_bytes()
+        previos: dict[str, bytes] = {}
+        for nombre in (ZIP_SALIDA, SIDECAR, RUTA_SCRIPT_STANDALONE, RUTA_BOOTSTRAP):
+            contenido = bootstrap if nombre == nombre_destino else (
+                "SENTINELA-{}".format(nombre).encode("utf-8")
+            )
+            (fuentes.salida / nombre).write_bytes(contenido)
+            previos[nombre] = contenido
+        return fuentes.salida / nombre_destino, previos
+
+    def assert_colision_bootstrap(self, nombre_destino: str):
+        fuentes = self.fuentes()
+        destino, previos = self.preparar_colision_bootstrap(fuentes, nombre_destino)
+        resultado = self.ejecutar(
+            fuentes.argumentos_con_bootstrap(fuentes.salida, destino)
+        )
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(
+            resultado.stderr,
+            "ERROR: la salida {} no puede ser el mismo archivo que el bootstrap fuente: {}\n".format(
+                nombre_destino, destino
+            ),
+        )
+        self.assert_rechazo(resultado, fuentes.salida, previos, "bootstrap")
+        self.assertEqual(
+            destino.read_bytes(), previos[nombre_destino], msg="se mutó el bootstrap fuente"
+        )
+
+    def test_rechaza_bootstrap_colisionado_con_el_zip(self):
+        self.assert_colision_bootstrap(ZIP_SALIDA)
+
+    def test_rechaza_bootstrap_colisionado_con_el_sidecar(self):
+        self.assert_colision_bootstrap(SIDECAR)
+
+    def test_rechaza_bootstrap_colisionado_con_el_standalone(self):
+        self.assert_colision_bootstrap(RUTA_SCRIPT_STANDALONE)
+
+    def test_rechaza_bootstrap_colisionado_con_su_propia_salida(self):
+        self.assert_colision_bootstrap(RUTA_BOOTSTRAP)
+
+    def test_rechaza_bootstrap_ausente_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuentes.bootstrap_script.unlink()
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(
+            resultado.stderr,
+            "ERROR: falta install.ps1: {}\n".format(fuentes.bootstrap_script),
+        )
+        self.assert_rechazo(resultado, fuentes.salida, previos, "install.ps1")
+
+    def test_rechaza_bootstrap_con_marcador_de_version_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuente = (
+            b"param([string]$Version)\n"
+            b"$script:MensorCadReleaseVersion = '" + MARCADOR_VERSION + b"'\n"
+        )
+        fuentes.bootstrap_script.write_bytes(fuente)
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertIn("marcador", resultado.stderr.lower())
+        self.assertIn("install.ps1", resultado.stderr)
+        self.assert_rechazo(resultado, fuentes.salida, previos, "marcador")
+        self.assertEqual(fuentes.bootstrap_script.read_bytes(), fuente)
+
+    def test_help_documenta_la_cuarta_salida_y_su_bandera(self):
+        resultado = self.ejecutar(["--help"])
+        self.assertEqual(resultado.returncode, 0)
+        self.assertIn("--bootstrap-script", resultado.stdout)
+        self.assertIn("install.ps1", resultado.stdout)
+        self.assertIn("cuarta salida", resultado.stdout)
+        self.assertIn("byte", resultado.stdout.lower())
+
+    def test_help_describe_el_marcador_de_la_plantilla(self):
+        resultado = self.ejecutar(["--help"])
+        self.assertEqual(resultado.returncode, 0)
+        self.assertIn(MARCADOR_VERSION.decode("ascii"), resultado.stdout)
+        self.assertIn("plantilla", resultado.stdout.lower())
+
+    def test_rechaza_desinstalador_ausente_sin_modificar_salida(self):
+        fuentes = self.fuentes()
+        fuentes.uninstall_bat_script.unlink()
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(
+            resultado.stderr,
+            "ERROR: falta Desinstalar.bat: {}\n".format(fuentes.uninstall_bat_script),
+        )
+        self.assert_rechazo(resultado, fuentes.salida, previos, "Desinstalar.bat")
 
     def test_rechaza_lisp_del_manifiesto_ausente(self):
         fuentes = self.fuentes()
@@ -618,7 +961,7 @@ class PublicacionSegura(CasoBase):
                 self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
             self.assertEqual(
                 sorted(ruta.name for ruta in fuentes.salida.iterdir()),
-                sorted([TMP_PREVIO, RUTA_SCRIPT_STANDALONE, SIDECAR, ZIP_SALIDA]),
+                sorted([TMP_PREVIO, RUTA_SCRIPT_STANDALONE, RUTA_BOOTSTRAP, SIDECAR, ZIP_SALIDA]),
             )
         else:
             self.assertEqual(
@@ -647,6 +990,10 @@ class PublicacionSegura(CasoBase):
         )
         self.assertTrue(sidecar.is_dir(), msg="se reemplazo el directorio sidecar")
         self.assertEqual((sidecar / "marca.txt").read_bytes(), b"marca")
+        self.assertFalse(
+            (fuentes.salida / RUTA_BOOTSTRAP).exists(),
+            msg="un rechazo no debe publicar el bootstrap",
+        )
 
     def test_destino_enlazado_no_se_sigue(self):
         fuentes = self.fuentes()
@@ -684,6 +1031,9 @@ class RepositorioReal(CasoBase):
         }
 
         destino = self.base / "dist-real"
+        bootstrap_real = RAIZ_REPO / RUTA_BOOTSTRAP
+        self.assertTrue(bootstrap_real.is_file(), msg="falta " + RUTA_BOOTSTRAP)
+        antes_bootstrap = sha256_archivo(bootstrap_real)
         argumentos = [
             "--output-dir",
             str(destino),
@@ -695,8 +1045,12 @@ class RepositorioReal(CasoBase):
             str(cuix_real),
             "--install-script",
             str(fuentes.install_script),
+            "--bootstrap-script",
+            str(bootstrap_real),
             "--bat-script",
             str(fuentes.bat_script),
+            "--uninstall-bat-script",
+            str(fuentes.uninstall_bat_script),
             "--license",
             str(RAIZ_REPO / "LICENSE"),
         ]
@@ -723,6 +1077,7 @@ class RepositorioReal(CasoBase):
                     "bundle.sha256",
                     "Install-MensorCAD.ps1",
                     "Instalar.bat",
+                    "Desinstalar.bat",
                     "LICENSE",
                 },
             )
@@ -739,6 +1094,16 @@ class RepositorioReal(CasoBase):
             if ruta.is_file()
         }
         self.assertEqual(antes, despues, msg="el constructor modifico las fuentes")
+        self.assertEqual(
+            sha256_archivo(bootstrap_real),
+            antes_bootstrap,
+            msg="el constructor modifico el bootstrap fuente",
+        )
+        self.assertEqual(
+            (destino / RUTA_BOOTSTRAP).read_bytes(),
+            bootstrap_real.read_bytes(),
+            msg="el bootstrap publicado debe ser la copia byte a byte",
+        )
 
 
 if __name__ == "__main__":

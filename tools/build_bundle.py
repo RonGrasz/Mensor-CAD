@@ -8,11 +8,20 @@ Solo biblioteca estándar de Python 3. Construye:
 * ``MensorCAD.bundle/Contents/Lisp/MC-*.lsp`` y ``PackageContents.xml``.
 * ``bundle.sha256`` con el hash de cada archivo del bundle.
 * ``MensorCAD-Windows.zip``, su sidecar ``MensorCAD-Windows.zip.sha256`` y
-  una copia standalone ``Install-MensorCAD.ps1`` byte a byte igual a la entrada.
+  una copia standalone ``Install-MensorCAD.ps1`` ya estampada con la version.
+* ``install.ps1``, el bootstrap corto de la entrada remota, copiado byte a byte
+  **fuera** del ZIP (el inventario del ZIP no cambia).
+
+La plantilla ``Install-MensorCAD.ps1`` nunca se modifica: el constructor lee
+sus bytes, exige exactamente un marcador ``__MENSORCAD_RELEASE_VERSION__`` y
+reemplaza solo ese marcador. El script dentro del ZIP y el standalone son
+byte a byte iguales entre sí; no son iguales a la plantilla porque esta
+conserva el marcador de desarrollo.
 
 El contrato de inventario está congelado: no se agregan archivos al ZIP fuera
 de ``MensorCAD.bundle/``, ``bundle.sha256``, ``Install-MensorCAD.ps1``,
-``Instalar.bat`` y ``LICENSE``. Las fuentes de entrada nunca se modifican y
+``Instalar.bat``, ``Desinstalar.bat`` y ``LICENSE``. Las fuentes de entrada
+nunca se modifican y
 toda validación ocurre antes de escribir la salida.
 """
 
@@ -42,6 +51,8 @@ RUTA_CUIX = "Contents/UI/MensorCAD.cuix"
 RUTA_LISP = "Contents/Lisp"
 NOMBRE_PRODUCTO = "MensorCAD"
 NOMBRE_SCRIPT = "Install-MensorCAD.ps1"
+NOMBRE_BOOTSTRAP = "install.ps1"
+MARCADOR_VERSION_SCRIPT = b"__MENSORCAD_RELEASE_VERSION__"
 COMPONENTES_PROHIBIDOS = {"__pycache__"}
 COMPONENTES_OCULTOS_PERMITIDOS = {".rels"}
 MARCA_TIEMPO_ZIP = (1980, 1, 1, 0, 0, 0)
@@ -57,6 +68,7 @@ class Resultado:
     zip_salida: Path
     sidecar: Path
     install_script: Path
+    bootstrap: Path
     hash_zip: str
     archivos_bundle: int
 
@@ -67,7 +79,9 @@ class Fuentes:
     lisp_dir: Path
     cuix_dir: Path
     install_script: Path
+    bootstrap_script: Path
     bat_script: Path
+    uninstall_bat_script: Path
     license: Path
 
 
@@ -383,6 +397,7 @@ def _escribir_zip(
     cuix: Path,
     install_script: Path,
     bat_script: Path,
+    uninstall_bat_script: Path,
     license: Path,
 ) -> int:
     entradas_bundle: list[tuple[str, Path]] = [
@@ -402,10 +417,79 @@ def _escribir_zip(
         for nombre_fijo, ruta in (
             ("Install-MensorCAD.ps1", install_script),
             ("Instalar.bat", bat_script),
+            ("Desinstalar.bat", uninstall_bat_script),
             ("LICENSE", license),
         ):
             _copiar_a_zip(paquete, nombre_fijo, ruta)
     return len(entradas_bundle)
+
+
+def _estampar_script_install(ruta: Path, version: str) -> bytes:
+    """Devuelve la plantilla con el marcador reemplazado por ``version``.
+
+    Solo se aceptan bytes: no se decodifica ni se reescribe el archivo, de modo
+    que el BOM y los fines de linea de la plantilla se conservan. La cantidad
+    de marcadores se valida antes de que exista cualquier escritura de salida.
+    """
+    contenido = _comprobar_archivo_regular(ruta, NOMBRE_SCRIPT).read_bytes()
+    cantidad = contenido.count(MARCADOR_VERSION_SCRIPT)
+    if cantidad != 1:
+        raise ErrorConstruccion(
+            "{} debe contener exactamente un marcador {}; encontrados {}".format(
+                NOMBRE_SCRIPT,
+                MARCADOR_VERSION_SCRIPT.decode("ascii"),
+                cantidad,
+            )
+        )
+    estampado = contenido.replace(
+        MARCADOR_VERSION_SCRIPT, version.encode("ascii")
+    )
+    if MARCADOR_VERSION_SCRIPT in estampado:
+        raise ErrorConstruccion(
+            "el marcador {} sigue presente después de estampar {}".format(
+                MARCADOR_VERSION_SCRIPT.decode("ascii"), NOMBRE_SCRIPT
+            )
+        )
+    return estampado
+
+
+def _comprobar_solapamiento_fuente(
+    destino: Path, fuente: Path, etiqueta_fuente: str = "la plantilla"
+) -> None:
+    """Rechaza antes de escribir que una salida sea el archivo de la plantilla."""
+    try:
+        mismo = destino.resolve() == fuente.resolve()
+        if not mismo and destino.exists() and fuente.exists():
+            mismo = destino.samefile(fuente)
+    except OSError as exc:
+        raise ErrorConstruccion(
+            "no se pudo comprobar la plantilla de salida: {}".format(exc)
+        ) from exc
+    if mismo:
+        raise ErrorConstruccion(
+            "la salida {} no puede ser el mismo archivo que {} fuente: {}".format(
+                destino.name, etiqueta_fuente, fuente
+            )
+        )
+
+
+def _leer_bootstrap(ruta: Path) -> bytes:
+    """Devuelve los bytes del bootstrap sin estampar ni reescribir nada.
+
+    El bootstrap no lleva la version del producto: el instalador real es el
+    unico duenio del numero de version y del marcador de la plantilla.
+    """
+    contenido = _comprobar_archivo_regular(ruta, NOMBRE_BOOTSTRAP).read_bytes()
+    if MARCADOR_VERSION_SCRIPT in contenido:
+        raise ErrorConstruccion(
+            "{} no debe contener el marcador {}; la version la lleva "
+            "{}".format(
+                NOMBRE_BOOTSTRAP,
+                MARCADOR_VERSION_SCRIPT.decode("ascii"),
+                NOMBRE_SCRIPT,
+            )
+        )
+    return contenido
 
 
 def _hash_archivo(ruta: Path) -> str:
@@ -453,10 +537,16 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
         )
     for etiqueta, ruta in (
         ("Install-MensorCAD.ps1", fuentes.install_script),
+        (NOMBRE_BOOTSTRAP, fuentes.bootstrap_script),
         ("Instalar.bat", fuentes.bat_script),
+        ("Desinstalar.bat", fuentes.uninstall_bat_script),
         ("LICENSE", fuentes.license),
     ):
         _comprobar_archivo_regular(ruta, etiqueta)
+
+    # Validación y estampado antes de cualquier escritura de salida.
+    script_estampado = _estampar_script_install(fuentes.install_script, version)
+    bootstrap_bytes = _leer_bootstrap(fuentes.bootstrap_script)
 
     archivos_lisp = listar_lisp(fuentes.lisp_dir)
     archivos_cuix = listar_cuix(fuentes.cuix_dir)
@@ -467,19 +557,33 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
     zip_salida = output_dir / ZIP_SALIDA
     sidecar = output_dir / (ZIP_SALIDA + SUFIJO_SIDECAR)
     script_salida = output_dir / NOMBRE_SCRIPT
-    comprobar_destinos(output_dir, [zip_salida, sidecar, script_salida])
+    bootstrap_salida = output_dir / NOMBRE_BOOTSTRAP
+    destinos = (zip_salida, sidecar, script_salida, bootstrap_salida)
+    # Cada una de las cuatro salidas se compara con las DOS fuentes: ni la
+    # plantilla ni el bootstrap pueden ser reemplazados por un artefacto.
+    for destino in destinos:
+        _comprobar_solapamiento_fuente(destino, fuentes.install_script)
+        _comprobar_solapamiento_fuente(
+            destino, fuentes.bootstrap_script, "el bootstrap"
+        )
+    comprobar_destinos(output_dir, list(destinos))
 
     with tempfile.TemporaryDirectory(prefix="mensorcad-bundle-") as temporal:
         cuix_temporal = Path(temporal) / "MensorCAD.cuix"
         construir_cuix(archivos_cuix, cuix_temporal)
+        script_temporal = Path(temporal) / NOMBRE_SCRIPT
+        script_temporal.write_bytes(script_estampado)
+        bootstrap_temporal = Path(temporal) / NOMBRE_BOOTSTRAP
+        bootstrap_temporal.write_bytes(bootstrap_bytes)
         zip_temporal = Path(temporal) / ZIP_SALIDA
         total_bundle = _escribir_zip(
             zip_temporal,
             fuentes.package_contents,
             archivos_lisp,
             cuix_temporal,
-            fuentes.install_script,
+            script_temporal,
             fuentes.bat_script,
+            fuentes.uninstall_bat_script,
             fuentes.license,
         )
         hash_zip = _hash_archivo(zip_temporal)
@@ -490,16 +594,14 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
         output_dir.mkdir(parents=True, exist_ok=True)
         _instalar_salida(zip_temporal, zip_salida)
         _instalar_salida(sidecar_temporal, sidecar)
-        if not (
-            script_salida.exists()
-            and script_salida.samefile(fuentes.install_script)
-        ):
-            _instalar_salida(fuentes.install_script, script_salida)
+        _instalar_salida(script_temporal, script_salida)
+        _instalar_salida(bootstrap_temporal, bootstrap_salida)
 
     return Resultado(
         zip_salida=zip_salida,
         sidecar=sidecar,
         install_script=script_salida,
+        bootstrap=bootstrap_salida,
         hash_zip=hash_zip,
         archivos_bundle=total_bundle,
     )
@@ -508,7 +610,10 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
 def _analizar_argumentos(argv: list[str] | None) -> argparse.Namespace:
     raiz_defecto = Path(__file__).resolve().parents[1]
     analizador = argparse.ArgumentParser(
-        description="Construye MensorCAD-Windows.zip, su sidecar SHA-256 y el script standalone.",
+        description=(
+            "Construye MensorCAD-Windows.zip, su sidecar SHA-256, el script "
+            "standalone y el bootstrap install.ps1."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     analizador.add_argument(
@@ -527,9 +632,29 @@ def _analizar_argumentos(argv: list[str] | None) -> argparse.Namespace:
     analizador.add_argument("--lisp-dir", type=Path, default=raiz_defecto / "lisp")
     analizador.add_argument("--cuix-dir", type=Path, default=raiz_defecto / "cuix")
     analizador.add_argument(
-        "--install-script", type=Path, default=raiz_defecto / "Install-MensorCAD.ps1"
+        "--install-script",
+        type=Path,
+        default=raiz_defecto / "Install-MensorCAD.ps1",
+        help=(
+            "plantilla PowerShell; debe contener exactamente un marcador "
+            "__MENSORCAD_RELEASE_VERSION__ que se reemplaza con --version"
+        ),
     )
     analizador.add_argument("--bat-script", type=Path, default=raiz_defecto / "Instalar.bat")
+    analizador.add_argument(
+        "--bootstrap-script",
+        type=Path,
+        default=raiz_defecto / NOMBRE_BOOTSTRAP,
+        help=(
+            "bootstrap corto de la entrada remota que se copia byte a byte como "
+            "cuarta salida, fuera del ZIP; no se estampa y no puede contener "
+            "__MENSORCAD_RELEASE_VERSION__"
+        ),
+    )
+    analizador.add_argument(
+        "--uninstall-bat-script", type=Path, default=raiz_defecto / "Desinstalar.bat",
+        help="BAT de desinstalación por doble clic que se incluye en el ZIP",
+    )
     analizador.add_argument("--license", type=Path, default=raiz_defecto / "LICENSE")
     return analizador.parse_args(argv)
 
@@ -541,7 +666,9 @@ def main(argv: list[str] | None = None) -> int:
         lisp_dir=opciones.lisp_dir,
         cuix_dir=opciones.cuix_dir,
         install_script=opciones.install_script,
+        bootstrap_script=opciones.bootstrap_script,
         bat_script=opciones.bat_script,
+        uninstall_bat_script=opciones.uninstall_bat_script,
         license=opciones.license,
     )
     try:
@@ -556,6 +683,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Paquete construido: {}".format(resultado.zip_salida))
     print("Sidecar SHA-256:    {}".format(resultado.sidecar))
     print("Script standalone:  {}".format(resultado.install_script))
+    print("Bootstrap:          {}".format(resultado.bootstrap))
     print("SHA-256 del ZIP:    {}".format(resultado.hash_zip))
     print("Archivos del bundle: {}".format(resultado.archivos_bundle))
     return 0
