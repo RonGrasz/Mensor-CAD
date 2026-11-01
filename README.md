@@ -83,7 +83,7 @@ irm 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/install.ps1
 4. Acepta el aviso de permisos de Windows y espera a que el instalador termine.
 5. Abre AutoCAD y escribe `MCHELP` para comprobar la instalación.
 
-Este comando descarga y ejecuta el instalador oficial de **RonGrasz/Mensor-CAD**. Úsalo únicamente si confías en el proyecto.
+Este comando descarga y ejecuta el instalador de MensorCAD. Antes de ejecutarlo, verifica que la URL apunte al repositorio oficial: `https://github.com/RonGrasz/Mensor-CAD`.
 
 <a id="instalacion-personalizada"></a>
 
