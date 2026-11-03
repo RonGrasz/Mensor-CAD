@@ -21,9 +21,15 @@ RAIZ_REPO = Path(__file__).resolve().parents[1]
 CONSTRUCTOR = RAIZ_REPO / "tools" / "build_bundle.py"
 ZIP_SALIDA = "MensorCAD-Windows.zip"
 SIDECAR = "MensorCAD-Windows.zip.sha256"
+ZIP_CLI = "MensorCAD-CLI.zip"
+SIDECAR_CLI = "MensorCAD-CLI.zip.sha256"
 RUTA_SCRIPT_STANDALONE = "Install-MensorCAD.ps1"
 RUTA_BOOTSTRAP = "install.ps1"
+RUTA_GESTOR = "mensorcad.ps1"
+RUTA_LANZADOR = "mensorcad.cmd"
 MARCADOR_VERSION = b"__MENSORCAD_RELEASE_VERSION__"
+MARCADOR_GESTOR = b"__MENSORCAD_MANAGER_VERSION__"
+ENTRADAS_CLI = ("Install-MensorCAD.ps1", "mensorcad.cmd", "mensorcad.ps1")
 TMP_PREVIO = ".MensorCAD-Windows.zip.tmp"
 RAIZ_BUNDLE = "MensorCAD.bundle/"
 
@@ -96,6 +102,8 @@ class FuentesDePrueba:
         self.package_contents = self.raiz / "PackageContents.xml"
         self.install_script = self.raiz / "Install-MensorCAD.ps1"
         self.bootstrap_script = self.raiz / RUTA_BOOTSTRAP
+        self.manager_script = self.raiz / RUTA_GESTOR
+        self.launcher_script = self.raiz / RUTA_LANZADOR
         self.bat_script = self.raiz / "Instalar.bat"
         self.uninstall_bat_script = self.raiz / "Desinstalar.bat"
         self.license = self.raiz / "LICENSE"
@@ -120,6 +128,16 @@ class FuentesDePrueba:
             b"\xef\xbb\xbfparam([string]$Version, [switch]$NoAnimation)\r\n"
             b"Write-Host 'bootstrap de prueba'\r\n"
         )
+        self.manager_script.write_bytes(
+            b"#requires -Version 5.1\r\n"
+            b"$script:MensorCadManagerVersion = '" + MARCADOR_GESTOR + b"'\r\n"
+            b"Write-Output 'gestor de prueba'\r\n"
+        )
+        self.launcher_script.write_bytes(
+            b"@echo off\r\n"
+            b"set \"MENSORCAD_MANAGER_SCRIPT=%~dp0mensorcad.ps1\"\r\n"
+            b"exit /b %ERRORLEVEL%\r\n"
+        )
         self.bat_script.write_bytes(b"@echo off\r\npowershell -File Install-MensorCAD.ps1\r\n")
         self.uninstall_bat_script.write_bytes(b'@echo off\r\n"%~dp0Instalar.bat" -Uninstall\r\n')
         self.license.write_bytes(b"MIT License\n\nCopyright (c) RonGrasz\n")
@@ -138,6 +156,10 @@ class FuentesDePrueba:
             str(self.install_script),
             "--bootstrap-script",
             str(self.bootstrap_script),
+            "--manager-script",
+            str(self.manager_script),
+            "--launcher-script",
+            str(self.launcher_script),
             "--bat-script",
             str(self.bat_script),
             "--uninstall-bat-script",
@@ -159,6 +181,18 @@ class FuentesDePrueba:
         argumentos = self.argumentos(output_dir=output_dir)
         indice = argumentos.index("--bootstrap-script") + 1
         argumentos[indice] = str(bootstrap_script)
+        return argumentos
+
+    def argumentos_con_gestor(self, output_dir: Path, manager_script: Path):
+        argumentos = self.argumentos(output_dir=output_dir)
+        indice = argumentos.index("--manager-script") + 1
+        argumentos[indice] = str(manager_script)
+        return argumentos
+
+    def argumentos_con_lanzador(self, output_dir: Path, launcher_script: Path):
+        argumentos = self.argumentos(output_dir=output_dir)
+        indice = argumentos.index("--launcher-script") + 1
+        argumentos[indice] = str(launcher_script)
         return argumentos
 
 
@@ -199,6 +233,11 @@ class CasoBase(unittest.TestCase):
         # El bootstrap no se estampa: la cuarta salida es una copia byte a byte.
         return fuentes.bootstrap_script.read_bytes()
 
+    def gestor_esperado(self, fuentes: FuentesDePrueba, version: str = "0.1.0") -> bytes:
+        return fuentes.manager_script.read_bytes().replace(
+            MARCADOR_GESTOR, version.encode("ascii")
+        )
+
     def leer_zip(self, ruta: Path) -> zipfile.ZipFile:
         return zipfile.ZipFile(io.BytesIO(ruta.read_bytes()))
 
@@ -232,6 +271,7 @@ class InventarioDeSalida(CasoBase):
                 RAIZ_BUNDLE + "Contents/Lisp/MC-AREA.lsp",
                 RAIZ_BUNDLE + "Contents/Lisp/MC-TABLE.lsp",
                 RAIZ_BUNDLE + "Contents/UI/MensorCAD.cuix",
+                RAIZ_BUNDLE + "Install-MensorCAD.ps1",
                 "bundle.sha256",
                 "Install-MensorCAD.ps1",
                 "Instalar.bat",
@@ -281,7 +321,16 @@ class InventarioDeSalida(CasoBase):
         generados = sorted(ruta.name for ruta in fuentes.salida.iterdir())
         self.assertEqual(
             generados,
-            sorted([RUTA_SCRIPT_STANDALONE, RUTA_BOOTSTRAP, ZIP_SALIDA, SIDECAR]),
+            sorted(
+                [
+                    RUTA_SCRIPT_STANDALONE,
+                    RUTA_BOOTSTRAP,
+                    ZIP_SALIDA,
+                    SIDECAR,
+                    ZIP_CLI,
+                    SIDECAR_CLI,
+                ]
+            ),
         )
 
     def test_script_standalone_se_emite_estampado_e_identico_al_zip(self):
@@ -497,7 +546,7 @@ class BootstrapDeSalida(CasoBase):
                 any(nombre.casefold() == RUTA_BOOTSTRAP for nombre in nombres),
                 msg="el bootstrap no viaja dentro del ZIP",
             )
-            self.assertEqual(len(nombres), 9, msg="se agrego una entrada al inventario")
+            self.assertEqual(len(nombres), 10, msg="se agrego una entrada al inventario")
             self.assertEqual(len(nombres), len(set(nombres)), msg="entradas duplicadas")
             self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
 
@@ -534,6 +583,115 @@ class BootstrapDeSalida(CasoBase):
             (fuentes.salida / RUTA_BOOTSTRAP).read_bytes(),
             (RAIZ_REPO / RUTA_BOOTSTRAP).read_bytes(),
         )
+
+
+class CliDeSalida(CasoBase):
+    """El ZIP del gestor y el motor protegido dentro del bundle."""
+
+    def test_zip_cli_contiene_tres_entradas_planas_exactas(self):
+        fuentes = self.fuentes()
+        self.construir(fuentes)
+
+        cli_zip = fuentes.salida / ZIP_CLI
+        self.assertTrue(cli_zip.is_file(), msg="falta " + ZIP_CLI)
+        self.assertFalse(cli_zip.is_symlink())
+        with self.leer_zip(cli_zip) as zf:
+            self.assertEqual(sorted(zf.namelist()), sorted(ENTRADAS_CLI))
+            self.assertEqual(len(zf.namelist()), len(set(zf.namelist())), msg="duplicados")
+            self.assertIsNone(zf.testzip(), msg="ZIP del gestor corrupto")
+            for nombre in zf.namelist():
+                self.assertNotIn("/", nombre, msg="ruta no plana: " + nombre)
+                self.assertNotIn("\\", nombre, msg="ruta no plana: " + nombre)
+                self.assertGreater(zf.getinfo(nombre).file_size, 0, msg="entrada vacia: " + nombre)
+
+    def test_sidecar_cli_nombra_el_zip(self):
+        fuentes = self.fuentes()
+        self.construir(fuentes)
+
+        cli_zip = fuentes.salida / ZIP_CLI
+        sidecar = fuentes.salida / SIDECAR_CLI
+        self.assertTrue(sidecar.is_file(), msg="falta " + SIDECAR_CLI)
+        contenido = sidecar.read_text(encoding="utf-8")
+        self.assertEqual(contenido, "{}  {}\n".format(sha256_archivo(cli_zip), ZIP_CLI))
+        self.assertNotIn("\r", contenido, msg="el sidecar no lleva CR")
+
+    def test_gestor_se_estampa_y_lanzador_se_copia_byte_a_byte(self):
+        fuentes = self.fuentes()
+        gestor_fuente = fuentes.manager_script.read_bytes()
+        lanzador_fuente = fuentes.launcher_script.read_bytes()
+        self.construir(fuentes)
+
+        with self.leer_zip(fuentes.salida / ZIP_CLI) as zf:
+            gestor = zf.read(RUTA_GESTOR)
+            self.assertEqual(gestor, self.gestor_esperado(fuentes))
+            self.assertIn(b"0.1.0", gestor)
+            self.assertNotIn(MARCADOR_GESTOR, gestor)
+            self.assertNotIn(MARCADOR_VERSION, gestor)
+            self.assertEqual(zf.read(RUTA_LANZADOR), lanzador_fuente)
+            self.assertEqual(zf.read(RUTA_SCRIPT_STANDALONE), self.script_esperado(fuentes))
+        self.assertEqual(
+            fuentes.manager_script.read_bytes(), gestor_fuente, msg="se muto el gestor fuente"
+        )
+        self.assertEqual(
+            fuentes.launcher_script.read_bytes(),
+            lanzador_fuente,
+            msg="se muto el lanzador fuente",
+        )
+
+    def test_el_motor_protegido_entra_en_el_inventario_del_bundle(self):
+        fuentes = self.fuentes()
+        self.construir(fuentes)
+
+        estampado = self.script_esperado(fuentes)
+        with self.leer_zip(fuentes.salida / ZIP_SALIDA) as zf:
+            motor_bundle = zf.read(RAIZ_BUNDLE + RUTA_SCRIPT_STANDALONE)
+            self.assertEqual(motor_bundle, estampado, msg="el motor del bundle debe ir estampado")
+            self.assertEqual(zf.read(RUTA_SCRIPT_STANDALONE), motor_bundle)
+            lineas = self.lineas_bundle_sha256(zf)
+            rutas = [ruta for _, ruta in lineas]
+            self.assertIn(RUTA_SCRIPT_STANDALONE, rutas)
+            hashes = {ruta: digest for digest, ruta in lineas}
+            self.assertEqual(hashes[RUTA_SCRIPT_STANDALONE], sha256_bytes(motor_bundle))
+            esperadas = sorted(
+                nombre[len(RAIZ_BUNDLE) :]
+                for nombre in zf.namelist()
+                if nombre.startswith(RAIZ_BUNDLE)
+            )
+            self.assertEqual(rutas, esperadas, msg="el inventario debe cubrir el bundle completo")
+
+    def test_cli_reproducible_y_no_muta_las_fuentes(self):
+        fuentes = self.fuentes()
+        antes = {
+            ruta: sha256_archivo(ruta)
+            for ruta in (fuentes.manager_script, fuentes.launcher_script, fuentes.install_script)
+        }
+        destino_a = self.base / "cli-a"
+        destino_b = self.base / "cli-b"
+        self.construir(fuentes, output_dir=destino_a)
+        self.construir(fuentes, output_dir=destino_b)
+
+        self.assertEqual(
+            (destino_a / ZIP_CLI).read_bytes(), (destino_b / ZIP_CLI).read_bytes()
+        )
+        self.assertEqual(
+            (destino_a / SIDECAR_CLI).read_text(encoding="utf-8"),
+            (destino_b / SIDECAR_CLI).read_text(encoding="utf-8"),
+        )
+        despues = {ruta: sha256_archivo(ruta) for ruta in antes}
+        self.assertEqual(antes, despues, msg="el constructor muto una fuente")
+
+    def test_help_lista_las_salidas_del_gestor(self):
+        resultado = self.ejecutar(["--help"])
+        self.assertEqual(resultado.returncode, 0)
+        for fragmento in (
+            ZIP_CLI,
+            RUTA_GESTOR,
+            RUTA_LANZADOR,
+            "--manager-script",
+            "--launcher-script",
+            MARCADOR_GESTOR.decode("ascii"),
+        ):
+            self.assertIn(fragmento, resultado.stdout, msg="la ayuda no menciona " + fragmento)
 
 
 class Rechazos(CasoBase):
@@ -710,6 +868,105 @@ class Rechazos(CasoBase):
         self.assertIn("install.ps1", resultado.stderr)
         self.assert_rechazo(resultado, fuentes.salida, previos, "marcador")
         self.assertEqual(fuentes.bootstrap_script.read_bytes(), fuente)
+
+    def test_rechaza_gestor_sin_marcador_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuente = b"#requires -Version 5.1\nWrite-Output 'gestor sin marcador'\n"
+        fuentes.manager_script.write_bytes(fuente)
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertIn("marcador", resultado.stderr.lower())
+        self.assertIn(RUTA_GESTOR, resultado.stderr)
+        self.assert_rechazo(resultado, fuentes.salida, previos, "marcador")
+        self.assertEqual(fuentes.manager_script.read_bytes(), fuente)
+
+    def test_rechaza_gestor_con_marcador_duplicado_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuente = (
+            b"$script:MensorCadManagerVersion = '" + MARCADOR_GESTOR + b"'\n"
+            b"$script:OtraCopia = '" + MARCADOR_GESTOR + b"'\n"
+        )
+        fuentes.manager_script.write_bytes(fuente)
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertIn("marcador", resultado.stderr.lower())
+        self.assert_rechazo(resultado, fuentes.salida, previos, "marcador")
+        self.assertEqual(fuentes.manager_script.read_bytes(), fuente)
+
+    def test_rechaza_lanzador_no_ascii_sin_mutar_salidas(self):
+        fuentes = self.fuentes()
+        fuente = b"\xef\xbb\xbf@echo off\r\nexit /b 0\r\n"
+        fuentes.launcher_script.write_bytes(fuente)
+        previos = self.preparar_salida_previa(fuentes)
+        resultado = self.ejecutar(fuentes.argumentos())
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertIn(RUTA_LANZADOR, resultado.stderr)
+        self.assertIn("ascii", resultado.stderr.lower())
+        self.assert_rechazo(resultado, fuentes.salida, previos, "ascii")
+        self.assertEqual(fuentes.launcher_script.read_bytes(), fuente)
+
+    def preparar_colision_fuente(
+        self, fuentes: FuentesDePrueba, nombre_destino: str, contenido: bytes
+    ):
+        fuentes.salida.mkdir(parents=True, exist_ok=True)
+        previos: dict[str, bytes] = {}
+        for nombre in (
+            ZIP_SALIDA,
+            SIDECAR,
+            RUTA_SCRIPT_STANDALONE,
+            RUTA_BOOTSTRAP,
+            ZIP_CLI,
+            SIDECAR_CLI,
+        ):
+            valor = (
+                contenido
+                if nombre == nombre_destino
+                else "SENTINELA-{}".format(nombre).encode("utf-8")
+            )
+            (fuentes.salida / nombre).write_bytes(valor)
+            previos[nombre] = valor
+        return fuentes.salida / nombre_destino, previos
+
+    def test_rechaza_gestor_colisionado_con_su_salida(self):
+        fuentes = self.fuentes()
+        destino, previos = self.preparar_colision_fuente(
+            fuentes, ZIP_CLI, fuentes.manager_script.read_bytes()
+        )
+        resultado = self.ejecutar(fuentes.argumentos_con_gestor(fuentes.salida, destino))
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(
+            resultado.stderr,
+            "ERROR: la salida {} no puede ser el mismo archivo que el comando gestor "
+            "fuente: {}\n".format(ZIP_CLI, destino),
+        )
+        self.assert_rechazo(resultado, fuentes.salida, previos, "mismo archivo")
+        self.assertEqual(
+            destino.read_bytes(), previos[ZIP_CLI], msg="se muto el gestor fuente"
+        )
+
+    def test_rechaza_lanzador_colisionado_con_su_salida(self):
+        fuentes = self.fuentes()
+        destino, previos = self.preparar_colision_fuente(
+            fuentes, SIDECAR_CLI, fuentes.launcher_script.read_bytes()
+        )
+        resultado = self.ejecutar(fuentes.argumentos_con_lanzador(fuentes.salida, destino))
+        self.assertEqual(resultado.returncode, 1)
+        self.assertEqual(resultado.stdout, "")
+        self.assertEqual(
+            resultado.stderr,
+            "ERROR: la salida {} no puede ser el mismo archivo que el lanzador "
+            "fuente: {}\n".format(SIDECAR_CLI, destino),
+        )
+        self.assert_rechazo(resultado, fuentes.salida, previos, "mismo archivo")
+        self.assertEqual(
+            destino.read_bytes(), previos[SIDECAR_CLI], msg="se muto el lanzador fuente"
+        )
 
     def test_help_documenta_la_cuarta_salida_y_su_bandera(self):
         resultado = self.ejecutar(["--help"])
@@ -961,7 +1218,17 @@ class PublicacionSegura(CasoBase):
                 self.assertIsNone(zf.testzip(), msg="ZIP de salida corrupto")
             self.assertEqual(
                 sorted(ruta.name for ruta in fuentes.salida.iterdir()),
-                sorted([TMP_PREVIO, RUTA_SCRIPT_STANDALONE, RUTA_BOOTSTRAP, SIDECAR, ZIP_SALIDA]),
+                sorted(
+                    [
+                        TMP_PREVIO,
+                        RUTA_SCRIPT_STANDALONE,
+                        RUTA_BOOTSTRAP,
+                        SIDECAR,
+                        ZIP_SALIDA,
+                        ZIP_CLI,
+                        SIDECAR_CLI,
+                    ]
+                ),
             )
         else:
             self.assertEqual(

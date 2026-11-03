@@ -1,4 +1,4 @@
-name: Construir paquete y probar instaladores
+name: Empaquetar y validar MensorCAD
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Paquete y pruebas en Windows
+    name: Empaquetado y validacion critica en Windows
     runs-on: windows-latest
     steps:
       - name: Descargar el repositorio
@@ -23,42 +23,29 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Pruebas de Python (suite completa)
+      # S7: solo lo critico. Empaquetado/validacion del constructor y el
+      # arranque real del bootstrap (Latin-1/BOM) gatean el CI. Las demas suites
+      # de Python siguen disponibles para ejecutarse a mano.
+      - name: Pruebas criticas de Python (empaquetado y arranque)
         shell: powershell
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          python -B -m unittest discover -s tests -p "test_*.py" -v
+          python -B -m unittest discover -s tests -p "test_build_bundle.py" -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s tests -p "test_bootstrap_encoding.py" -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Pruebas del instalador local en Windows PowerShell 5.1
+      - name: Pruebas criticas del bootstrap del gestor
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/Test-CliBootstrap.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Pruebas de la ventana del instalador en Windows PowerShell 5.1
+      - name: Pruebas criticas del comando gestor
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Pruebas del estilo del instalador en Windows PowerShell 5.1
-        shell: powershell
-        run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerStyle.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Pruebas del instalador remoto en Windows PowerShell 5.1
-        shell: powershell
-        run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Pruebas del bootstrap remoto en Windows PowerShell 5.1
-        shell: powershell
-        run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Bootstrap.ps1
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/Test-Manager.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Construir el paquete con la versión del manifiesto
@@ -72,6 +59,18 @@ jobs:
           python tools/build_bundle.py --output-dir dist --version $version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Se valida el mismo dist que se publica: la suite reutiliza los seis
+      # artefactos ya construidos y no vuelve a ejecutar el constructor.
+      - name: Pruebas de distribucion con artefactos reales
+        shell: powershell
+        run: |
+          [xml]$manifest = Get-Content -LiteralPath PackageContents.xml -Raw
+          $package = $manifest.ApplicationPackage
+          $version = $package.AppVersion
+          if (-not $version) { $version = $package.Version }
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/Test-CliDistribution.ps1 -BuildDir dist -Version $version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # Solo se publica después de que todas las comprobaciones anteriores pasen.
       # El artifact no es un release: no se crean tags, releases ni pushes.
       - name: Publicar el paquete construido
@@ -83,4 +82,6 @@ jobs:
             dist/MensorCAD-Windows.zip.sha256
             dist/Install-MensorCAD.ps1
             dist/install.ps1
+            dist/MensorCAD-CLI.zip
+            dist/MensorCAD-CLI.zip.sha256
           if-no-files-found: error

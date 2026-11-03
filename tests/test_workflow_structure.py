@@ -28,6 +28,13 @@ ARTIFACT_PATHS = (
     "dist/install.ps1",
 )
 
+# Assets propios del comando gestor: viajan junto al paquete del complemento y
+# se publican como artifact, no como release.
+CLI_ARTIFACT_PATHS = (
+    "dist/MensorCAD-CLI.zip",
+    "dist/MensorCAD-CLI.zip.sha256",
+)
+
 COMMAND_HEADINGS = (
     "### MCAREA —",
     "### MCTABLE —",
@@ -127,23 +134,25 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertRegex(block, r'python-version:\s*"3\.13"')
 
     def test_python_suite_runs_without_bytecode(self) -> None:
-        block = self.step_block("Pruebas de Python")
+        # S7: el CI solo ejecuta las suites criticas de empaquetado y arranque.
+        block = self.step_block("Pruebas criticas de Python")
         self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', block)
-        self.assertIn(
-            'python -B -m unittest discover -s tests -p "test_*.py" -v', block
-        )
+        for suite in ("test_build_bundle.py", "test_bootstrap_encoding.py"):
+            self.assertIn(
+                f'python -B -m unittest discover -s tests -p "{suite}" -v', block
+            )
+        self.assertNotIn('-p "test_*.py"', block, "el CI no debe ejecutar el descubrimiento completo")
         self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", block)
 
-    def test_the_five_windows_suites_are_isolated_and_gate_failures(self) -> None:
-        # Las cinco suites funcionales del repositorio deben pasar por el CI:
-        # una suite escrita pero no agendada es cobertura que no existe.
+    def test_the_three_windows_suites_are_isolated_and_gate_failures(self) -> None:
+        # S7: solo las tres suites criticas del gestor pasan por el CI. Las
+        # suites opcionales siguen disponibles para ejecutarse a mano.
         suites = (
-            ("Pruebas del instalador local", "Test-Installer.ps1"),
-            ("Pruebas de la ventana del instalador", "Test-InstallerWindow.ps1"),
-            ("Pruebas del estilo del instalador", "Test-InstallerStyle.ps1"),
-            ("Pruebas del instalador remoto", "Test-RemoteInstaller.ps1"),
-            ("Pruebas del bootstrap remoto", "Test-Bootstrap.ps1"),
+            ("Pruebas criticas del bootstrap del gestor", "Test-CliBootstrap.ps1"),
+            ("Pruebas criticas del comando gestor", "Test-Manager.ps1"),
+            ("Pruebas de distribucion con artefactos reales", "Test-CliDistribution.ps1"),
         )
+        self.assertEqual(len(suites), 3, "el CI debe agendar exactamente tres suites")
         for _, suite in suites:
             self.assertTrue(
                 (ROOT / "tests" / suite).is_file(),
@@ -151,13 +160,27 @@ class WorkflowStructureTests(unittest.TestCase):
             )
         for label, suite in suites:
             block = self.step_block(label)
-            self.assertIn(
-                f"powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/{suite}",
-                block,
-            )
+            self.assertIn("powershell.exe", block)
+            self.assertIn(f"-ExecutionPolicy Bypass -File tests/{suite}", block)
             self.assertIn("shell: powershell", block)
             self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", block)
             self.assertNotIn("continue-on-error", block)
+        for opcional in (
+            "Test-Installer.ps1",
+            "Test-InstallerWindow.ps1",
+            "Test-InstallerStyle.ps1",
+            "Test-RemoteInstaller.ps1",
+            "Test-Bootstrap.ps1",
+        ):
+            self.assertTrue(
+                (ROOT / "tests" / opcional).is_file(),
+                f"la suite opcional debe seguir disponible: tests/{opcional}",
+            )
+            self.assertNotIn(
+                f"tests/{opcional}",
+                self.workflow,
+                f"la suite opcional no debe gatear el CI: tests/{opcional}",
+            )
 
     def test_build_reads_version_from_manifest_without_tag_rewrite(self) -> None:
         block = self.step_block("Construir el paquete")
@@ -177,38 +200,43 @@ class WorkflowStructureTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.workflow)
 
     def test_checks_run_before_the_artifact_upload(self) -> None:
-        python_suite = self.workflow.index("test_*.py")
-        local_suite = self.workflow.index("tests/Test-Installer.ps1")
-        window_suite = self.workflow.index("tests/Test-InstallerWindow.ps1")
-        style_suite = self.workflow.index("tests/Test-InstallerStyle.ps1")
-        remote_suite = self.workflow.index("tests/Test-RemoteInstaller.ps1")
-        bootstrap_suite = self.workflow.index("tests/Test-Bootstrap.ps1")
-        build = self.workflow.index("tools/build_bundle.py")
-        upload = self.workflow.index("actions/upload-artifact@")
+        # S7: se construye una sola vez y la validacion de distribucion reutiliza
+        # ese mismo dist antes de publicar.
         marks = [
-            python_suite,
-            local_suite,
-            window_suite,
-            style_suite,
-            remote_suite,
-            bootstrap_suite,
-            build,
-            upload,
+            self.workflow.index("test_build_bundle.py"),
+            self.workflow.index("tests/Test-CliBootstrap.ps1"),
+            self.workflow.index("tests/Test-Manager.ps1"),
+            self.workflow.index("tools/build_bundle.py"),
+            self.workflow.index("tests/Test-CliDistribution.ps1"),
+            self.workflow.index("actions/upload-artifact@"),
         ]
         self.assertEqual(marks, sorted(marks))
+        self.assertEqual(
+            self.workflow.count("python tools/build_bundle.py"),
+            1,
+            "el CI debe construir los artefactos una sola vez",
+        )
+        distribucion = self.step_block("Pruebas de distribucion con artefactos reales")
+        self.assertIn("-BuildDir dist", distribucion)
+        self.assertNotIn("tools/build_bundle.py", distribucion)
         upload_block = self.step_block("actions/upload-artifact@")
         self.assertNotRegex(upload_block, r"(?m)^\s+if:")
         self.assertNotIn("always()", self.workflow)
         self.assertNotIn("continue-on-error", self.workflow)
 
-    def test_upload_contains_only_the_four_frozen_assets(self) -> None:
+    def test_upload_contains_only_the_six_frozen_assets(self) -> None:
         block = self.step_block("actions/upload-artifact@")
         self.assertIn("if-no-files-found: error", block)
         self.assertIn("path: |", block)
         path_lines = [
             line.strip() for line in block.splitlines() if line.strip().startswith("dist/")
         ]
-        self.assertEqual(sorted(path_lines), sorted(ARTIFACT_PATHS))
+        self.assertEqual(
+            sorted(path_lines), sorted(ARTIFACT_PATHS + CLI_ARTIFACT_PATHS)
+        )
+        self.assertEqual(
+            len(path_lines), len(set(path_lines)), "rutas duplicadas en la subida"
+        )
 
     def test_workflow_never_publishes_releases_tags_or_pushes(self) -> None:
         for forbidden in (

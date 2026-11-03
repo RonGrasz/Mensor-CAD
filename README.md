@@ -36,6 +36,7 @@
 
 - **AutoCAD para Windows de 64 bits**, con soporte para AutoLISP y ActiveX. No se garantiza compatibilidad con Mac, AutoCAD Web ni AutoCAD LT.
 - Para instalar el paquete completo: **Windows PowerShell 5.1 de 64 bits** y permisos de administrador. Windows incluye PowerShell; no necesitas saber programar.
+- **El comando gestor `mensorcad` no pide permisos de administrador**: se instala por usuario. Solo el complemento de AutoCAD se instala por equipo y requiere elevación.
 - **Guarda tus dibujos y cierra AutoCAD** antes de instalar, actualizar o desinstalar el paquete.
 
 > **Antes de trabajar:** usa una copia de tu dibujo y revisa sus unidades y sistema de coordenadas. MensorCAD no los convierte automáticamente. Para trabajar con metros y m², prepara el dibujo en metros.
@@ -68,22 +69,53 @@ Elige la forma que te resulte más cómoda. **Si quieres todas las herramientas 
 
 <a id="instalacion-cli"></a>
 
-### 2. CLI · Desde PowerShell
+### 2. CLI · Gestor `mensorcad` en dos pasos
 
-**La alternativa para instalar la última versión desde la terminal, sin descargar el ZIP a mano.** Necesitas conexión a Internet.
+**La alternativa para administrar el complemento desde la terminal.** El flujo tiene dos pasos a propósito: primero se instala el comando gestor y después el complemento, cuando tú lo decidas. El gestor se instala **por usuario** en `%LOCALAPPDATA%\MensorCAD\cli` y se registra en tu `PATH` de usuario; el complemento se instala **por equipo** en `%ProgramFiles%\Autodesk\ApplicationPlugins\MensorCAD.bundle`, igual que el ZIP.
 
-1. Guarda tus dibujos y cierra AutoCAD.
-2. En el menú Inicio de Windows, busca y abre **Windows PowerShell** de 64 bits.
-3. Copia esta línea completa, pégala en PowerShell y presiona **Enter**:
+> **Estado de publicación:** la última release publicada (`v0.1.0`) todavía usa el instalador anterior de un solo paso. Los archivos `install.ps1`, `MensorCAD-CLI.zip` y `MensorCAD-CLI.zip.sha256` de este repositorio **todavía no están publicados**, así que el comando remoto de abajo todavía no instala el gestor. El flujo de dos pasos llegará en la próxima release.
+
+El comando publicado para el paso 1 será:
 
 ```powershell
 irm 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/install.ps1' -ea Stop | iex
 ```
 
-4. Acepta el aviso de permisos de Windows y espera a que el instalador termine.
-5. Abre AutoCAD y escribe `MCHELP` para comprobar la instalación.
+Mientras la publicación esté pendiente, ese mismo comando sigue ejecutando el instalador anterior de la release `v0.1.0`, que instala el complemento completo de una sola vez. Antes de ejecutarlo, verifica que la URL apunte al repositorio oficial: `https://github.com/RonGrasz/Mensor-CAD`.
 
-Este comando descarga y ejecuta el instalador de MensorCAD. Antes de ejecutarlo, verifica que la URL apunte al repositorio oficial: `https://github.com/RonGrasz/Mensor-CAD`.
+Si construiste los artefactos localmente, el bootstrap local equivalente es:
+
+```powershell
+& .\dist\install.ps1; exit $LASTEXITCODE
+```
+
+Ese bootstrap descarga `MensorCAD-CLI.zip` y su `.sha256` del tag indicado: como esa publicación todavía está pendiente, hoy falla antes de escribir nada y lo informa por `stderr`.
+
+#### Paso 1 · Instalar el comando gestor
+
+El bootstrap corto instala **solo** el comando: no descarga el complemento, no pide permisos de administrador y no abre AutoCAD. Valida el ZIP del gestor antes de escribir, registra la carpeta en el `PATH` de tu usuario una sola vez y deja la terminal lista.
+
+#### Paso 2 · Instalar el complemento
+
+Abre una terminal nueva y ejecuta:
+
+```powershell
+mensorcad install
+```
+
+El gestor reutiliza el instalador validado: descarga el ZIP del complemento, revisa su SHA-256 y su contenido, y recién entonces pide los permisos de Windows para instalar en `Program Files`. Los pasos y el estilo jade son los del instalador de siempre; el gestor no agrega porcentajes ni animaciones ficticias.
+
+| Comando | Qué hace |
+|---|---|
+| `mensorcad` | Muestra un resumen del estado. **No instala nada automáticamente.** |
+| `mensorcad install` / `mensorcad -i` | Instala el complemento con la última release publicada. |
+| `mensorcad update` | Actualiza sin bajar de versión. Si ya coincide, informa «Ya estás actualizado» y no reinstala. |
+| `mensorcad uninstall` | Quita el complemento **sin conexión** y conserva el comando gestor. |
+| `mensorcad status` | Muestra la versión del gestor y la versión instalada del complemento, sin usar la red. |
+| `mensorcad --help` | Muestra la ayuda. |
+| `mensorcad --version` | Muestra la versión del gestor (no la del complemento). |
+
+`status`, `--help` y `--version` son de solo lectura: no descargan, no piden permisos de administrador y no escriben archivos. El gestor **no se autoactualiza** en esta etapa: para actualizar el propio comando se vuelve a ejecutar el bootstrap.
 
 <a id="instalacion-personalizada"></a>
 
@@ -218,13 +250,16 @@ Agrega edificaciones, áreas verdes y agua con sus opciones de presentación.
 
 ## Actualizar
 
-Cierra AutoCAD e instala la versión nueva por ZIP o CLI. **No necesitas desinstalar primero.** Si usas APPLOAD, reemplaza tus archivos por los nuevos y vuelve a cargarlos después de reiniciar AutoCAD.
+- **Con el gestor:** `mensorcad update`. Compara la versión instalada con la disponible y, si coinciden, informa «Ya estás actualizado» sin reinstalar. Nunca baja de versión de forma silenciosa; si la comparación no es posible, no modifica nada.
+- **Con el ZIP:** cierra AutoCAD e instala la versión nueva por ZIP o CLI. **No necesitas desinstalar primero.**
+- **Con APPLOAD:** reemplaza tus archivos por los nuevos y vuelve a cargarlos después de reiniciar AutoCAD.
 
 <a id="desinstalacion"></a>
 
 ## Desinstalar
 
-- **Paquete completo:** cierra AutoCAD y haz doble clic en **`Desinstalar.bat`**, en la carpeta donde extrajiste el ZIP. Conserva ese archivo junto a `Instalar.bat` e `Install-MensorCAD.ps1` y acepta el aviso de permisos. Si instalaste por CLI y no tienes esa carpeta, descarga y extrae el ZIP para acceder al desinstalador.
+- **Con el gestor:** cierra AutoCAD y ejecuta `mensorcad uninstall`. Quita el complemento **sin conexión** con el motor protegido que quedó dentro de la instalación y **conserva el comando gestor, su carpeta y el `PATH`** para poder reinstalar. Si AutoCAD está abierto, avisa y sale sin cerrarlo.
+- **Instalaciones anteriores o sin gestor:** descarga el ZIP y haz doble clic en **`Desinstalar.bat`**, en la carpeta donde extrajiste el ZIP. Conserva ese archivo junto a `Instalar.bat` e `Install-MensorCAD.ps1` y acepta el aviso de permisos. Es el respaldo para instalaciones viejas que no incluyen el motor de desinstalación.
 - **Carga con APPLOAD:** cierra AutoCAD y no vuelvas a cargar los scripts. Si ya no los necesitas, puedes borrar los archivos descargados.
 
 Las tablas, textos y símbolos que ya creaste **permanecen en tus dibujos**. Las funciones automáticas que dependan de una herramienta dejarán de ejecutarse si no está cargada.

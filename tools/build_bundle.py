@@ -43,6 +43,7 @@ import xml.etree.ElementTree as ElementTree
 
 NOMBRE_BUNDLE = "MensorCAD.bundle"
 ZIP_SALIDA = "MensorCAD-Windows.zip"
+ZIP_CLI_SALIDA = "MensorCAD-CLI.zip"
 SUFIJO_SIDECAR = ".sha256"
 VERSION_POR_DEFECTO = "0.1.0"
 PATRON_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
@@ -51,8 +52,12 @@ RUTA_CUIX = "Contents/UI/MensorCAD.cuix"
 RUTA_LISP = "Contents/Lisp"
 NOMBRE_PRODUCTO = "MensorCAD"
 NOMBRE_SCRIPT = "Install-MensorCAD.ps1"
+NOMBRE_GESTOR = "mensorcad.ps1"
+NOMBRE_LANZADOR = "mensorcad.cmd"
 NOMBRE_BOOTSTRAP = "install.ps1"
 MARCADOR_VERSION_SCRIPT = b"__MENSORCAD_RELEASE_VERSION__"
+MARCADOR_VERSION_GESTOR = b"__MENSORCAD_MANAGER_VERSION__"
+ENTRADAS_CLI = (NOMBRE_SCRIPT, NOMBRE_GESTOR, NOMBRE_LANZADOR)
 COMPONENTES_PROHIBIDOS = {"__pycache__"}
 COMPONENTES_OCULTOS_PERMITIDOS = {".rels"}
 MARCA_TIEMPO_ZIP = (1980, 1, 1, 0, 0, 0)
@@ -69,7 +74,10 @@ class Resultado:
     sidecar: Path
     install_script: Path
     bootstrap: Path
+    cli_zip: Path
+    cli_sidecar: Path
     hash_zip: str
+    hash_cli: str
     archivos_bundle: int
 
 
@@ -80,6 +88,8 @@ class Fuentes:
     cuix_dir: Path
     install_script: Path
     bootstrap_script: Path
+    manager_script: Path
+    launcher_script: Path
     bat_script: Path
     uninstall_bat_script: Path
     license: Path
@@ -402,6 +412,7 @@ def _escribir_zip(
 ) -> int:
     entradas_bundle: list[tuple[str, Path]] = [
         ("PackageContents.xml", manifiesto),
+        (NOMBRE_SCRIPT, install_script),
         *((RUTA_LISP + "/" + ruta.name, ruta) for ruta in archivos_lisp),
         (RUTA_CUIX, cuix),
     ]
@@ -424,33 +435,99 @@ def _escribir_zip(
     return len(entradas_bundle)
 
 
-def _estampar_script_install(ruta: Path, version: str) -> bytes:
-    """Devuelve la plantilla con el marcador reemplazado por ``version``.
+def _escribir_zip_cli(
+    destino: Path, install_script: Path, manager_script: Path, launcher_script: Path
+) -> None:
+    """Escribe el ZIP plano del gestor con orden y marcas de tiempo fijas."""
+    entradas = sorted(
+        (
+            (NOMBRE_SCRIPT, install_script),
+            (NOMBRE_GESTOR, manager_script),
+            (NOMBRE_LANZADOR, launcher_script),
+        ),
+        key=lambda par: par[0],
+    )
+    if tuple(nombre for nombre, _ in entradas) != tuple(sorted(ENTRADAS_CLI)):
+        raise ErrorConstruccion(
+            "el ZIP del gestor debe contener exactamente {}".format(
+                ", ".join(sorted(ENTRADAS_CLI))
+            )
+        )
+    with zipfile.ZipFile(destino, "w", compression=zipfile.ZIP_DEFLATED) as paquete:
+        for nombre, ruta in entradas:
+            _copiar_a_zip(paquete, nombre, ruta)
+
+
+def _escribir_sidecar(destino: Path, hash_zip: str, nombre_zip: str) -> None:
+    destino.write_text(
+        "{}  {}\n".format(hash_zip, nombre_zip), encoding="utf-8", newline="\n"
+    )
+
+
+def _estampar_plantilla(
+    ruta: Path, etiqueta: str, marcador: bytes, version: str
+) -> bytes:
+    """Devuelve la plantilla con su unico marcador reemplazado por ``version``.
 
     Solo se aceptan bytes: no se decodifica ni se reescribe el archivo, de modo
     que el BOM y los fines de linea de la plantilla se conservan. La cantidad
     de marcadores se valida antes de que exista cualquier escritura de salida.
     """
-    contenido = _comprobar_archivo_regular(ruta, NOMBRE_SCRIPT).read_bytes()
-    cantidad = contenido.count(MARCADOR_VERSION_SCRIPT)
+    contenido = _comprobar_archivo_regular(ruta, etiqueta).read_bytes()
+    cantidad = contenido.count(marcador)
     if cantidad != 1:
         raise ErrorConstruccion(
             "{} debe contener exactamente un marcador {}; encontrados {}".format(
-                NOMBRE_SCRIPT,
-                MARCADOR_VERSION_SCRIPT.decode("ascii"),
+                etiqueta,
+                marcador.decode("ascii"),
                 cantidad,
             )
         )
-    estampado = contenido.replace(
-        MARCADOR_VERSION_SCRIPT, version.encode("ascii")
-    )
-    if MARCADOR_VERSION_SCRIPT in estampado:
+    estampado = contenido.replace(marcador, version.encode("ascii"))
+    if marcador in estampado:
         raise ErrorConstruccion(
             "el marcador {} sigue presente después de estampar {}".format(
-                MARCADOR_VERSION_SCRIPT.decode("ascii"), NOMBRE_SCRIPT
+                marcador.decode("ascii"), etiqueta
             )
         )
     return estampado
+
+
+def _estampar_script_install(ruta: Path, version: str) -> bytes:
+    return _estampar_plantilla(ruta, NOMBRE_SCRIPT, MARCADOR_VERSION_SCRIPT, version)
+
+
+def _estampar_gestor(ruta: Path, version: str) -> bytes:
+    """Estampa la version del comando gestor; no lleva version de producto."""
+    contenido = _comprobar_archivo_regular(ruta, NOMBRE_GESTOR).read_bytes()
+    if MARCADOR_VERSION_SCRIPT in contenido:
+        raise ErrorConstruccion(
+            "{} no debe contener el marcador {}; la version del producto la lleva "
+            "{}".format(
+                NOMBRE_GESTOR,
+                MARCADOR_VERSION_SCRIPT.decode("ascii"),
+                NOMBRE_SCRIPT,
+            )
+        )
+    return _estampar_plantilla(ruta, NOMBRE_GESTOR, MARCADOR_VERSION_GESTOR, version)
+
+
+def _leer_lanzador(ruta: Path) -> bytes:
+    """Devuelve el lanzador CMD byte a byte y rechaza BOM o texto no ASCII."""
+    contenido = _comprobar_archivo_regular(ruta, NOMBRE_LANZADOR).read_bytes()
+    if contenido.startswith(b"\xef\xbb\xbf") or any(byte >= 0x80 for byte in contenido):
+        raise ErrorConstruccion(
+            "{} debe ser ASCII sin BOM para que CMD lo ejecute igual en todas las "
+            "configuraciones regionales".format(NOMBRE_LANZADOR)
+        )
+    for marcador in (MARCADOR_VERSION_SCRIPT, MARCADOR_VERSION_GESTOR):
+        if marcador in contenido:
+            raise ErrorConstruccion(
+                "{} no debe contener el marcador {}".format(
+                    NOMBRE_LANZADOR, marcador.decode("ascii")
+                )
+            )
+    return contenido
 
 
 def _comprobar_solapamiento_fuente(
@@ -538,6 +615,8 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
     for etiqueta, ruta in (
         ("Install-MensorCAD.ps1", fuentes.install_script),
         (NOMBRE_BOOTSTRAP, fuentes.bootstrap_script),
+        (NOMBRE_GESTOR, fuentes.manager_script),
+        (NOMBRE_LANZADOR, fuentes.launcher_script),
         ("Instalar.bat", fuentes.bat_script),
         ("Desinstalar.bat", fuentes.uninstall_bat_script),
         ("LICENSE", fuentes.license),
@@ -547,6 +626,8 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
     # Validación y estampado antes de cualquier escritura de salida.
     script_estampado = _estampar_script_install(fuentes.install_script, version)
     bootstrap_bytes = _leer_bootstrap(fuentes.bootstrap_script)
+    gestor_estampado = _estampar_gestor(fuentes.manager_script, version)
+    lanzador_bytes = _leer_lanzador(fuentes.launcher_script)
 
     archivos_lisp = listar_lisp(fuentes.lisp_dir)
     archivos_cuix = listar_cuix(fuentes.cuix_dir)
@@ -556,16 +637,30 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
     comprobar_salida_fuera_de_fuentes(output_dir, fuentes)
     zip_salida = output_dir / ZIP_SALIDA
     sidecar = output_dir / (ZIP_SALIDA + SUFIJO_SIDECAR)
+    cli_zip = output_dir / ZIP_CLI_SALIDA
+    cli_sidecar = output_dir / (ZIP_CLI_SALIDA + SUFIJO_SIDECAR)
     script_salida = output_dir / NOMBRE_SCRIPT
     bootstrap_salida = output_dir / NOMBRE_BOOTSTRAP
-    destinos = (zip_salida, sidecar, script_salida, bootstrap_salida)
-    # Cada una de las cuatro salidas se compara con las DOS fuentes: ni la
-    # plantilla ni el bootstrap pueden ser reemplazados por un artefacto.
+    destinos = (
+        zip_salida,
+        sidecar,
+        script_salida,
+        bootstrap_salida,
+        cli_zip,
+        cli_sidecar,
+    )
+    # Cada salida se compara con TODAS las fuentes: ninguna plantilla, ni el
+    # bootstrap, ni el gestor, ni el lanzador pueden ser reemplazados por un
+    # artefacto. El orden de los mensajes es estable y probado.
+    fuentes_protegidas = (
+        (fuentes.install_script, "la plantilla"),
+        (fuentes.bootstrap_script, "el bootstrap"),
+        (fuentes.manager_script, "el comando gestor"),
+        (fuentes.launcher_script, "el lanzador"),
+    )
     for destino in destinos:
-        _comprobar_solapamiento_fuente(destino, fuentes.install_script)
-        _comprobar_solapamiento_fuente(
-            destino, fuentes.bootstrap_script, "el bootstrap"
-        )
+        for fuente, etiqueta_fuente in fuentes_protegidas:
+            _comprobar_solapamiento_fuente(destino, fuente, etiqueta_fuente)
     comprobar_destinos(output_dir, list(destinos))
 
     with tempfile.TemporaryDirectory(prefix="mensorcad-bundle-") as temporal:
@@ -575,6 +670,10 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
         script_temporal.write_bytes(script_estampado)
         bootstrap_temporal = Path(temporal) / NOMBRE_BOOTSTRAP
         bootstrap_temporal.write_bytes(bootstrap_bytes)
+        gestor_temporal = Path(temporal) / NOMBRE_GESTOR
+        gestor_temporal.write_bytes(gestor_estampado)
+        lanzador_temporal = Path(temporal) / NOMBRE_LANZADOR
+        lanzador_temporal.write_bytes(lanzador_bytes)
         zip_temporal = Path(temporal) / ZIP_SALIDA
         total_bundle = _escribir_zip(
             zip_temporal,
@@ -588,21 +687,31 @@ def construir(fuentes: Fuentes, output_dir: Path, version: str) -> Resultado:
         )
         hash_zip = _hash_archivo(zip_temporal)
         sidecar_temporal = Path(temporal) / (ZIP_SALIDA + SUFIJO_SIDECAR)
-        sidecar_temporal.write_text(
-            "{}  {}\n".format(hash_zip, ZIP_SALIDA), encoding="utf-8", newline="\n"
+        _escribir_sidecar(sidecar_temporal, hash_zip, ZIP_SALIDA)
+        cli_temporal = Path(temporal) / ZIP_CLI_SALIDA
+        _escribir_zip_cli(
+            cli_temporal, script_temporal, gestor_temporal, lanzador_temporal
         )
+        hash_cli = _hash_archivo(cli_temporal)
+        cli_sidecar_temporal = Path(temporal) / (ZIP_CLI_SALIDA + SUFIJO_SIDECAR)
+        _escribir_sidecar(cli_sidecar_temporal, hash_cli, ZIP_CLI_SALIDA)
         output_dir.mkdir(parents=True, exist_ok=True)
         _instalar_salida(zip_temporal, zip_salida)
         _instalar_salida(sidecar_temporal, sidecar)
         _instalar_salida(script_temporal, script_salida)
         _instalar_salida(bootstrap_temporal, bootstrap_salida)
+        _instalar_salida(cli_temporal, cli_zip)
+        _instalar_salida(cli_sidecar_temporal, cli_sidecar)
 
     return Resultado(
         zip_salida=zip_salida,
         sidecar=sidecar,
         install_script=script_salida,
         bootstrap=bootstrap_salida,
+        cli_zip=cli_zip,
+        cli_sidecar=cli_sidecar,
         hash_zip=hash_zip,
+        hash_cli=hash_cli,
         archivos_bundle=total_bundle,
     )
 
@@ -612,7 +721,9 @@ def _analizar_argumentos(argv: list[str] | None) -> argparse.Namespace:
     analizador = argparse.ArgumentParser(
         description=(
             "Construye MensorCAD-Windows.zip, su sidecar SHA-256, el script "
-            "standalone y el bootstrap install.ps1."
+            "standalone, el bootstrap install.ps1 y los assets del comando gestor "
+            "MensorCAD-CLI.zip y MensorCAD-CLI.zip.sha256. El motor estampado "
+            "también queda dentro del inventario del bundle."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -652,6 +763,25 @@ def _analizar_argumentos(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     analizador.add_argument(
+        "--manager-script",
+        type=Path,
+        default=raiz_defecto / NOMBRE_GESTOR,
+        help=(
+            "comando gestor mensorcad.ps1; debe contener exactamente un marcador "
+            "__MENSORCAD_MANAGER_VERSION__ que se reemplaza con --version y viaja "
+            "dentro de MensorCAD-CLI.zip"
+        ),
+    )
+    analizador.add_argument(
+        "--launcher-script",
+        type=Path,
+        default=raiz_defecto / NOMBRE_LANZADOR,
+        help=(
+            "lanzador CMD mensorcad.cmd; se copia byte a byte dentro de "
+            "MensorCAD-CLI.zip y debe ser ASCII sin BOM"
+        ),
+    )
+    analizador.add_argument(
         "--uninstall-bat-script", type=Path, default=raiz_defecto / "Desinstalar.bat",
         help="BAT de desinstalación por doble clic que se incluye en el ZIP",
     )
@@ -667,6 +797,8 @@ def main(argv: list[str] | None = None) -> int:
         cuix_dir=opciones.cuix_dir,
         install_script=opciones.install_script,
         bootstrap_script=opciones.bootstrap_script,
+        manager_script=opciones.manager_script,
+        launcher_script=opciones.launcher_script,
         bat_script=opciones.bat_script,
         uninstall_bat_script=opciones.uninstall_bat_script,
         license=opciones.license,
@@ -684,7 +816,10 @@ def main(argv: list[str] | None = None) -> int:
     print("Sidecar SHA-256:    {}".format(resultado.sidecar))
     print("Script standalone:  {}".format(resultado.install_script))
     print("Bootstrap:          {}".format(resultado.bootstrap))
+    print("ZIP del gestor:     {}".format(resultado.cli_zip))
+    print("Sidecar del gestor: {}".format(resultado.cli_sidecar))
     print("SHA-256 del ZIP:    {}".format(resultado.hash_zip))
+    print("SHA-256 del gestor: {}".format(resultado.hash_cli))
     print("Archivos del bundle: {}".format(resultado.archivos_bundle))
     return 0
 
