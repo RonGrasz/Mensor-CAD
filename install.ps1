@@ -1,14 +1,15 @@
-# Bootstrap de la entrada remota del gestor "mensorcad" de MensorCAD.
+# Bootstrap de la entrada del gestor "mensorcad" de MensorCAD.
 #
 # Este archivo ya no instala el complemento de AutoCAD. Instala SOLO el gestor
 # de linea de comandos en la carpeta fija del usuario y lo registra en el PATH
 # del usuario actual. El complemento se instala despues, a proposito, con
 # "mensorcad install": son dos pasos distintos y este bootstrap nunca ejecuta
-# nada descargado.
+# nada descargado ni nada del ZIP local.
 #
 # Comandos publicados (la guia completa esta en docs/cli-bootstrap.md):
 #   - release mas reciente, con el comando corto irm ... | iex;
-#   - release fijado con -Version, si hace falta reproducir una version.
+#   - release fijado con -Version, si hace falta reproducir una version;
+#   - ZIP local con -LocalZip, para probar una construccion antes de publicar.
 #
 # Contrato de salida: no ejecuta exit para no cerrar la sesion del usuario
 # cuando el texto llega por iex, que corre en el ambito del llamador. El codigo
@@ -17,30 +18,38 @@
 # ejecute "& .\install.ps1; exit $LASTEXITCODE" o consulte la guia.
 #
 # Seguridad del flujo:
-#   1. resuelve el release oficial una sola vez (API o -Version);
-#   2. descarga MensorCAD-CLI.zip y su sidecar .sha256 del tag fijado;
+#   1. resuelve el release oficial una sola vez (API o -Version), o toma el ZIP
+#      local elegido con -LocalZip sin tocar la red;
+#   2. descarga MensorCAD-CLI.zip y su sidecar .sha256 del tag fijado, o copia
+#      el ZIP local y su sidecar adjunto a una carpeta temporal propia;
 #   3. valida tamano, SHA-256 y las tres entradas planas exactas del ZIP
 #      (sin duplicados, traversal ni enlaces) ANTES de escribir el destino;
-#   4. prepara una carpeta de staging propia, escribe el marcador y reemplaza
+#   4. en la ruta local, lee la version del gestor del mensorcad.ps1 ya extraido
+#      como texto inerte: nunca ejecuta el gestor para averiguarla;
+#   5. prepara una carpeta de staging propia, escribe el marcador y reemplaza
 #      el gestor de forma transaccional, con respaldo y rollback;
-#   5. agrega la carpeta al PATH del USUARIO una sola vez, conservando el
+#   6. agrega la carpeta al PATH del USUARIO una sola vez, conservando el
 #      contenido sin expandir y el tipo REG_SZ o REG_EXPAND_SZ.
 #
 # Nunca se escribe el PATH de maquina, no se cambia la politica de ejecucion, no
 # se pide elevacion y no se toca ningun archivo ajeno del destino. La revision
 # SHA-256 no autentica al publicador: solo comprueba que el ZIP coincide con el
-# sidecar del release fijo RonGrasz/Mensor-CAD.
+# sidecar. En la ruta remota la confianza viene del repositorio fijo
+# RonGrasz/Mensor-CAD; en la ruta local, de la compilacion que eligio el usuario.
 
 param(
     [string]$Version,
+    [string]$LocalZip,
     [switch]$NoAnimation
 )
 
 & {
     param(
         $Version,
+        $LocalZip,
         [switch]$NoAnimation,
-        [bool]$VersionSpecified
+        [bool]$VersionSpecified,
+        [bool]$LocalZipSpecified
     )
     Set-StrictMode -Version 2.0
     $ErrorActionPreference = 'Stop'
@@ -70,12 +79,19 @@ param(
     $maxTotalEntryBytes = 8388608
     $userEnvironmentKeyPath = 'HKCU:\Environment'
     $hashPattern = '^(?<hash>[0-9a-fA-F]{64})  MensorCAD-CLI\.zip\r?\n\z'
+    # Version del gestor local: una sola asignacion sellada y estable dentro de
+    # mensorcad.ps1. Se lee como texto inerte; el gestor jamas se ejecuta para
+    # averiguar su version y no se inventa un tag de release.
+    $managerVersionLinePattern = '(?m)^\$script:MensorCadManagerVersion ='
+    $managerVersionPattern = '(?m)^\$script:MensorCadManagerVersion = ''(?<version>[0-9]+\.[0-9]+\.[0-9]+)''\r?$'
 
     # La presencia de -Version se decide en el ambito que realmente ligo los
     # parametros: un [string] omitido no es una cadena vacia explicita.
     $versionSpecified = $VersionSpecified
     $versionTag = ''
     if ($versionSpecified) { $versionTag = [string]$Version }
+    $localZipSpecified = $LocalZipSpecified
+    $localZipValue = [string]$LocalZip
 
     function Write-CliBootstrapInfo {
         param([string]$Message)
@@ -321,8 +337,115 @@ param(
         }
     }
 
+    function Get-CliBootstrapLocalZipPath {
+        # Ruta absoluta del ZIP elegido. Una ruta relativa se resuelve contra la
+        # ubicacion actual de la SESION, es decir contra el proveedor de archivos
+        # de PowerShell, porque Set-Location no cambia el directorio del proceso:
+        # [IO.Path]::GetFullPath usaria ese otro directorio y encontraria el ZIP
+        # equivocado. Una ruta que no pertenece al sistema de archivos (registro,
+        # entorno, variables) o que no se puede resolver se rechaza igual que
+        # antes, sin red y sin escrituras.
+        param([string]$Value)
+        $provider = $null
+        $drive = $null
+        $resolved = ''
+        try {
+            # La sobrecarga con proveedor y unidad permite rechazar un proveedor
+            # que no es el de archivos sin exigir que la ruta exista.
+            $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Value, [ref]$provider, [ref]$drive)
+        }
+        catch {
+            throw (New-CliBootstrapStopException ('La ruta de -LocalZip no es valida: ' + $Value + '. No se descargo nada ni se escribio nada.'))
+        }
+        if (($null -eq $provider) -or ($provider.Name -ne 'FileSystem')) {
+            throw (New-CliBootstrapStopException ('La ruta de -LocalZip no es valida: ' + $Value + '. No se descargo nada ni se escribio nada.'))
+        }
+        if ([string]::IsNullOrWhiteSpace($resolved)) {
+            throw (New-CliBootstrapStopException ('La ruta de -LocalZip no es valida: ' + $Value + '. No se descargo nada ni se escribio nada.'))
+        }
+        # Un comodin no es una ruta de archivo: se rechaza sin expandirlo.
+        if ($resolved.IndexOfAny([char[]]@('*', '?')) -ge 0) {
+            throw (New-CliBootstrapStopException ('La ruta de -LocalZip no es valida: ' + $Value + '. No se descargo nada ni se escribio nada.'))
+        }
+        try {
+            # La ruta ya es absoluta: esto solo normaliza separadores y segmentos.
+            return [System.IO.Path]::GetFullPath($resolved)
+        }
+        catch {
+            throw (New-CliBootstrapStopException ('La ruta de -LocalZip no es valida: ' + $Value + '. No se descargo nada ni se escribio nada.'))
+        }
+    }
+
+    function Assert-CliBootstrapLocalInput {
+        # Entrada local explicita: el ZIP elegido y su sidecar .sha256 adjunto,
+        # ambos archivos regulares y sin puntos de reanalisis. Se comprueba
+        # antes de la red (que en esta ruta no existe) y antes de cualquier
+        # cambio en el destino o en el PATH.
+        param([string]$ZipPath, [string]$SidecarPath)
+        if (-not [System.IO.File]::Exists($ZipPath)) {
+            throw (New-CliBootstrapStopException ('No se encontro el ZIP local indicado: ' + $ZipPath + '. No se descargo nada ni se escribio nada.'))
+        }
+        if (Test-CliBootstrapReparse -Path $ZipPath) {
+            throw (New-CliBootstrapStopException ('El archivo local es un punto de reanalisis: ' + $ZipPath + '. Se cancela sin leerlo.'))
+        }
+        if (-not [System.IO.File]::Exists($SidecarPath)) {
+            throw (New-CliBootstrapStopException ('Falta el sidecar SHA256 junto al ZIP local: ' + $SidecarPath + '. No se instalo nada.'))
+        }
+        if (Test-CliBootstrapReparse -Path $SidecarPath) {
+            throw (New-CliBootstrapStopException ('El archivo local es un punto de reanalisis: ' + $SidecarPath + '. Se cancela sin leerlo.'))
+        }
+    }
+
+    function Copy-CliBootstrapLocalAsset {
+        # El archivo elegido por el usuario es mutable: se copia a la carpeta
+        # temporal propia y se comprueba la copia con los mismos topes que una
+        # descarga. La validacion y la instalacion leen solo la copia.
+        param([string]$SourcePath, [string]$DestinationPath, [string]$AssetName, [long]$MaxBytes)
+        $length = (New-Object -TypeName System.IO.FileInfo -ArgumentList @($SourcePath)).Length
+        if (($length -le 0) -or ($length -gt $MaxBytes)) {
+            throw (New-CliBootstrapStopException ('El archivo local ' + $AssetName + ' esta vacio o supera el limite permitido: ' + $SourcePath + '. No se instalo nada.'))
+        }
+        try {
+            [System.IO.File]::Copy($SourcePath, $DestinationPath, $false)
+        }
+        catch {
+            throw (New-CliBootstrapStopException ('No se pudo copiar ' + $AssetName + ' a la carpeta temporal propia: ' + $_.Exception.Message + ' No se instalo nada.'))
+        }
+        if (Test-CliBootstrapReparse -Path $DestinationPath) {
+            throw (New-CliBootstrapStopException ('La copia propia de ' + $AssetName + ' es un punto de reanalisis: ' + $DestinationPath + '. Se cancela sin instalar.'))
+        }
+        $copyLength = (New-Object -TypeName System.IO.FileInfo -ArgumentList @($DestinationPath)).Length
+        if (($copyLength -le 0) -or ($copyLength -gt $MaxBytes) -or ($copyLength -ne $length)) {
+            throw (New-CliBootstrapStopException ('La copia propia de ' + $AssetName + ' no coincide con el archivo elegido: ' + $DestinationPath + '. No se instalo nada.'))
+        }
+    }
+
+    function Read-CliBootstrapLocalManagerVersion {
+        # La version del gestor local sale del unico archivo que la lleva:
+        # mensorcad.ps1. Se lee como texto inerte y se compara con un patron
+        # estricto de version estable, sin ejecutar el gestor ni inventar un tag.
+        param([string]$ManagerPath)
+        $length = (New-Object -TypeName System.IO.FileInfo -ArgumentList @($ManagerPath)).Length
+        if (($length -le 0) -or ($length -gt $maxEntryBytes)) {
+            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local esta vacio o supera el limite permitido. No se instalo nada.')
+        }
+        $text = [System.IO.File]::ReadAllText($ManagerPath)
+        $lines = [System.Text.RegularExpressions.Regex]::Matches($text, $managerVersionLinePattern)
+        if ($lines.Count -eq 0) {
+            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.')
+        }
+        if ($lines.Count -gt 1) {
+            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local declara mas de una version. No se instalo nada.')
+        }
+        $match = [System.Text.RegularExpressions.Regex]::Match($text, $managerVersionPattern)
+        if (-not $match.Success) {
+            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.')
+        }
+        return $match.Groups['version'].Value
+    }
+
     function Read-CliBootstrapSidecarHash {
-        # Formato exacto del sidecar publicado: 64 hex, DOS espacios,
+        # Formato exacto del sidecar que acompania al ZIP: 64 hex, DOS espacios,
         # MensorCAD-CLI.zip y salto de linea final. Nada mas.
         param([string]$SidecarPath)
         $length = (New-Object -TypeName System.IO.FileInfo -ArgumentList @($SidecarPath)).Length
@@ -573,6 +696,21 @@ param(
         if ($versionSpecified -and ($versionTag -notmatch $releaseTagPattern)) {
             throw (New-CliBootstrapStopException ('El tag de -Version no es valido: ' + $versionTag + '. Se espera un tag como v1.2.3. No se descargo nada ni se escribio nada.'))
         }
+        # -LocalZip y -Version son excluyentes, y la entrada local se comprueba
+        # aqui: antes de la red, del destino y del PATH.
+        $localZipPath = ''
+        $localSidecarPath = ''
+        if ($localZipSpecified -and $versionSpecified) {
+            throw (New-CliBootstrapStopException 'Las opciones -LocalZip y -Version no se pueden combinar: -Version fija un release publicado y -LocalZip instala un ZIP local. No se descargo nada ni se escribio nada.')
+        }
+        if ($localZipSpecified) {
+            if ([string]::IsNullOrWhiteSpace($localZipValue)) {
+                throw (New-CliBootstrapStopException 'La opcion -LocalZip necesita la ruta de un ZIP local, por ejemplo MensorCAD-CLI.zip. No se descargo nada ni se escribio nada.')
+            }
+            $localZipPath = Get-CliBootstrapLocalZipPath -Value $localZipValue
+            $localSidecarPath = $localZipPath + '.sha256'
+            Assert-CliBootstrapLocalInput -ZipPath $localZipPath -SidecarPath $localSidecarPath
+        }
 
         # Carpeta del usuario y destino: se comprueban antes de la red y de
         # cualquier escritura. Un destino ajeno detiene el flujo aqui mismo.
@@ -591,11 +729,14 @@ param(
         }
 
         # TLS 1.2 solo para este proceso; no se cambia ninguna politica global.
-        try {
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
-        }
-        catch {
-            Write-CliBootstrapWarning 'no se pudo habilitar TLS 1.2 en este proceso; la descarga podria fallar.'
+        # La ruta local no toca la red, asi que no configura nada de red.
+        if (-not $localZipSpecified) {
+            try {
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+            }
+            catch {
+                Write-CliBootstrapWarning 'no se pudo habilitar TLS 1.2 en este proceso; la descarga podria fallar.'
+            }
         }
 
         $workspaceCandidate = Join-Path -Path $tempRoot -ChildPath ($workspacePrefix + [guid]::NewGuid().ToString('N'))
@@ -609,13 +750,22 @@ param(
         $tempWorkspace = $workspaceCandidate
         $tempWorkspaceOwned = $true
 
-        $releaseTag = Resolve-CliBootstrapReleaseTag -RequestedTag $versionTag -Requested $versionSpecified
-
+        $releaseTag = ''
         $zipPath = Join-Path -Path $tempWorkspace -ChildPath $cliAssetName
         $hashPath = Join-Path -Path $tempWorkspace -ChildPath $cliHashAssetName
-        $releaseBase = $releaseHost + '/' + $repository + '/releases/download/' + $releaseTag + '/'
-        Save-CliBootstrapAsset -AssetName $cliAssetName -Uri ($releaseBase + $cliAssetName) -Destination $zipPath -Tag $releaseTag -MaxBytes $maxZipBytes
-        Save-CliBootstrapAsset -AssetName $cliHashAssetName -Uri ($releaseBase + $cliHashAssetName) -Destination $hashPath -Tag $releaseTag -MaxBytes $maxSidecarBytes
+        if ($localZipSpecified) {
+            # Ruta local: el ZIP elegido y su sidecar se copian a la carpeta
+            # propia y desde ahi se validan y se instalan. No hay consulta al
+            # release ni ninguna descarga.
+            Copy-CliBootstrapLocalAsset -SourcePath $localZipPath -DestinationPath $zipPath -AssetName $cliAssetName -MaxBytes $maxZipBytes
+            Copy-CliBootstrapLocalAsset -SourcePath $localSidecarPath -DestinationPath $hashPath -AssetName $cliHashAssetName -MaxBytes $maxSidecarBytes
+        }
+        else {
+            $releaseTag = Resolve-CliBootstrapReleaseTag -RequestedTag $versionTag -Requested $versionSpecified
+            $releaseBase = $releaseHost + '/' + $repository + '/releases/download/' + $releaseTag + '/'
+            Save-CliBootstrapAsset -AssetName $cliAssetName -Uri ($releaseBase + $cliAssetName) -Destination $zipPath -Tag $releaseTag -MaxBytes $maxZipBytes
+            Save-CliBootstrapAsset -AssetName $cliHashAssetName -Uri ($releaseBase + $cliHashAssetName) -Destination $hashPath -Tag $releaseTag -MaxBytes $maxSidecarBytes
+        }
 
         $expectedHash = Read-CliBootstrapSidecarHash -SidecarPath $hashPath
         Test-CliBootstrapZipHash -ZipPath $zipPath -ExpectedHash $expectedHash
@@ -630,6 +780,11 @@ param(
 
         $stagingPath = New-CliBootstrapStagingDirectory -ManagedRootPath $managedRoot
         Expand-CliBootstrapZip -ZipPath $zipPath -StagingPath $stagingPath
+        if ($localZipSpecified) {
+            # Version del build local: sale del gestor ya extraido y validado,
+            # leido como texto inerte.
+            $releaseTag = Read-CliBootstrapLocalManagerVersion -ManagerPath (Join-Path -Path $stagingPath -ChildPath 'mensorcad.ps1')
+        }
         Write-CliBootstrapMarker -DirectoryPath $stagingPath -Tag $releaseTag
 
         $swap = Install-CliBootstrapManager -StagingPath $stagingPath -DestinationPath $destinationPath
@@ -716,4 +871,4 @@ param(
         if ($null -eq $exitCode) { $exitCode = 1 }
         $global:LASTEXITCODE = [int]$exitCode
     }
-} -Version $Version -NoAnimation:$NoAnimation -VersionSpecified (($null -ne $PSBoundParameters) -and $PSBoundParameters.ContainsKey('Version'))
+} -Version $Version -LocalZip $LocalZip -NoAnimation:$NoAnimation -VersionSpecified (($null -ne $PSBoundParameters) -and $PSBoundParameters.ContainsKey('Version')) -LocalZipSpecified (($null -ne $PSBoundParameters) -and $PSBoundParameters.ContainsKey('LocalZip'))

@@ -1,9 +1,13 @@
 # Bootstrap del gestor `mensorcad`
 
-Este documento describe la entrada remota de MensorCAD: un bootstrap corto que
-instala **solo el gestor de linea de comandos** en la carpeta del usuario y lo
-registra en el `PATH` del usuario actual. El complemento de AutoCAD **no** se
-instala aqui y no se pide UAC.
+Este documento describe como se instala MensorCAD en dos pasos: un bootstrap
+corto que instala **solo el gestor de linea de comandos** en la carpeta del
+usuario y lo registra en el `PATH` del usuario actual. El complemento de AutoCAD
+**no** se instala aqui y no se pide UAC.
+
+El bootstrap acepta dos origenes del ZIP del gestor: el **release publicado** de
+GitHub (por defecto) o un **ZIP construido localmente** con `-LocalZip`, que no
+usa la red y sirve para probar el circuito completo antes de publicar.
 
 La instalacion tiene dos pasos a proposito:
 
@@ -13,7 +17,7 @@ La instalacion tiene dos pasos a proposito:
 
 Los assets de release de esta etapa todavia no estan publicados; estos comandos
 funcionaran cuando el release oficial incluya `install.ps1`, `MensorCAD-CLI.zip`
-y `MensorCAD-CLI.zip.sha256`.
+y `MensorCAD-CLI.zip.sha256`. La ruta local no depende de esa publicacion.
 
 ---
 
@@ -52,16 +56,51 @@ bootstrap: el bootstrap nunca ejecuta el instalador del complemento.
 
 ---
 
+## Instalacion local desde el ZIP construido (sin publicar)
+
+Para probar el mismo circuito sin publicar ninguna release, construya los
+artefactos y pase el ZIP del gestor con `-LocalZip`:
+
+```bash
+python tools/build_bundle.py --output-dir dist --version 0.1.0
+```
+
+```powershell
+& .\dist\install.ps1 -LocalZip .\dist\MensorCAD-CLI.zip
+```
+
+Esta ruta exige el sidecar **adjunto** al ZIP elegido: mismo nombre mas
+`.sha256` (`dist\MensorCAD-CLI.zip.sha256`). Si falta, si el hash no coincide o
+si el ZIP no tiene exactamente las tres entradas del gestor, el bootstrap se
+detiene sin tocar el destino ni el `PATH`.
+
+| Tema | Decision |
+|------|----------|
+| Red | No consulta la API de GitHub y no descarga nada. |
+| Validacion | Reutiliza el mismo SHA-256, el recuento exacto de entradas, el staging transaccional y el `PATH` de usuario de la ruta remota. |
+| Version | Sale del `mensorcad.ps1` incluido en el ZIP, leido como texto inerte: una sola linea `$script:MensorCadManagerVersion = 'X.Y.Z'`. El gestor no se ejecuta para averiguarla y no se inventa ningun tag de release. |
+| Excluyente | `-LocalZip` y `-Version` son mutuamente excluyentes; el rechazo ocurre antes de cualquier red o escritura. |
+| Ruta relativa | Se resuelve contra la carpeta actual de su sesion de PowerShell, la misma que usa `Get-ChildItem`, aunque el comando se haya ejecutado despues de `Set-Location`. Las rutas absolutas, UNC y con espacios se aceptan tal cual; una ruta que no pertenece al sistema de archivos se rechaza sin red y sin escrituras. |
+| Complemento | No instala el complemento y no pide UAC: eso sigue siendo `mensorcad install`. |
+
+**Confianza en la ruta local:** el SHA-256 es integridad, no confianza. El hash
+solo comprueba que el ZIP coincide con el sidecar que esta a su lado; no
+autentica al autor. Usted eligio ese archivo, asi que debe confiar en la
+compilacion local que selecciono.
+
+---
+
 ## Que hace el bootstrap
 
 En este orden, sin saltarse ninguno:
 
-1. valida `-Version` (si se indico) antes de cualquier red o escritura;
-2. resuelve el release oficial de `RonGrasz/Mensor-CAD` **una sola vez**
-   (API de GitHub para el release mas reciente, o el tag validado de
-   `-Version`);
-3. descarga `MensorCAD-CLI.zip` y su sidecar `MensorCAD-CLI.zip.sha256` de ese
-   tag fijado;
+1. valida `-Version` (si se indico) y la entrada local de `-LocalZip` (si se
+   indico) antes de cualquier red o escritura;
+2. elige el origen: resuelve el release oficial de `RonGrasz/Mensor-CAD` **una
+   sola vez** (API de GitHub o el tag validado de `-Version`), o toma el ZIP
+   local y su sidecar adjunto;
+3. obtiene `MensorCAD-CLI.zip` y su sidecar `MensorCAD-CLI.zip.sha256`: los
+   descarga del tag fijado o los copia a una carpeta temporal propia;
 4. comprueba el SHA-256 del ZIP contra el sidecar;
 5. valida el indice del ZIP antes de escribir el destino: exactamente tres
    entradas planas (`mensorcad.ps1`, `mensorcad.cmd` e
@@ -71,6 +110,9 @@ En este orden, sin saltarse ninguno:
    marcador y reemplaza el gestor de forma transaccional; si algo falla se
    restaura la instalacion anterior;
 7. agrega la carpeta del gestor al `PATH` del usuario una sola vez.
+
+En la ruta remota el marcador guarda el tag del release. En la ruta local guarda
+la version estable leida del `mensorcad.ps1` ya extraido.
 
 Ningun script descargado se ejecuta durante la instalacion: no se ejecuta el
 instalador del complemento, no se ejecuta el gestor y no se ejecuta nada del
@@ -86,8 +128,9 @@ Carpeta fija, siempre dentro del perfil del usuario actual:
 
 Contiene exactamente los tres archivos del ZIP mas un marcador propio,
 `.mensorcad-cli.json`, que identifica la carpeta como instalacion del gestor y
-guarda el tag instalado. El ZIP publicado tiene exactamente tres entradas y el
-marcador lo agrega el bootstrap fuera del ZIP.
+guarda la version instalada: el tag del release publicado o la version estable
+del build local. El ZIP tiene exactamente tres entradas y el marcador lo agrega
+el bootstrap fuera del ZIP.
 
 Las carpetas de staging y de respaldo usan un GUID completo y solo existen
 mientras dura la operacion. Un destino con contenido ajeno no se toca, no se
@@ -121,10 +164,12 @@ el comando de inmediato. Las demas ventanas necesitan reiniciarse.
 | Parametro | Efecto |
 |-----------|--------|
 | `-Version <tag>` | Fija el release; no consulta la API. Acepta tags como `v1.2.3`, `v1.2` o `v1.2.3-rc.1`. |
+| `-LocalZip <ruta>` | Instala el gestor desde un ZIP construido localmente. Exige el sidecar `.sha256` adjunto, no usa la red y no se puede combinar con `-Version`. |
 | `-NoAnimation` | Se conserva por compatibilidad con el bootstrap anterior. No cambia ningun paso: este flujo solo escribe texto plano. |
 
 No hay parametros de URL, repositorio, destino, PATH ni elevacion: la fuente y
-el destino son fijos.
+el destino son fijos. `-LocalZip` no cambia el destino ni el `PATH`: solo cambia
+de donde sale el ZIP ya validado.
 
 ## Codigo de salida
 
@@ -143,14 +188,15 @@ Para obtener un codigo de salida del sistema operativo desde PowerShell:
 
 ## Integridad y limites
 
-El sidecar publicado usa el formato `sha256sum`: 64 caracteres hexadecimales,
-dos espacios, `MensorCAD-CLI.zip` y salto de linea final. El bootstrap rechaza
-cualquier otro contenido.
+El sidecar usa el formato `sha256sum`: 64 caracteres hexadecimales, dos espacios,
+`MensorCAD-CLI.zip` y salto de linea final. El bootstrap rechaza cualquier otro
+contenido, tanto en el release publicado como junto al ZIP local.
 
-La revision SHA-256 comprueba que el ZIP coincide con el sidecar del release
-fijo `RonGrasz/Mensor-CAD`, pero no autentica al publicador: la confianza viene
-del repositorio oficial fijo, no del hash. Si el release o el sidecar se
-comprometen, el hash no lo detecta.
+La revision SHA-256 comprueba que el ZIP coincide con su sidecar, pero no
+autentica al publicador. En la ruta remota la confianza viene del repositorio
+oficial fijo `RonGrasz/Mensor-CAD`; en la ruta local, de la compilacion que el
+usuario construyo y eligio. Si el release o el sidecar se comprometen, el hash
+no lo detecta.
 
 Fuera del alcance de este bootstrap: quitar o autoactualizar el gestor, tocar
 el PATH de maquina, instalar el complemento, abrir AutoCAD y pedir elevacion.
@@ -173,4 +219,7 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests\Te
 ```
 
 La suite funcional no toca el `PATH` real, no escribe en `Program Files`, no
-pide UAC y no llama a GitHub: usa fixtures de ZIP y un registro falso.
+pide UAC y no llama a GitHub: usa fixtures de ZIP y un registro falso. La ruta
+local se prueba con un ZIP fixture cuyo `mensorcad.ps1` lleva la version sellada
+escrita como texto; la suite verifica cero consultas al release, cero descargas
+y que el gestor nunca se ejecuta.

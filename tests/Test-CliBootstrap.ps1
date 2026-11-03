@@ -16,7 +16,10 @@
     No se toca el PATH real del usuario, no se escribe en Program Files, no se
     abre AutoCAD, no se pide UAC y no se llama a GitHub. Los ZIP y sus sidecars
     son fixtures reales creados en el disco para que la validacion SHA-256, el
-    recuento exacto de entradas y el rechazo de enlaces sean codigo real.
+    recuento exacto de entradas y el rechazo de enlaces sean codigo real. La
+    ruta local usa un ZIP fixture con su sidecar adjunto: su mensorcad.ps1 lleva
+    una version sellada escrita como texto y, si el bootstrap lo ejecutara para
+    averiguarla, dejaria una sentinela que la suite comprueba ausente.
 
     Limite conocido: la sonda corre en Windows PowerShell 5.1; en cualquier otro
     interprete la suite se rechaza en voz alta.
@@ -60,7 +63,8 @@ $script:ProbePath = Join-Path -Path $script:RunRoot -ChildPath 'probe.ps1'
 $script:PowerShellPath = Join-Path -Path $PSHOME -ChildPath 'powershell.exe'
 $script:ProbeEnvironmentNames = @(
     'MCB_TEMP', 'MCB_LOCALAPPDATA', 'MCB_COMMAND', 'MCB_BOOTSTRAP', 'MCB_ASSETS',
-    'MCB_MODE', 'MCB_REGISTRY', 'MCB_RESULT', 'MCB_TAG', 'MCB_PAYLOAD_SENTINEL'
+    'MCB_MODE', 'MCB_REGISTRY', 'MCB_RESULT', 'MCB_TAG', 'MCB_PAYLOAD_SENTINEL',
+    'MCB_LOCATION'
 )
 $script:ManagerFiles = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
 $script:MarkerName = '.mensorcad-cli.json'
@@ -251,6 +255,16 @@ function global:Invoke-WebRequest {
     $source = Join-Path $assets $asset
     if (-not [System.IO.File]::Exists($source)) { throw ('404 simulado: ' + $Uri) }
     [System.IO.File]::Copy($source, $OutFile, $true)
+}
+
+# La sonda arranca en la carpeta de Windows (directorio del proceso) y la
+# sesion se mueve a la carpeta del usuario antes de invocar el bootstrap, como
+# una terminal donde se hizo Set-Location. Set-Location NO cambia el directorio
+# del proceso, asi que una ruta relativa resuelta con [IO.Path]::GetFullPath
+# caeria en la carpeta equivocada.
+$sessionLocation = [string]$env:MCB_LOCATION
+if (-not [string]::IsNullOrWhiteSpace($sessionLocation)) {
+    Set-Location -LiteralPath $sessionLocation
 }
 
 $commandText = [System.IO.File]::ReadAllText($commandFile)
@@ -473,6 +487,71 @@ exit 99
     Write-FixtureFile -Path (Join-Path -Path $Root -ChildPath 'MensorCAD-CLI.zip.sha256') -Content $sidecar
 }
 
+function Get-LocalManagerText {
+    # Fixture del gestor local: la version va escrita como texto sellado. El
+    # cuerpo solo deja una sentinela si alguien lo EJECUTA, de modo que la suite
+    # puede probar que el bootstrap nunca corre el archivo para averiguar su
+    # version.
+    param([string]$Version = '1.2.3')
+    $template = @'
+param()
+$script:MensorCadManagerVersion = '@@VERSION@@'
+if ($env:MCB_PAYLOAD_SENTINEL) {
+    [System.IO.File]::WriteAllText($env:MCB_PAYLOAD_SENTINEL, 'el gestor local se ejecuto')
+}
+exit 99
+'@
+    return $template.Replace('@@VERSION@@', $Version)
+}
+
+function New-LocalCliInput {
+    # ZIP local fixture con su sidecar .sha256 adjunto, igual que los genera
+    # tools/build_bundle.py en dist/. Cada modo rompe una regla distinta.
+    param([string]$Root, [string]$Mode = 'valid')
+    $managerText = Get-LocalManagerText -Version '1.2.3'
+    if ($Mode -eq 'unversioned') {
+        $managerText = "param()`r`n`$script:MensorCadManagerVersion = '__MENSORCAD_MANAGER_VERSION__'`r`n"
+    }
+    if ($Mode -eq 'ambiguous') {
+        $managerText = "param()`r`n`$script:MensorCadManagerVersion = '1.2.3'`r`n`$script:MensorCadManagerVersion = '1.2.4'`r`n"
+    }
+    $entries = @(
+        @{ Name = 'mensorcad.ps1'; Content = $managerText },
+        @{ Name = 'mensorcad.cmd'; Content = "@echo off`r`nexit /b 0`r`n" },
+        @{ Name = 'Install-MensorCAD.ps1'; Content = $managerText }
+    )
+    if ($Mode -eq 'zip-extra') {
+        $entries = @($entries) + @(@{ Name = 'notas.txt'; Content = 'entrada extra' })
+    }
+    $zipPath = Join-Path -Path $Root -ChildPath 'MensorCAD-CLI.zip'
+    if ($Mode -eq 'zip-directory') {
+        $null = [System.IO.Directory]::CreateDirectory($zipPath)
+    }
+    elseif ($Mode -ne 'zip-missing') {
+        New-CliZip -Path $zipPath -Entries $entries
+    }
+    $hash = ''
+    if ([System.IO.File]::Exists($zipPath)) {
+        $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    if ($Mode -ne 'sidecar-missing') {
+        $sidecar = switch ($Mode) {
+            'hash-mismatch' { ('0' * 64) + '  MensorCAD-CLI.zip' + "`n" }
+            'sidecar-malformed' { 'esto no es un sidecar sha256' + "`n" }
+            'zip-windows' { $hash + '  MensorCAD-Windows.zip' + "`n" }
+            default { $hash + '  MensorCAD-CLI.zip' + "`n" }
+        }
+        Write-FixtureFile -Path ($zipPath + '.sha256') -Content $sidecar
+    }
+}
+
+function New-LocalCommandTemplate {
+    # Entrada publicada con el parametro nuevo: el texto real de install.ps1 se
+    # carga por la misma costura y despues se le pasan los argumentos del caso.
+    param([string]$Arguments)
+    return "&([scriptblock]::Create((irm 'https://github.com/RonGrasz/Mensor-CAD/releases/download/v1.2.3/install.ps1' -ea Stop))) " + $Arguments
+}
+
 function Get-ChildNames {
     param([string]$Path)
     if (-not [System.IO.Directory]::Exists($Path)) { return @() }
@@ -504,15 +583,18 @@ function Get-Marker {
 
 function Invoke-CliCase {
     param(
-        [Parameter(Mandatory = $true)][string]$CommandText,
+        [Parameter(Mandatory = $false)][string]$CommandText = '',
+        [string]$CommandTemplate = '',
         [string]$Mode = 'ok',
         [string]$AssetMode = 'valid',
+        [string]$LocalAssetMode = '',
         [string]$Tag = 'v1.2.3',
         [switch]$NoPathValue,
         [string]$PathValue = '',
         [scriptblock]$PathValueFactory = $null,
         [string]$PathKind = 'ExpandString',
         [switch]$ThrowOnSet,
+        [switch]$SessionInLocalInput,
         [scriptblock]$Seed
     )
     $caseRoot = Join-Path -Path $script:RunRoot -ChildPath ('c-' + [guid]::NewGuid().ToString('N'))
@@ -526,8 +608,21 @@ function Invoke-CliCase {
         $null = [System.IO.Directory]::CreateDirectory($directory)
     }
     if ($null -ne $PathValueFactory) { $PathValue = [string](& $PathValueFactory $localAppData) }
+    $localInput = Join-Path -Path $caseRoot -ChildPath 'entrada local'
+    $localZip = Join-Path -Path $localInput -ChildPath 'MensorCAD-CLI.zip'
+    if (-not [string]::IsNullOrEmpty($LocalAssetMode)) {
+        $null = [System.IO.Directory]::CreateDirectory($localInput)
+        New-LocalCliInput -Root $localInput -Mode $LocalAssetMode
+    }
+    if ($CommandText.Contains('@@LOCALZIP@@')) {
+        $CommandText = $CommandText.Replace('@@LOCALZIP@@', $localZip)
+    }
+    $effectiveCommand = $CommandText
+    if (-not [string]::IsNullOrEmpty($CommandTemplate)) {
+        $effectiveCommand = $CommandTemplate.Replace('@@LOCALZIP@@', $localZip)
+    }
     $commandPath = Join-Path -Path $caseRoot -ChildPath 'command.txt'
-    Write-FixtureFile -Path $commandPath -Content $CommandText
+    Write-FixtureFile -Path $commandPath -Content $effectiveCommand
     New-CliAssets -Root $assets -Mode $AssetMode -Tag $Tag
     if ($null -ne $Seed) { & $Seed $localAppData }
 
@@ -553,6 +648,10 @@ function Invoke-CliCase {
     $env:MCB_RESULT = $resultPath
     $env:MCB_TAG = $Tag
     $env:MCB_PAYLOAD_SENTINEL = $sentinelPath
+    # Ubicacion de la sesion dentro de la sonda: vacia por omision, o la carpeta
+    # que contiene el ZIP local para probar rutas relativas.
+    $env:MCB_LOCATION = ''
+    if ($SessionInLocalInput) { $env:MCB_LOCATION = $localInput }
     try {
         $process = Start-Process -FilePath $script:PowerShellPath `
             -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $script:ProbePath)) `
@@ -577,6 +676,8 @@ function Invoke-CliCase {
         CaseRoot = $caseRoot
         LocalAppData = $localAppData
         Temp = $tempDir
+        LocalInput = $localInput
+        LocalZip = $localZip
         ManagerRoot = $managerRoot
         Destination = (Join-Path -Path $managerRoot -ChildPath 'cli')
         ProcessExitCode = [int]$process.ExitCode
@@ -602,6 +703,14 @@ function Get-ApiCalls {
     param($Case)
     if (($null -eq $Case.Result) -or ($null -eq $Case.Result.ApiCalls)) { return @() }
     return @($Case.Result.ApiCalls)
+}
+
+function Assert-SinRed {
+    # La ruta local no puede tocar ninguna frontera de red: cero consultas a la
+    # API y cero descargas de assets.
+    param($Case)
+    Assert-Equal 0 (@(Get-ApiCalls -Case $Case).Count) 'la ruta local no consulta la API de GitHub'
+    Assert-Equal 0 (@(Get-WebRequests -Case $Case).Count) 'la ruta local no descarga ningun asset'
 }
 
 function Get-WebRequests {
@@ -983,6 +1092,201 @@ Test-Case 'el rollback devuelve la version anterior del gestor' {
     Assert-Equal 'anterior mensorcad.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))) 'vuelven los archivos anteriores'
     Assert-Equal 'cli' ((Get-ManagedRootNames -Case $case) -join ',') 'sin respaldos ni staging'
     Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'el PATH no se escribe'
+}
+
+Test-Case 'instala el gestor desde un ZIP local sin red y sin ejecutarlo' {
+    $initialPath = 'C:\Windows;%USERPROFILE%\bin'
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'valid' -PathValue $initialPath -PathKind 'ExpandString'
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe ser 0'
+    Assert-Equal (Get-SuccessStdout -Destination $case.Destination -State 'instalado') $case.Stdout 'stdout exacto del exito'
+    Assert-Equal '' $case.Stderr 'el exito no debe escribir stderr'
+    Assert-Equal 1 (@($case.Result.FetchCalls).Count) 'solo se carga install.ps1 una vez'
+    Assert-SinRed -Case $case
+    $expectedNames = @((@($script:ManagerFiles) + @($script:MarkerName)) | Sort-Object)
+    Assert-Equal ($expectedNames -join ',') ((Get-InstalledNames -Case $case) -join ',') 'archivos instalados'
+    $marker = Get-Marker -Destination $case.Destination
+    Assert-Equal '1.2.3' ([string]$marker.version) 'el marcador guarda la version derivada del gestor local, no un tag inventado'
+    Assert-Equal 'MensorCAD-CLI' ([string]$marker.owner) 'el marcador identifica al gestor'
+    Assert-Equal 3 (@($marker.files).Count) 'el marcador declara los tres archivos del gestor'
+    $installed = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))
+    Assert-Equal (Get-LocalManagerText -Version '1.2.3') $installed 'se instala el texto del ZIP local tal cual'
+    Assert-Equal 1 ([int]$case.Result.Registry.SetCalls) 'una sola escritura de PATH'
+    $entry = Get-RegistryEntry -Result $case.Result -Name 'Path'
+    Assert-Equal ($initialPath + ';' + $case.Destination) $entry.value 'PATH con la carpeta nueva al final'
+    Assert-Equal 'ExpandString' $entry.kind 'se conserva REG_EXPAND_SZ'
+    Assert-True ([string]$case.Result.ProcessPath).Contains($case.Destination) 'el PATH del proceso actual debe incluir el gestor'
+    Assert-False $case.PayloadSentinel 'el gestor del ZIP local nunca se debe ejecutar'
+    Assert-NoLeftovers -Case $case
+    foreach ($name in [System.IO.Directory]::GetFileSystemEntries($case.Temp)) {
+        Assert-False ([System.IO.Path]::GetFileName($name) -like 'mensorcad-cli-*') ('quedo la carpeta temporal propia: ' + $name)
+    }
+    # La entrada elegida se copia: el ZIP local y su sidecar no se consumen ni
+    # se reescriben durante la instalacion.
+    Assert-True ([System.IO.File]::Exists($case.LocalZip)) 'el ZIP local sigue en su lugar'
+    $sidecar = [System.IO.File]::ReadAllText($case.LocalZip + '.sha256')
+    Assert-Equal ($sidecar -split ' ')[0] (Get-FileHash -LiteralPath $case.LocalZip -Algorithm SHA256).Hash.ToLowerInvariant() 'el ZIP local no cambio durante la instalacion'
+}
+
+Test-Case 'un -LocalZip relativo se resuelve en la sesion y no en el directorio del proceso' {
+    # El proceso sonda arranca en la carpeta de Windows y la sesion se mueve a
+    # la carpeta que tiene el ZIP y su sidecar: es el caso documentado de una
+    # terminal donde se hizo Set-Location antes de ejecutar el comando. La ruta
+    # relativa debe resolverse contra la ubicacion de la sesion.
+    $initialPath = 'C:\Windows'
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '.\MensorCAD-CLI.zip'") -LocalAssetMode 'valid' -PathValue $initialPath -SessionInLocalInput
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe ser 0'
+    Assert-Equal (Get-SuccessStdout -Destination $case.Destination -State 'instalado') $case.Stdout 'stdout exacto del exito'
+    Assert-Equal '' $case.Stderr 'el exito no debe escribir stderr'
+    Assert-SinRed -Case $case
+    $expectedNames = @((@($script:ManagerFiles) + @($script:MarkerName)) | Sort-Object)
+    Assert-Equal ($expectedNames -join ',') ((Get-InstalledNames -Case $case) -join ',') 'archivos instalados'
+    $marker = Get-Marker -Destination $case.Destination
+    Assert-Equal '1.2.3' ([string]$marker.version) 'el marcador guarda la version del ZIP elegido'
+    Assert-Equal 1 ([int]$case.Result.Registry.SetCalls) 'una sola escritura de PATH'
+    $entry = Get-RegistryEntry -Result $case.Result -Name 'Path'
+    Assert-Equal ($initialPath + ';' + $case.Destination) $entry.value 'PATH con la carpeta nueva al final'
+    Assert-False $case.PayloadSentinel 'el gestor del ZIP local nunca se debe ejecutar'
+    Assert-NoLeftovers -Case $case
+    Assert-True ([System.IO.File]::Exists($case.LocalZip)) 'el ZIP local sigue en su lugar'
+}
+
+Test-Case 'un -LocalZip relativo inexistente se rechaza con la ruta de la sesion' {
+    # Ruta relativa que no existe en la carpeta de la sesion: el rechazo debe
+    # nombrar la ruta de la sesion, no la del directorio del proceso, y no
+    # puede haber red, escrituras ni destino.
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '.\no-existe.zip'") -LocalAssetMode 'zip-missing' -PathValue 'C:\Windows' -SessionInLocalInput
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '1' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe informar el fallo'
+    Assert-True $case.Stderr.StartsWith('ERROR: No se encontro el ZIP local indicado: ') 'prefijo del rechazo local'
+    Assert-True $case.Stderr.Contains('\no-existe.zip. No se descargo nada ni se escribio nada.') 'el mensaje nombra el ZIP pedido'
+    Assert-False $case.Stderr.Contains($env:SystemRoot) 'la ruta relativa no se resuelve contra el directorio del proceso'
+    Assert-Equal '' $case.Stdout 'un fallo no debe escribir stdout'
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'no se debe escribir el PATH'
+    Assert-SinRed -Case $case
+    Assert-False ([System.IO.Directory]::Exists($case.ManagerRoot)) 'no se crea la carpeta del gestor'
+    Assert-NoLeftovers -Case $case
+}
+
+Test-Case 'un -LocalZip que no es del sistema de archivos se rechaza sin red' {
+    # Un proveedor que no es el de archivos (registro, entorno, variables) no
+    # puede convertirse en una ruta del ZIP: se rechaza con el mismo mensaje de
+    # ruta invalida y sin red, sin escrituras y sin tocar el destino.
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip 'HKLM:\SOFTWARE\MensorCAD-CLI.zip'") -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'La ruta de -LocalZip no es valida: HKLM:\SOFTWARE\MensorCAD-CLI.zip. No se descargo nada ni se escribio nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'la ruta local reutiliza el PATH ya registrado sin duplicarlo' {
+    $factory = { param([string]$LocalAppData) return 'C:\Windows;' + $LocalAppData + '\MensorCAD\cli' }
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'valid' -PathValueFactory $factory -Seed $seedPreviousInstall
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe ser 0'
+    Assert-Equal (Get-SuccessStdout -Destination $case.Destination -State 'actualizado' -PathAlreadyRegistered) $case.Stdout 'stdout exacto'
+    Assert-SinRed -Case $case
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'no debe reescribir un PATH ya registrado'
+    $marker = Get-Marker -Destination $case.Destination
+    Assert-Equal '1.2.3' ([string]$marker.version) 'el marcador guarda la version local'
+    $content = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))
+    Assert-False ($content -like 'anterior*') 'los archivos del gestor se reemplazan'
+    Assert-NoLeftovers -Case $case
+}
+
+Test-Case 'si falla el PATH en la ruta local se revierte la instalacion' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'valid' -PathValue 'C:\Windows' -ThrowOnSet
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '1' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe informar el fallo'
+    Assert-True $case.Stderr.StartsWith('ERROR: No se pudo registrar la carpeta del gestor en el PATH del usuario: ') 'prefijo del fallo de PATH'
+    Assert-True $case.Stderr.TrimEnd().EndsWith('Se restauro la instalacion anterior.') 'el mensaje debe informar el rollback'
+    Assert-Equal '' $case.Stdout 'un fallo no debe escribir stdout'
+    Assert-False ([System.IO.Directory]::Exists($case.Destination)) 'la instalacion nueva se revierte'
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'el PATH no se escribe'
+    Assert-SinRed -Case $case
+    Assert-NoLeftovers -Case $case
+}
+
+Test-Case 'el rollback de la ruta local devuelve la version anterior' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'valid' -PathValue 'C:\Windows' -Seed $seedPreviousInstall -ThrowOnSet
+    Assert-Equal '1' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe informar el fallo'
+    Assert-True $case.Stderr.Contains('Se restauro la instalacion anterior.') 'el mensaje debe informar el rollback'
+    $marker = Get-Marker -Destination $case.Destination
+    Assert-Equal 'v0.9.0' ([string]$marker.version) 'vuelve el marcador anterior'
+    Assert-Equal 'anterior mensorcad.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))) 'vuelven los archivos anteriores'
+    Assert-Equal 'cli' ((Get-ManagedRootNames -Case $case) -join ',') 'sin respaldos ni staging'
+    Assert-SinRed -Case $case
+}
+
+Test-Case 'un ZIP local sin sidecar adjunto no escribe nada' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'sidecar-missing' -PathValue 'C:\Windows'
+    $expected = 'Falta el sidecar SHA256 junto al ZIP local: ' + $case.LocalZip + '.sha256. No se instalo nada.'
+    Assert-FailureNoWrites -Case $case -ErrorMessage $expected -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-True ([System.IO.File]::Exists($case.LocalZip)) 'el ZIP local no se toca'
+}
+
+Test-Case 'un SHA256 local que no coincide deja el destino intacto' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'hash-mismatch' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El SHA256 del ZIP no coincide con el sidecar publicado. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'un sidecar local con formato invalido no escribe nada' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'sidecar-malformed' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El sidecar SHA256 no tiene el formato esperado (64 hex, dos espacios, MensorCAD-CLI.zip y salto de linea). No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'el sidecar del ZIP del complemento no sirve como sidecar del gestor' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'zip-windows' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El sidecar SHA256 no tiene el formato esperado (64 hex, dos espacios, MensorCAD-CLI.zip y salto de linea). No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'un ZIP local con entradas que no son las tres exactas no escribe nada' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'zip-extra' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'un mensorcad.ps1 local sin version sellada no escribe nada' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'unversioned' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El mensorcad.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-False $case.PayloadSentinel 'la version se lee como texto; el gestor no se ejecuta'
+}
+
+Test-Case 'un mensorcad.ps1 local con dos versiones no escribe nada' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'ambiguous' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El mensorcad.ps1 del ZIP local declara mas de una version. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'la ruta local rechaza -Version antes de la red y de las escrituras' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@' -Version v1.2.3") -LocalAssetMode 'valid' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'Las opciones -LocalZip y -Version no se pueden combinar: -Version fija un release publicado y -LocalZip instala un ZIP local. No se descargo nada ni se escribio nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-True ([System.IO.File]::Exists($case.LocalZip)) 'el ZIP local no se toca'
+}
+
+Test-Case 'un -LocalZip vacio falla sin descargar nada' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip ''") -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'La opcion -LocalZip necesita la ruta de un ZIP local, por ejemplo MensorCAD-CLI.zip. No se descargo nada ni se escribio nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'un -LocalZip inexistente falla antes de la red y del destino' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'zip-missing' -PathValue 'C:\Windows'
+    $expected = 'No se encontro el ZIP local indicado: ' + $case.LocalZip + '. No se descargo nada ni se escribio nada.'
+    Assert-FailureNoWrites -Case $case -ErrorMessage $expected -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-False ([System.IO.Directory]::Exists($case.ManagerRoot)) 'no se crea la carpeta del gestor'
+}
+
+Test-Case 'un -LocalZip que es una carpeta falla sin tocar el destino' {
+    $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'zip-directory' -PathValue 'C:\Windows'
+    Assert-True ([System.IO.Directory]::Exists($case.LocalZip)) 'la fixture debe ser una carpeta con el nombre del ZIP'
+    Assert-FailureNoWrites -Case $case -ErrorMessage ('No se encontro el ZIP local indicado: ' + $case.LocalZip + '. No se descargo nada ni se escribio nada.') -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+}
+
+Test-Case 'la ruta remota sigue intacta junto a la ruta local' {
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows'
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe ser 0'
+    Assert-Equal 1 (@(Get-ApiCalls -Case $case).Count) 'la ruta remota resuelve el release una sola vez'
+    Assert-Equal 2 (@(Get-WebRequests -Case $case).Count) 'la ruta remota descarga ZIP y sidecar'
+    $marker = Get-Marker -Destination $case.Destination
+    Assert-Equal 'v1.2.3' ([string]$marker.version) 'la ruta remota sigue guardando el tag resuelto'
+    Assert-NoLeftovers -Case $case
 }
 
 # ---------------------------------------------------------------------------

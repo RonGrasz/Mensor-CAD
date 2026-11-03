@@ -216,6 +216,59 @@ class CliBootstrapStructureTests(unittest.TestCase):
         self.assertLess(hash_pos, staging_pos, "el hash debe validarse antes de preparar el destino")
         self.assertLess(zip_pos, staging_pos, "el ZIP debe validarse antes de preparar el destino")
 
+    def test_acepta_el_zip_local_ademas_de_la_ruta_remota(self) -> None:
+        self.assertIn("[string]$LocalZip", self.bootstrap)
+        self.assertIn("$LocalZipSpecified", self.bootstrap)
+        self.assertIn("$localZipSpecified", self.bootstrap)
+        self.assertIn("LocalZipSpecified", self.bootstrap)
+
+    def test_la_ruta_local_copia_la_entrada_antes_de_validarla(self) -> None:
+        # El archivo elegido por el usuario es mutable: se copia a la carpeta
+        # temporal propia y desde ahi se valida y se instala.
+        self.assertIn("[System.IO.File]::Copy", self.bootstrap)
+        copia = self.bootstrap.index("Copy-CliBootstrapLocalAsset -SourcePath $localZipPath")
+        sidecar = self.bootstrap.index("$expectedHash = Read-CliBootstrapSidecarHash")
+        staging = self.bootstrap.index("New-CliBootstrapStagingDirectory -ManagedRootPath $managedRoot")
+        self.assertLess(copia, sidecar, "la copia propia debe existir antes del SHA-256")
+        self.assertLess(sidecar, staging, "el SHA-256 debe validarse antes del staging")
+
+    def test_la_ruta_local_rechaza_entradas_incompatibles_antes_de_la_red(self) -> None:
+        for fragmento in (
+            "Las opciones -LocalZip y -Version no se pueden combinar",
+            "La opcion -LocalZip necesita la ruta de un ZIP local",
+            "No se encontro el ZIP local indicado",
+            "Falta el sidecar SHA256 junto al ZIP local",
+        ):
+            self.assertIn(fragmento, self.bootstrap, f"falta el rechazo local: {fragmento}")
+        conflicto = self.bootstrap.index("$localZipSpecified -and $versionSpecified")
+        entrada = self.bootstrap.index("Assert-CliBootstrapLocalInput -ZipPath $localZipPath")
+        primera_descarga = self.bootstrap.index("Save-CliBootstrapAsset -AssetName $cliAssetName")
+        staging = self.bootstrap.index("New-CliBootstrapStagingDirectory -ManagedRootPath $managedRoot")
+        self.assertLess(conflicto, entrada, "el choque de opciones se rechaza antes de leer la entrada")
+        self.assertLess(entrada, primera_descarga, "la entrada local se valida antes de la red")
+        self.assertLess(entrada, staging, "la entrada local se valida antes de escribir el destino")
+
+    def test_la_ruta_local_relativa_se_resuelve_en_la_sesion(self) -> None:
+        # Set-Location no cambia el directorio del proceso, asi que una ruta
+        # relativa se resuelve con el proveedor de archivos de PowerShell y no
+        # con [IO.Path]::GetFullPath.
+        self.assertIn("GetUnresolvedProviderPathFromPSPath", self.bootstrap)
+        self.assertNotIn("[System.IO.Path]::GetFullPath($Value)", self.bootstrap)
+        resolucion = self.bootstrap.index("GetUnresolvedProviderPathFromPSPath")
+        entrada = self.bootstrap.index("Assert-CliBootstrapLocalInput -ZipPath $localZipPath")
+        self.assertLess(resolucion, entrada, "la ruta se resuelve antes de comprobar la entrada")
+        self.assertIn("'FileSystem'", self.bootstrap, "falta exigir el proveedor de archivos")
+
+    def test_la_version_local_sale_del_gestor_leido_como_texto(self) -> None:
+        self.assertIn("MensorCadManagerVersion", self.bootstrap)
+        self.assertIn("Read-CliBootstrapLocalManagerVersion", self.bootstrap)
+        self.assertIn("[0-9]+\\.[0-9]+\\.[0-9]+", self.bootstrap, "falta el patron de version estable")
+        # El texto del gestor se lee y se compara con una expresion regular; no
+        # hay ninguna ejecucion del archivo extraido.
+        self.assertIn("ReadAllText", self.bootstrap)
+        self.assertNotIn("Invoke-Expression", self.bootstrap)
+        self.assertIn("Regex]::Match", self.bootstrap)
+
 
 class CliBootstrapDocsTests(unittest.TestCase):
     """La documentacion publica debe describir el flujo real de dos pasos."""
@@ -270,6 +323,24 @@ class CliBootstrapDocsTests(unittest.TestCase):
             "la guia debe aclarar que los scripts descargados no se ejecutan",
         )
 
+    def test_documenta_la_instalacion_local_sin_publicar(self) -> None:
+        self.assertIn("-LocalZip .\\dist\\MensorCAD-CLI.zip", self.docs)
+        self.assertIn("tools/build_bundle.py --output-dir dist", self.docs_flat)
+        self.assertIn("MensorCAD-CLI.zip.sha256", self.docs_flat)
+        self.assertIn("adjunto", self.docs_flat)
+        self.assertIn("mutuamente excluyentes", self.docs_flat)
+
+    def test_documenta_las_rutas_relativas_de_la_entrada_local(self) -> None:
+        self.assertIn("Ruta relativa", self.docs_flat)
+        self.assertIn("carpeta actual de su sesion de PowerShell", self.docs_flat)
+
+    def test_la_confianza_local_queda_declarada(self) -> None:
+        # El hash solo prueba integridad; la confianza la aporta la persona que
+        # eligio la compilacion. La guia tiene que decirlo sin ambiguedad.
+        self.assertIn("integridad, no confianza", self.docs_flat)
+        self.assertIn("confiar en la compilacion", self.docs_flat)
+        self.assertIn("no autentica al autor", self.docs_flat)
+
 
 class CliBootstrapFunctionalHarnessTests(unittest.TestCase):
     """La suite funcional debe existir y aislarse de red y registro reales."""
@@ -292,6 +363,11 @@ class CliBootstrapFunctionalHarnessTests(unittest.TestCase):
         ):
             self.assertIn(fragmento, self.functional, f"la suite funcional debe aislar {fragmento}")
         self.assertIn("PayloadSentinel", self.functional, "falta comprobar que el payload no se ejecuta")
+
+    def test_cubre_la_ruta_local_sin_red(self) -> None:
+        self.assertIn("-LocalZip", self.functional, "la suite funcional debe cubrir la ruta local")
+        self.assertIn("Assert-SinRed", self.functional, "falta contar cero consultas y cero descargas")
+        self.assertIn("New-LocalCliInput", self.functional, "falta la fixture del ZIP local")
 
 
 if __name__ == "__main__":
