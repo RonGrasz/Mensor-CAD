@@ -9,7 +9,7 @@ byte a byte.
 ## Ruta rápida
 
 ```bash
-python tools/build_bundle.py --output-dir dist --version 0.1.0
+python tools/build_bundle.py --output-dir dist --version 0.2.0
 ```
 
 `--version` debe coincidir con `AppVersion` o `Version` de
@@ -104,7 +104,7 @@ Los seis artefactos permiten probar el circuito completo en Windows, sin
 publicar una release y sin red. Construí una sola vez y usá esos mismos bytes:
 
 ```bash
-python tools/build_bundle.py --output-dir dist --version 0.1.0
+python tools/build_bundle.py --output-dir dist --version 0.2.0
 ```
 
 ```powershell

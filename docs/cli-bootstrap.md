@@ -62,7 +62,7 @@ Para probar el mismo circuito sin publicar ninguna release, construya los
 artefactos y pase el ZIP del gestor con `-LocalZip`:
 
 ```bash
-python tools/build_bundle.py --output-dir dist --version 0.1.0
+python tools/build_bundle.py --output-dir dist --version 0.2.0
 ```
 
 ```powershell

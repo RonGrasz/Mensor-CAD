@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import subprocess
 import sys
 import tempfile
@@ -95,6 +96,7 @@ class FuentesDePrueba:
         cuix: dict[str, bytes] | None = None,
     ) -> None:
         self.base = base
+        self.version = version
         self.raiz = base / "repo"
         self.salida = base / "dist"
         self.lisp_dir = self.raiz / "lisp"
@@ -167,8 +169,9 @@ class FuentesDePrueba:
             "--license",
             str(self.license),
         ]
-        if version is not None:
-            argumentos.extend(["--version", version])
+        # La version del fixture viaja siempre explicita: asi el caso no depende
+        # del valor por defecto del constructor, que sigue a la version publicada.
+        argumentos.extend(["--version", version if version is not None else self.version])
         return argumentos
 
     def argumentos_con_script(self, output_dir: Path, install_script: Path):
@@ -1370,6 +1373,27 @@ class RepositorioReal(CasoBase):
             (destino / RUTA_BOOTSTRAP).read_bytes(),
             bootstrap_real.read_bytes(),
             msg="el bootstrap publicado debe ser la copia byte a byte",
+        )
+
+
+class VersionPublicada(CasoBase):
+    """La version del producto vive en el manifiesto, no duplicada a mano."""
+
+    def test_version_por_defecto_coincide_con_el_manifiesto_del_repositorio(self):
+        # Los casos usan una version de fixture para no depender del release.
+        # Este es el unico valor que si debe seguir al manifiesto publicado: si
+        # el constructor queda atras, un build sin --version rechaza el paquete.
+        manifiesto_repo = (RAIZ_REPO / "PackageContents.xml").read_text(encoding="utf-8-sig")
+        coincidencia = re.search(
+            r'^VERSION_POR_DEFECTO = "([^"]+)"$',
+            CONSTRUCTOR.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(coincidencia, msg="falta VERSION_POR_DEFECTO en el constructor")
+        self.assertIn(
+            'AppVersion="%s"' % coincidencia.group(1),
+            manifiesto_repo,
+            msg="VERSION_POR_DEFECTO debe coincidir con AppVersion del manifiesto",
         )
 
 
