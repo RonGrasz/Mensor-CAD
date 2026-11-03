@@ -169,6 +169,45 @@ class DistributionSuiteStructureTests(unittest.TestCase):
         self.assertIn("No se reconstruye", self.suite)
         self.assertIn("ManifestVersion", self.suite)
 
+    def test_cubre_la_ruta_local_con_los_artefactos_reales(self) -> None:
+        # T2: la ruta -LocalZip del gestor se ejercita con los bytes construidos
+        # y solo se sustituyen las costuras de aislamiento.
+        for fragmento in (
+            "Write-LocalRouteFixture",
+            "Write-LocalChildWrapper",
+            "Get-LocalRouteFixtureResult",
+            "Open-MensorCadLocalPackage",
+            "Invoke-MensorCadRemoteChild",
+            "$script:LocalDestinationRoot",
+            "mensorcad-local-",
+            "payload|",
+            "child|",
+            "Get-ScratchLocalWorkspaces",
+            "New-LegacyWindowsArchive",
+            "$script:OlderRoot",
+        ):
+            self.assertIn(fragmento, self.suite, f"la suite no ejercita {fragmento}")
+
+    def test_la_ruta_local_mide_rechazos_y_no_ejecuta_el_paquete(self) -> None:
+        for fragmento in (
+            "corresponde a",
+            "Falta el archivo de verificacion",
+            "no coincide con el archivo .sha256",
+            "es anterior a la instalada",
+            "Ya estás actualizado",
+            "Complemento: no instalado",
+            "siguen intactas",
+            "sigue aceptandose",
+        ):
+            self.assertIn(fragmento, self.suite, f"la suite no mide {fragmento}")
+
+    def test_la_ruta_local_no_toca_el_destino_real(self) -> None:
+        # El aislamiento se demuestra con la raiz simulada, no con una promesa:
+        # la suite compara el stdout con la carpeta Program Files real.
+        self.assertIn("[Environment]::GetFolderPath('ProgramFiles')", self.suite)
+        self.assertIn("$script:LocalDestinationRoot", self.suite)
+        self.assertIn("$script:LocalRoot", self.suite)
+
 
 class WorkflowDistributionTests(unittest.TestCase):
     """El CI debe ejecutar las suites nuevas y publicar los seis artefactos."""
@@ -331,6 +370,67 @@ class ReadmeDistributionTests(unittest.TestCase):
             self.assertIn(asset, section, f"el README debe nombrar {asset}")
 
 
+class ReadmeLocalRouteTests(unittest.TestCase):
+    """El README debe explicar la prueba local sin publicar, con comandos exactos."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.readme = read_text(README)
+
+    def section(self, heading: str) -> str:
+        self.assertIn(heading, self.readme)
+        start = self.readme.index(heading) + len(heading)
+        following = re.search(r"(?m)^## ", self.readme[start:])
+        end = start + following.start() if following else len(self.readme)
+        return self.readme[start:end]
+
+    def test_distingue_el_zip_del_gestor_del_zip_del_complemento(self) -> None:
+        section = self.section("## Instalación")
+        self.assertIn("ZIP del gestor", section)
+        self.assertIn("ZIP del complemento", section)
+        for asset in NEW_ASSETS:
+            self.assertIn(asset, section)
+        self.assertIn("MensorCAD-Windows.zip", section)
+
+    def test_documenta_los_comandos_locales_exactos(self) -> None:
+        section = self.section("## Instalación")
+        for fragmento in (
+            "& .\\dist\\install.ps1 -LocalZip .\\dist\\MensorCAD-CLI.zip",
+            "mensorcad install -LocalZip .\\dist\\MensorCAD-Windows.zip",
+            "mensorcad update -LocalZip .\\dist\\MensorCAD-Windows.zip",
+            "Get-Command mensorcad",
+            "mensorcad --help",
+            "mensorcad --version",
+            "mensorcad status",
+            "mensorcad uninstall",
+            "MCHELP",
+            "Ya estás actualizado",
+            "conserva el comando gestor",
+        ):
+            self.assertIn(fragmento, section, f"el README no documenta {fragmento}")
+
+    def test_exige_los_sidecars_y_advierte_que_el_hash_es_integridad(self) -> None:
+        section = self.section("## Instalación")
+        self.assertIn("sidecar", section)
+        self.assertIn(".sha256", section)
+        self.assertIn("integridad", section)
+        self.assertIn("no autentica al publicador", section)
+
+    def test_advierte_la_terminal_nueva_y_las_rutas_relativas(self) -> None:
+        section = self.section("## Instalación")
+        self.assertIn("terminal nueva", section)
+        self.assertIn("PATH", section)
+        self.assertIn("UNC", section)
+        self.assertIn("ruta absoluta", section)
+        self.assertIn("Windows PowerShell 5.1", section)
+        self.assertIn("64", section)
+
+    def test_no_afirma_haber_hecho_las_comprobaciones_manuales(self) -> None:
+        section = self.section("## Instalación")
+        self.assertIn("quedan a tu cargo", section)
+        self.assertIn("todavía no están publicados", section)
+
+
 class BuildDocsDistributionTests(unittest.TestCase):
     """La guia del constructor debe describir las salidas nuevas."""
 
@@ -373,6 +473,21 @@ class BuildDocsDistributionTests(unittest.TestCase):
         self.assertIn("pendiente", self.docs)
         self.assertNotIn("gh release", self.docs)
         self.assertNotIn("git tag", self.docs)
+
+    def test_documenta_la_prueba_local_sin_publicar(self) -> None:
+        for fragmento in (
+            "-LocalZip .\\dist\\MensorCAD-CLI.zip",
+            "mensorcad install -LocalZip .\\dist\\MensorCAD-Windows.zip",
+            "mensorcad update",
+            "mensorcad uninstall",
+            "Get-Command mensorcad",
+            "MCHELP",
+            "no autentica al publicador",
+            "UNC",
+            "terminal nueva",
+            "no se ejecutan en este repositorio",
+        ):
+            self.assertIn(fragmento, self.docs, f"la guia no documenta {fragmento}")
 
     def test_las_salidas_documentadas_son_las_del_constructor(self) -> None:
         for nombre in (*NEW_ASSETS, *WINDOWS_ASSETS):

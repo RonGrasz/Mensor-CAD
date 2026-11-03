@@ -53,7 +53,12 @@ $script:EnvironmentNames = @(
     'MCM_ENGINE_STDERR',
     'MCM_ENGINE_REPARSE',
     'MCM_PROTECTED_EXIT',
-    'MCM_EVIDENCE'
+    'MCM_EVIDENCE',
+    'MCM_PF',
+    'MCM_LOCAL_EVIDENCE',
+    'MCM_LOCAL_EXIT',
+    'MCM_LOCAL_STDOUT',
+    'MCM_LOCAL_STDERR'
 )
 
 if (-not (Test-Path -LiteralPath $script:ManagerPath -PathType Leaf)) {
@@ -875,6 +880,579 @@ Test-Case 'lanzador CMD propaga argumentos y el codigo real del motor' {
     Assert-Equal 7 $result.ExitCode 'cmd debe devolver el codigo del motor'
     Assert-Contains $result.StdOut 'CMD-ENGINE-OUT' 'salida del motor por CMD'
     Assert-True (Test-EvidenceContains -Path $case.EvidencePath -Fragment 'adjacent|cli|uninstall=False;fromRelease=True;version=v7.8.9') 'argumentos por CMD'
+}
+
+# ---------------------------------------------------------------------------
+# Casos: paquete local (-LocalZip)
+# ---------------------------------------------------------------------------
+# El motor adyacente de estos casos es el motor REAL con tres costuras de
+# fixture: destino/Program Files falsos, estado de propiedad falso y red
+# prohibida. Asi la validacion del ZIP, la extraccion y la revalidacion del
+# paquete son las de produccion, pero nada sale del scratch ignorado y el
+# instalador que se ejecuta es el stub incluido en el ZIP fixture (nunca pide
+# UAC ni escribe en Program Files).
+
+$script:HybridEngineOverrides = @'
+function Add-McHybridEvidence {
+    param([string]$Line)
+    if ([string]::IsNullOrEmpty($env:MCM_EVIDENCE)) { return }
+    Add-Content -LiteralPath $env:MCM_EVIDENCE -Value ('hybrid|' + $Line) -Encoding UTF8
+}
+function Get-MensorCadProgramFilesRoot {
+    Add-McHybridEvidence ('programfiles|' + [string]$env:MCM_PF)
+    return [string]$env:MCM_PF
+}
+function Get-MensorCadDestinationRoot {
+    Add-McHybridEvidence 'destination'
+    return [string]$env:MCM_DEST
+}
+function Assert-MensorCadOwnedDestination {
+    param([string]$DestinationRoot)
+    Add-McHybridEvidence ('assert|' + [string]$DestinationRoot)
+    if ($env:MCM_OWNERSHIP -eq 'invalid') {
+        throw 'La instalacion existente esta modificada (fixture).'
+    }
+    if ($env:MCM_OWNERSHIP -eq 'absent') { return $null }
+    return [pscustomobject]@{
+        InstalledAtUtc = '2024-01-02T03:04:05Z'
+        MarkerPath = (Join-Path $DestinationRoot '.mensorcad-install.json')
+    }
+}
+function Get-MensorCadRemoteText {
+    param([string]$Uri)
+    Add-McHybridEvidence 'network|text'
+    throw 'La red no esta permitida en esta prueba (fixture).'
+}
+function Save-MensorCadRemoteFile {
+    param([string]$Uri, [string]$DestinationPath)
+    Add-McHybridEvidence 'network|file'
+    throw 'La red no esta permitida en esta prueba (fixture).'
+}
+'@
+
+$script:LocalChildTemplate = @'
+param([switch]$Uninstall, [switch]$NoAnimation)
+$evidence = [string]$env:MCM_LOCAL_EVIDENCE
+if (-not [string]::IsNullOrEmpty($evidence)) {
+    $version = ''
+    $manifest = Join-Path -Path $PSScriptRoot -ChildPath 'MensorCAD.bundle\PackageContents.xml'
+    if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+        $document = New-Object -TypeName 'System.Xml.XmlDocument'
+        $document.XmlResolver = $null
+        $document.Load($manifest)
+        $version = [string]$document.DocumentElement.GetAttribute('AppVersion')
+    }
+    Add-Content -LiteralPath $evidence -Value ('local-child|ran|version=' + $version) -Encoding UTF8
+}
+$out = [string]$env:MCM_LOCAL_STDOUT
+if (-not [string]::IsNullOrEmpty($out)) { [Console]::Out.WriteLine($out) }
+$err = [string]$env:MCM_LOCAL_STDERR
+if (-not [string]::IsNullOrEmpty($err)) { [Console]::Error.WriteLine($err) }
+$code = 0
+if (-not [string]::IsNullOrEmpty($env:MCM_LOCAL_EXIT)) { $code = [int]$env:MCM_LOCAL_EXIT }
+exit $code
+'@
+
+# Envoltura minima para separar de forma explicita la ubicacion de PowerShell
+# del directorio de trabajo del proceso: Set-Location cambia solo la primera.
+# Si el motor resolviera la ruta relativa con el cwd del proceso fallaria aunque
+# la ruta sea correcta para la persona que la escribio.
+$script:RelativeWrapperTemplate = @'
+param([string]$ManagerPath, [string]$Directory, [string]$RelativeZip)
+$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath $Directory
+[Console]::Out.WriteLine('PSLOC=' + (Get-Location).ProviderPath)
+[Console]::Out.WriteLine('CWDLOC=' + [Environment]::CurrentDirectory)
+& $ManagerPath install -LocalZip $RelativeZip
+$code = $LASTEXITCODE
+if ($null -eq $code) { exit 9 }
+exit [int]$code
+'@
+
+function New-FixtureZipArchive {
+    param([string]$SourceRoot, [string]$ZipPath)
+    Add-Type -AssemblyName System.IO.Compression | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+    $sourceFull = [System.IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $stream = [System.IO.File]::Open($ZipPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+    try {
+        $archive = New-Object -TypeName 'System.IO.Compression.ZipArchive' -ArgumentList @($stream, [System.IO.Compression.ZipArchiveMode]::Create, $true)
+        try {
+            foreach ($file in @(Get-ChildItem -LiteralPath $sourceFull -Recurse -File | Sort-Object -Property FullName)) {
+                $relative = $file.FullName.Substring($sourceFull.Length + 1).Replace('\', '/')
+                $entry = $archive.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::Optimal)
+                $entryStream = $entry.Open()
+                try {
+                    $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                    $entryStream.Write($bytes, 0, $bytes.Length)
+                }
+                finally {
+                    $entryStream.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Add-FixtureZipEntry {
+    param([string]$ZipPath, [string]$Name, [string]$Content)
+    Add-Type -AssemblyName System.IO.Compression | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+    $stream = [System.IO.File]::Open($ZipPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite)
+    try {
+        $archive = New-Object -TypeName 'System.IO.Compression.ZipArchive' -ArgumentList @($stream, [System.IO.Compression.ZipArchiveMode]::Update, $true)
+        try {
+            $entry = $archive.CreateEntry($Name, [System.IO.Compression.CompressionLevel]::Optimal)
+            $entryStream = $entry.Open()
+            try {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+                $entryStream.Write($bytes, 0, $bytes.Length)
+            }
+            finally {
+                $entryStream.Dispose()
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function New-LocalZipFixture {
+    param(
+        [string]$RootPath,
+        [string]$BundleVersion = '2.0.0',
+        [string]$ManifestVersion = '2.0.0',
+        [switch]$WithoutSidecar,
+        [string]$ChecksumOverride = '',
+        [switch]$BreakInventory,
+        [switch]$WithoutManifestVersion,
+        [string[]]$ExtraEntries = @(),
+        [string]$SidecarName = 'MensorCAD-Windows.zip'
+    )
+    $packageRoot = Join-Path -Path $RootPath -ChildPath ('paquete-fuente-' + [guid]::NewGuid().ToString('N'))
+    $bundleRoot = Join-Path -Path $packageRoot -ChildPath 'MensorCAD.bundle'
+    $null = [System.IO.Directory]::CreateDirectory((Join-Path -Path $bundleRoot -ChildPath 'Contents\Lisp'))
+    $null = [System.IO.Directory]::CreateDirectory((Join-Path -Path $bundleRoot -ChildPath 'Contents\UI'))
+    $xml = '<?xml version="1.0" encoding="utf-8"?>' + "`n"
+    if ($WithoutManifestVersion) {
+        $xml += '<ApplicationPackage />' + "`n"
+    }
+    else {
+        $xml += '<ApplicationPackage AppVersion="' + $BundleVersion + '" Version="' + $ManifestVersion + '" />' + "`n"
+    }
+    Write-Utf8File -Path (Join-Path -Path $bundleRoot -ChildPath 'PackageContents.xml') -Content $xml
+    Write-Utf8File -Path (Join-Path -Path $bundleRoot -ChildPath 'Contents\Lisp\MC-TEST.lsp') -Content ('; fixture ' + $BundleVersion + "`n")
+    Write-Utf8File -Path (Join-Path -Path $bundleRoot -ChildPath 'Contents\UI\MensorCAD.cuix') -Content ('CUIX-' + $BundleVersion)
+    $lines = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File | Sort-Object -Property FullName)) {
+        $relative = $file.FullName.Substring($bundleRoot.Length + 1).Replace('\', '/')
+        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $lines += ($hash + '  ' + $relative)
+    }
+    if ($BreakInventory -and $lines.Count -gt 0) {
+        $lines[0] = (('0' * 64) + '  ' + $lines[0].Substring(66))
+    }
+    Write-Utf8File -Path (Join-Path -Path $packageRoot -ChildPath 'bundle.sha256') -Content (($lines -join "`n") + "`n")
+    Write-Utf8File -Path (Join-Path -Path $packageRoot -ChildPath 'Install-MensorCAD.ps1') -Content $script:LocalChildTemplate
+    Write-Utf8File -Path (Join-Path -Path $packageRoot -ChildPath 'Instalar.bat') -Content "@echo off`r`necho fixture`r`n"
+    Write-Utf8File -Path (Join-Path -Path $packageRoot -ChildPath 'LICENSE') -Content 'LICENCIA DE PRUEBA'
+    # Carpeta con espacios a proposito: el paquete local debe aceptar rutas con
+    # espacios sin reinterpretar la linea de comandos.
+    $zipDir = Join-Path -Path $RootPath -ChildPath 'paquete local'
+    $null = [System.IO.Directory]::CreateDirectory($zipDir)
+    $zipPath = Join-Path -Path $zipDir -ChildPath 'MensorCAD-Windows.zip'
+    New-FixtureZipArchive -SourceRoot $packageRoot -ZipPath $zipPath
+    foreach ($extraEntry in @($ExtraEntries)) {
+        if ([string]::IsNullOrWhiteSpace($extraEntry)) { continue }
+        Add-FixtureZipEntry -ZipPath $zipPath -Name $extraEntry -Content 'entrada agregada por la prueba'
+    }
+    $sidecarPath = $zipPath + '.sha256'
+    if (-not $WithoutSidecar) {
+        $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($ChecksumOverride)) { $hash = $ChecksumOverride }
+        Write-Utf8File -Path $sidecarPath -Content ($hash + '  ' + $SidecarName + "`n")
+    }
+    return [pscustomobject]@{
+        ZipPath = $zipPath
+        SidecarPath = $sidecarPath
+        PackageRoot = $packageRoot
+    }
+}
+
+function New-LocalZipCase {
+    param(
+        [string]$ManagerVersion = '0.1.0',
+        [string]$PackageVersion = '2.0.0',
+        [string]$InstalledVersion = '',
+        [string]$ManifestVersion = '2.0.0',
+        [switch]$WithoutSidecar,
+        [string]$ChecksumOverride = '',
+        [switch]$BreakInventory,
+        [switch]$WithoutManifestVersion,
+        [string[]]$ExtraEntries = @(),
+        [string]$SidecarName = 'MensorCAD-Windows.zip',
+        [switch]$WithProtectedEngine,
+        [switch]$WithLauncher
+    )
+    $case = New-ManagerCase -Version $ManagerVersion -WithLauncher:$WithLauncher
+    $engineSource = [System.IO.File]::ReadAllText((Join-Path -Path $script:RepositoryRoot -ChildPath 'Install-MensorCAD.ps1'))
+    $guardIndex = $engineSource.IndexOf('if ($script:MensorCadDotSourced) {')
+    if ($guardIndex -lt 0) { throw 'ASSERT: falta la guarda de dot-source del motor real' }
+    $hybridSource = $engineSource.Substring(0, $guardIndex) + $script:HybridEngineOverrides + $engineSource.Substring($guardIndex)
+    Write-Utf8File -Path (Join-Path -Path $case.ManagerDir -ChildPath 'Install-MensorCAD.ps1') -Content $hybridSource -Bom
+    $installRoot = Join-Path -Path $case.Root -ChildPath 'ProgramFiles'
+    $null = [System.IO.Directory]::CreateDirectory($installRoot)
+    $destination = Join-Path -Path $installRoot -ChildPath 'MensorCAD.bundle'
+    $ownership = 'absent'
+    if (-not [string]::IsNullOrWhiteSpace($InstalledVersion)) {
+        New-BundleFixture -BundlePath $destination -AppVersion $InstalledVersion -ManifestVersion $InstalledVersion -WithProtectedEngine:$WithProtectedEngine
+        $ownership = 'owned'
+    }
+    $fixture = New-LocalZipFixture -RootPath $case.Root -BundleVersion $PackageVersion -ManifestVersion $ManifestVersion -WithoutSidecar:$WithoutSidecar -ChecksumOverride $ChecksumOverride -BreakInventory:$BreakInventory -WithoutManifestVersion:$WithoutManifestVersion -ExtraEntries $ExtraEntries -SidecarName $SidecarName
+    $localLog = Join-Path -Path $case.Root -ChildPath 'local-child.log'
+    Set-ManagerEnvironment -Case $case -Values @{
+        'MCM_DEST' = $destination
+        'MCM_PF' = $installRoot
+        'MCM_OWNERSHIP' = $ownership
+        'MCM_LOCAL_EVIDENCE' = $localLog
+        'MCM_LOCAL_EXIT' = '0'
+    }
+    return [pscustomobject]@{
+        Case = $case
+        ZipPath = $fixture.ZipPath
+        SidecarPath = $fixture.SidecarPath
+        Destination = $destination
+        LocalChildLog = $localLog
+        ManagerPath = $case.ManagerPath
+        LauncherPath = $case.LauncherPath
+        EvidencePath = $case.EvidencePath
+        ManagerDir = $case.ManagerDir
+    }
+}
+
+function Get-LocalChildLog {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    return @(Get-Content -LiteralPath $Path)
+}
+
+function Get-LocalWorkspaceLeftovers {
+    $root = [string]$env:TEMP
+    if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
+    return @(Get-ChildItem -LiteralPath $root -Directory -Filter 'mensorcad-local-*' -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.FullName })
+}
+
+function Assert-NoLocalEvidence {
+    param([pscustomobject]$CaseFixture, [string]$Message)
+    Assert-True (-not (Test-EvidenceContains -Path $CaseFixture.EvidencePath -Fragment 'network|')) ($Message + ': sin red')
+    Assert-True (-not (Test-EvidenceContains -Path $CaseFixture.EvidencePath -Fragment 'resolve|')) ($Message + ': sin resolver release')
+    Assert-Equal 0 (@(Get-LocalChildLog -Path $CaseFixture.LocalChildLog)).Count ($Message + ': el instalador incluido no debe ejecutarse')
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count ($Message + ': la carpeta temporal propia debe limpiarse')
+}
+
+Test-Case 'install -LocalZip valida el paquete propio y ejecuta el instalador incluido' {
+    $fixture = New-LocalZipCase -PackageVersion '2.0.0'
+    Set-ManagerEnvironment -Case $fixture.Case -Values @{
+        'MCM_DEST' = $fixture.Destination
+        'MCM_PF' = (Split-Path -Parent $fixture.Destination)
+        'MCM_OWNERSHIP' = 'absent'
+        'MCM_LOCAL_EVIDENCE' = $fixture.LocalChildLog
+        'MCM_LOCAL_EXIT' = '0'
+        'MCM_LOCAL_STDOUT' = 'LOCAL-CHILD-OUT'
+    }
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 0 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdOut 'LOCAL-CHILD-OUT' 'stdout del instalador incluido'
+    Assert-True ((Get-LocalChildLog -Path $fixture.LocalChildLog) -contains 'local-child|ran|version=2.0.0') 'el hijo debe ejecutarse desde el paquete extraido'
+    Assert-True (-not (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'network|')) 'sin red'
+    Assert-True (-not (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'resolve|')) 'sin release remota'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'la carpeta temporal propia debe limpiarse'
+}
+
+Test-Case 'el alias -i acepta -LocalZip y propaga el codigo del instalador incluido' {
+    $fixture = New-LocalZipCase -PackageVersion '4.5.6'
+    Set-ManagerEnvironment -Case $fixture.Case -Values @{
+        'MCM_DEST' = $fixture.Destination
+        'MCM_PF' = (Split-Path -Parent $fixture.Destination)
+        'MCM_OWNERSHIP' = 'absent'
+        'MCM_LOCAL_EVIDENCE' = $fixture.LocalChildLog
+        'MCM_LOCAL_EXIT' = '7'
+    }
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('-i', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 7 $result.ExitCode 'el codigo del instalador incluido se propaga exacto'
+    Assert-True ((Get-LocalChildLog -Path $fixture.LocalChildLog) -contains 'local-child|ran|version=4.5.6') 'el alias debe instalar el paquete local'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin restos temporales'
+}
+
+Test-Case 'install -LocalZip no baja de version un complemento existente' {
+    $fixture = New-LocalZipCase -PackageVersion '1.0.0' -InstalledVersion '3.0.0'
+    $before = Get-TreeSnapshot -Path $fixture.Destination
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'No se baja de' 'debe rechazar el downgrade local'
+    Assert-Equal $before (Get-TreeSnapshot -Path $fixture.Destination) 'sin cambios en el complemento'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'downgrade local'
+}
+
+Test-Case 'install -LocalZip con la version del manifiesto no reinstala' {
+    $fixture = New-LocalZipCase -PackageVersion '1.2.3' -InstalledVersion '1.2.3'
+    $before = Get-TreeSnapshot -Path $fixture.Destination
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 0 $result.ExitCode 'codigo de salida'
+    Assert-True ((Get-StdOutLines -Text $result.StdOut) -contains 'Ya estás actualizado') 'mensaje exacto'
+    Assert-Equal $before (Get-TreeSnapshot -Path $fixture.Destination) 'sin cambios'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'misma version local'
+}
+
+Test-Case 'install -LocalZip rechaza una comparacion ambigua sin ejecutar el paquete' {
+    $fixture = New-LocalZipCase -PackageVersion '1.2.3-beta' -InstalledVersion '1.0.0'
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'No se pudo comparar' 'debe rechazar la ambiguedad'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'ambiguedad local'
+}
+
+Test-Case 'update -LocalZip con version nueva delega y conserva salida y codigo' {
+    $fixture = New-LocalZipCase -PackageVersion '2.0.0' -InstalledVersion '1.0.0'
+    Set-ManagerEnvironment -Case $fixture.Case -Values @{
+        'MCM_DEST' = $fixture.Destination
+        'MCM_PF' = (Split-Path -Parent $fixture.Destination)
+        'MCM_OWNERSHIP' = 'owned'
+        'MCM_LOCAL_EVIDENCE' = $fixture.LocalChildLog
+        'MCM_LOCAL_EXIT' = '5'
+        'MCM_LOCAL_STDOUT' = 'LOCAL-UPDATE-OUT'
+        'MCM_LOCAL_STDERR' = 'LOCAL-UPDATE-ERR'
+    }
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('update', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 5 $result.ExitCode 'el codigo del instalador incluido se propaga exacto'
+    Assert-Contains $result.StdOut 'LOCAL-UPDATE-OUT' 'stdout del instalador incluido'
+    Assert-Contains $result.StdErr 'LOCAL-UPDATE-ERR' 'stderr del instalador incluido'
+    Assert-True ((Get-LocalChildLog -Path $fixture.LocalChildLog) -contains 'local-child|ran|version=2.0.0') 'el hijo se ejecuta una vez'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin restos temporales'
+}
+
+Test-Case 'update -LocalZip sin complemento falla antes de leer el paquete' {
+    $fixture = New-LocalZipCase
+    $missingZip = Join-Path -Path $fixture.Case.Root -ChildPath 'no-existe\MensorCAD-Windows.zip'
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('update', '-LocalZip', $missingZip)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Empty $result.StdOut 'stdout'
+    Assert-Contains $result.StdErr 'mensorcad install' 'debe sugerir install'
+    Assert-NotContains $result.StdErr 'No se encontró el paquete local' 'no debe llegar a leer el ZIP'
+    Assert-True (-not (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'network|')) 'sin red'
+    Assert-Equal 0 (@(Get-LocalChildLog -Path $fixture.LocalChildLog)).Count 'sin ejecutar el instalador'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin carpetas temporales'
+}
+
+Test-Case 'install -LocalZip con SHA-256 incorrecto no ejecuta el instalador' {
+    $fixture = New-LocalZipCase -ChecksumOverride ('0' * 64)
+    $before = Get-TreeSnapshot -Path $fixture.Destination
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'SHA-256' 'debe rechazar el hash'
+    Assert-Equal $before (Get-TreeSnapshot -Path $fixture.Destination) 'sin escrituras en el destino'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'hash incorrecto'
+}
+
+Test-Case 'install -LocalZip rechaza un paquete con entradas fuera del paquete distribuido' {
+    $fixture = New-LocalZipCase -ExtraEntries @('payload-ajeno.txt')
+    $before = Get-TreeSnapshot -Path $fixture.Destination
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'fuera del paquete distribuido' 'debe rechazar la entrada ajena'
+    Assert-Equal $before (Get-TreeSnapshot -Path $fixture.Destination) 'sin escrituras en el destino'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'entrada ajena'
+}
+
+Test-Case 'install -LocalZip rechaza un sidecar que nombra otro archivo' {
+    $fixture = New-LocalZipCase -SidecarName 'otro-paquete.zip'
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr '.sha256 corresponde a' 'debe atar el sidecar al ZIP esperado'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'sidecar de otro archivo'
+}
+
+Test-Case 'install -LocalZip rechaza un manifiesto sin version utilizable' {
+    $fixture = New-LocalZipCase -WithoutManifestVersion
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'no declara una version utilizable' 'no debe inventar la version'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'version ausente en el paquete local'
+}
+
+Test-Case 'install -LocalZip con version nueva instala una sola vez' {
+    $fixture = New-LocalZipCase -PackageVersion '3.1.0' -InstalledVersion '3.0.0'
+    Set-ManagerEnvironment -Case $fixture.Case -Values @{
+        'MCM_DEST' = $fixture.Destination
+        'MCM_PF' = (Split-Path -Parent $fixture.Destination)
+        'MCM_OWNERSHIP' = 'owned'
+        'MCM_LOCAL_EVIDENCE' = $fixture.LocalChildLog
+        'MCM_LOCAL_EXIT' = '0'
+    }
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 0 $result.ExitCode 'codigo de salida'
+    Assert-Equal 1 (@(Get-LocalChildLog -Path $fixture.LocalChildLog)).Count 'el instalador incluido se ejecuta una sola vez'
+    Assert-True ((Get-LocalChildLog -Path $fixture.LocalChildLog) -contains 'local-child|ran|version=3.1.0') 'version del paquete ejecutado'
+    Assert-True (-not (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'network|')) 'sin red'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin restos temporales'
+}
+
+Test-Case 'install -LocalZip con inventario alterado no ejecuta el instalador' {
+    $fixture = New-LocalZipCase -BreakInventory
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'bundle.sha256' 'debe rechazar el inventario'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'inventario alterado'
+}
+
+Test-Case 'install -LocalZip exige el .sha256 junto al ZIP' {
+    $fixture = New-LocalZipCase -WithoutSidecar
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr '.sha256' 'debe exigir el archivo de verificacion'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'sidecar ausente'
+}
+
+Test-Case 'install rechaza -LocalZip duplicado sin cargar el motor' {
+    $fixture = New-LocalZipCase
+    $before = Get-TreeSnapshot -Path $fixture.ManagerDir
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath, '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 2 $result.ExitCode 'codigo de uso'
+    Assert-Empty $result.StdOut 'stdout'
+    Assert-Contains $result.StdErr 'no se puede repetir' 'debe rechazar la repeticion'
+    Assert-True (-not (Test-Path -LiteralPath $fixture.EvidencePath)) 'el motor no debe cargarse'
+    Assert-Equal $before (Get-TreeSnapshot -Path $fixture.ManagerDir) 'sin escrituras'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin carpetas temporales'
+}
+
+Test-Case 'install rechaza -LocalZip sin ruta' {
+    $fixture = New-LocalZipCase
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip')
+    Assert-Equal 2 $result.ExitCode 'codigo de uso'
+    Assert-Empty $result.StdOut 'stdout'
+    Assert-Contains $result.StdErr 'requiere una ruta' 'debe pedir la ruta'
+    Assert-True (-not (Test-Path -LiteralPath $fixture.EvidencePath)) 'el motor no debe cargarse'
+}
+
+Test-Case 'install rechaza un argumento extra junto a -LocalZip' {
+    $fixture = New-LocalZipCase
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', $fixture.ZipPath, 'extra')
+    Assert-Equal 2 $result.ExitCode 'codigo de uso'
+    Assert-Contains $result.StdErr 'Argumentos adicionales' 'mensaje exacto de argumentos'
+    Assert-True (-not (Test-Path -LiteralPath $fixture.EvidencePath)) 'el motor no debe cargarse'
+}
+
+Test-Case 'los comandos hermanos rechazan -LocalZip antes de cargar el motor' {
+    foreach ($command in @('status', 'uninstall', '--help', '--version')) {
+        $fixture = New-LocalZipCase -WithProtectedEngine -InstalledVersion '1.0.0'
+        $beforeManager = Get-TreeSnapshot -Path $fixture.ManagerDir
+        $beforeBundle = Get-TreeSnapshot -Path $fixture.Destination
+        $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @($command, '-LocalZip', $fixture.ZipPath)
+        Assert-Equal 2 $result.ExitCode ('codigo de uso para ' + $command)
+        Assert-Empty $result.StdOut ('stdout vacio para ' + $command)
+        Assert-Contains $result.StdErr 'Argumentos adicionales' ('rechazo de argumentos para ' + $command)
+        Assert-Contains $result.StdErr 'No se modific' ('debe aclarar que no hubo cambios para ' + $command)
+        Assert-True (-not (Test-Path -LiteralPath $fixture.EvidencePath)) ('el motor no debe cargarse para ' + $command)
+        Assert-Equal $beforeManager (Get-TreeSnapshot -Path $fixture.ManagerDir) ('sin escrituras junto al gestor para ' + $command)
+        Assert-Equal $beforeBundle (Get-TreeSnapshot -Path $fixture.Destination) ('sin escrituras en el complemento para ' + $command)
+    }
+    $orphan = New-LocalZipCase
+    $result = Invoke-ManagerPowerShell -ManagerScript $orphan.ManagerPath -Arguments @('-LocalZip', $orphan.ZipPath)
+    Assert-Equal 2 $result.ExitCode 'la opcion sola no es un comando'
+    Assert-Contains $result.StdErr 'no reconocida' 'debe rechazar la opcion sin comando'
+}
+
+Test-Case 'el motor sin soporte local falla limpio y no toca nada' {
+    $case = New-ManagerCase -Version '0.1.0' -WithEngine
+    Set-ManagerEnvironment -Case $case -Values @{ 'MCM_DEST' = (Join-Path $case.Root 'ausente'); 'MCM_OWNERSHIP' = 'absent' }
+    $before = Get-TreeSnapshot -Path $case.ManagerDir
+    $result = Invoke-ManagerPowerShell -ManagerScript $case.ManagerPath -Arguments @('install', '-LocalZip', (Join-Path $case.Root 'paquete.zip'))
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Empty $result.StdOut 'stdout'
+    Assert-Contains $result.StdErr 'no admite -LocalZip' 'debe explicar la falta de soporte local'
+    Assert-Contains $result.StdErr 'No se modific' 'debe aclarar que no hubo cambios'
+    Assert-Equal $before (Get-TreeSnapshot -Path $case.ManagerDir) 'sin escrituras'
+}
+
+Test-Case 'sin -LocalZip la ruta remota sigue usando la red y no el paquete local' {
+    $fixture = New-LocalZipCase
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install')
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdErr 'La red no esta permitida en esta prueba' 'debe intentar la ruta remota'
+    Assert-True (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'network|') 'la ruta remota debe llegar a la red'
+    Assert-Equal 0 (@(Get-LocalChildLog -Path $fixture.LocalChildLog)).Count 'no debe ejecutar el instalador local'
+}
+
+Test-Case 'el lanzador CMD reenvia -LocalZip con una ruta que tiene espacios' {
+    $fixture = New-LocalZipCase -PackageVersion '6.0.0' -WithLauncher
+    Set-ManagerEnvironment -Case $fixture.Case -Values @{
+        'MCM_DEST' = $fixture.Destination
+        'MCM_PF' = (Split-Path -Parent $fixture.Destination)
+        'MCM_OWNERSHIP' = 'absent'
+        'MCM_LOCAL_EVIDENCE' = $fixture.LocalChildLog
+        'MCM_LOCAL_EXIT' = '3'
+        'MCM_LOCAL_STDOUT' = 'CMD-LOCAL-OUT'
+    }
+    $result = Invoke-Launcher -Launcher $fixture.LauncherPath -Arguments @('install', '-LocalZip', $fixture.ZipPath)
+    Assert-Equal 3 $result.ExitCode 'cmd debe devolver el codigo del instalador incluido'
+    Assert-Contains $result.StdOut 'CMD-LOCAL-OUT' 'salida del instalador incluido por CMD'
+    Assert-True ((Get-LocalChildLog -Path $fixture.LocalChildLog) -contains 'local-child|ran|version=6.0.0') 'la ruta con espacios debe llegar intacta al motor'
+    Assert-True (-not (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'network|')) 'sin red'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin restos temporales'
+}
+
+Test-Case 'install -LocalZip resuelve la ruta relativa contra la ubicacion de PowerShell' {
+    $fixture = New-LocalZipCase -PackageVersion '5.0.0'
+    Set-ManagerEnvironment -Case $fixture.Case -Values @{
+        'MCM_DEST' = $fixture.Destination
+        'MCM_PF' = (Split-Path -Parent $fixture.Destination)
+        'MCM_OWNERSHIP' = 'absent'
+        'MCM_LOCAL_EVIDENCE' = $fixture.LocalChildLog
+        'MCM_LOCAL_EXIT' = '0'
+        'MCM_LOCAL_STDOUT' = 'REL-LOCAL-OUT'
+    }
+    $wrapperPath = Join-Path -Path $fixture.Case.Root -ChildPath 'relativo.ps1'
+    Write-Utf8File -Path $wrapperPath -Content $script:RelativeWrapperTemplate -Bom
+    $zipDirectory = Split-Path -Parent $fixture.ZipPath
+    $relativeZip = '.\' + (Split-Path -Leaf $fixture.ZipPath)
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($part in @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (ConvertTo-QuotedArgument -Value $wrapperPath))) {
+        $parts.Add($part)
+    }
+    foreach ($argument in @($fixture.ManagerPath, $zipDirectory, $relativeZip)) {
+        $parts.Add((ConvertTo-QuotedArgument -Value ([string]$argument)))
+    }
+    # El proceso arranca en otra carpeta: solo la ubicacion de PowerShell apunta
+    # al paquete, igual que cuando alguien hace Set-Location y escribe una ruta
+    # relativa con espacios.
+    $result = Start-CapturedProcess -FileName $script:PowerShellPath -ArgumentString ($parts -join ' ') -WorkingDirectory $env:SystemRoot
+    Assert-Equal 0 $result.ExitCode 'codigo de salida'
+    Assert-Contains $result.StdOut 'REL-LOCAL-OUT' 'salida del instalador incluido'
+    Assert-Contains $result.StdOut ('PSLOC=' + $zipDirectory) 'la ubicacion de PowerShell debe apuntar al paquete'
+    Assert-NotContains $result.StdOut ('CWDLOC=' + $zipDirectory) 'el cwd del proceso debe ser otro directorio'
+    Assert-True ((Get-LocalChildLog -Path $fixture.LocalChildLog) -contains 'local-child|ran|version=5.0.0') 'la ruta relativa con espacios debe llegar intacta al motor'
+    Assert-True (-not (Test-EvidenceContains -Path $fixture.EvidencePath -Fragment 'network|')) 'sin red'
+    Assert-Equal 0 (@(Get-LocalWorkspaceLeftovers)).Count 'sin restos temporales'
+}
+
+Test-Case 'install -LocalZip rechaza una ruta que no es del sistema de archivos' {
+    $fixture = New-LocalZipCase
+    $result = Invoke-ManagerPowerShell -ManagerScript $fixture.ManagerPath -Arguments @('install', '-LocalZip', 'HKLM:\Software\MensorCAD-Windows.zip')
+    Assert-Equal 1 $result.ExitCode 'codigo de salida'
+    Assert-Empty $result.StdOut 'stdout'
+    Assert-Contains $result.StdErr 'ruta de archivos' 'debe rechazar rutas de otros proveedores'
+    Assert-Contains $result.StdErr 'No se modific' 'debe aclarar que no hubo cambios'
+    Assert-NoLocalEvidence -CaseFixture $fixture -Message 'ruta de otro proveedor'
 }
 
 # ---------------------------------------------------------------------------

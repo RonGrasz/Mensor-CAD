@@ -16,10 +16,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "mensorcad.ps1"
 LAUNCHER = ROOT / "mensorcad.cmd"
+ENGINE = ROOT / "Install-MensorCAD.ps1"
 MANAGER_TESTS = ROOT / "tests" / "Test-Manager.ps1"
 DOCS = ROOT / "docs" / "cli-manager.md"
 
 PLACEHOLDER = "__MENSORCAD_MANAGER_VERSION__"
+
+# La entrada local vive dentro de la seccion de paquetes del motor (entre el
+# marcador remoto y la entrega de ventana unica) porque reutiliza la misma
+# validacion de ZIP. El gestor solo la invoca: no duplica validaciones.
+LOCAL_ENGINE_MARKER = "# Entrada local: paquete construido por el usuario (-LocalZip)"
+LOCAL_ENGINE_FUNCTIONS = (
+    "Get-MensorCadLocalPackageArchivePath",
+    "Get-MensorCadLocalPackageSidecarPath",
+    "Copy-MensorCadLocalPackageFile",
+    "Open-MensorCadLocalPackage",
+    "Install-MensorCadLocalPackage",
+    "Remove-MensorCadLocalPackage",
+)
 
 
 def read_text(path: Path) -> str:
@@ -46,6 +60,16 @@ class ManagerStructureTests(unittest.TestCase):
         cls.tests_raw = read_bytes(MANAGER_TESTS)
         cls.tests = read_text(MANAGER_TESTS)
         cls.docs = read_text(DOCS)
+        cls.installer = read_text(ENGINE)
+        # Sin la seccion local, el atributo queda vacio y cada comprobacion falla
+        # como asercion propia en lugar de romper toda la clase.
+        cls.local_engine = ""
+        if LOCAL_ENGINE_MARKER in cls.installer and "function Invoke-MensorCadElevatedSelf" in cls.installer:
+            cls.local_engine = cls.installer[
+                cls.installer.index(LOCAL_ENGINE_MARKER) : cls.installer.index(
+                    "function Invoke-MensorCadElevatedSelf"
+                )
+            ]
 
     # ------------------------------------------------------------------
     # Codificacion y sellado
@@ -239,6 +263,129 @@ class ManagerStructureTests(unittest.TestCase):
         self.assertIn("$script:MensorCadManagerExitUsage = 2", self.manager)
 
     # ------------------------------------------------------------------
+    # Entrada local: ZIP propio con .sha256 adjunto
+    # ------------------------------------------------------------------
+
+    def test_local_zip_option_se_documenta_y_solo_aplica_a_install_y_update(self) -> None:
+        self.assertIn("-LocalZip", self.manager, "falta la opcion local en el gestor")
+        self.assertIn("mensorcad install -LocalZip", self.manager, "la ayuda debe mostrar el uso local")
+        self.assertIn("mensorcad update -LocalZip", self.manager, "la ayuda debe mostrar la actualizacion local")
+        self.assertIn(
+            "'-LocalZip'",
+            self.manager,
+            "la opcion local debe compararse como token literal, no como parametro de PowerShell",
+        )
+        for fragmento in (
+            "no se puede repetir",
+            "requiere una ruta",
+            "Open-MensorCadLocalPackage",
+            "Install-MensorCadLocalPackage",
+            "Remove-MensorCadLocalPackage",
+        ):
+            self.assertIn(fragmento, self.manager, f"falta el contrato local: {fragmento}")
+        # La opcion local no puede abrir validaciones ni elevacion propias: la
+        # red, el hash, la extraccion y el UAC siguen en el motor.
+        for prohibido in (
+            "Get-MensorCadReleaseArchiveEntries",
+            "Expand-MensorCadReleaseArchive",
+            "Assert-MensorCadReleaseArchiveHash",
+            "Test-MensorCadSource",
+            "Get-MensorCadBundleVersion",
+        ):
+            self.assertNotIn(
+                prohibido,
+                self.manager,
+                f"el gestor no debe duplicar la validacion del paquete: {prohibido}",
+            )
+        # El rechazo de opciones locales en los comandos hermanos conserva el
+        # mensaje generico existente: no se agrega sintaxis aceptada fuera de
+        # install, -i y update.
+        self.assertIn(
+            "Argumentos adicionales no admitidos",
+            self.manager,
+            "los comandos hermanos deben seguir rechazando cualquier extra",
+        )
+        self.assertNotIn(
+            "'-LocalZip' -and",
+            self.manager,
+            "no debe existir una segunda gramatica de la opcion local",
+        )
+
+    def test_engine_reutiliza_la_validacion_del_paquete_para_la_entrada_local(self) -> None:
+        self.assertTrue(self.local_engine.strip(), "falta la seccion local marcada del motor")
+        for nombre in LOCAL_ENGINE_FUNCTIONS:
+            self.assertIn(f"function {nombre}", self.local_engine, f"falta la funcion local {nombre}")
+        self.assertIn("function Get-MensorCadBundleVersion", self.installer, "falta la lectura de version del manifiesto")
+        open_body = self.local_engine[self.local_engine.index("function Open-MensorCadLocalPackage") :]
+        orden = [
+            "Copy-MensorCadLocalPackageFile",
+            "Assert-MensorCadReleaseArchiveHash",
+            "Get-MensorCadReleaseArchiveEntries",
+            "Expand-MensorCadReleaseArchive",
+            "Test-MensorCadSource",
+            "Get-MensorCadBundleVersion",
+        ]
+        posiciones = [open_body.index(token) for token in orden]
+        self.assertEqual(
+            posiciones,
+            sorted(posiciones),
+            "el orden copia -> hash -> entradas -> extraccion -> inventario -> version debe respetarse",
+        )
+        self.assertIn("Get-MensorCadRemoteTempRoot", open_body, "la copia debe ir a una carpeta temporal propia")
+        # La ruta relativa se resuelve contra la ubicacion actual de PowerShell,
+        # no contra el cwd del proceso: Set-Location solo cambia la primera.
+        self.assertIn(
+            "GetUnresolvedProviderPathFromPSPath",
+            self.local_engine,
+            "la ruta relativa debe resolverse contra la ubicacion de PowerShell, no contra el cwd del proceso",
+        )
+        self.assertNotIn(
+            "[System.IO.Path]::GetFullPath($ArchivePath)",
+            self.local_engine,
+            "GetFullPath resuelve contra el cwd del proceso y rompe una ruta relativa tras Set-Location",
+        )
+        self.assertIn("FileSystem", open_body + self.local_engine, "solo se aceptan rutas del proveedor de archivos")
+        self.assertIn("Assert-MensorCadNoReparseInPath", open_body, "la carpeta propia debe rechazar reparse points")
+        self.assertIn("Remove-MensorCadTree", open_body, "un fallo de validacion debe limpiar la carpeta propia")
+        self.assertIn(
+            "Remove-MensorCadTree",
+            self.local_engine[self.local_engine.index("function Remove-MensorCadLocalPackage") :],
+            "la limpieza del paquete local debe reutilizar Remove-MensorCadTree",
+        )
+        self.assertIn(
+            "$script:MensorCadReleaseInstallerAssetName",
+            self.local_engine,
+            "solo se ejecuta el instalador incluido en el paquete extraido",
+        )
+        self.assertIn("Invoke-MensorCadRemoteChild", self.local_engine, "la transferencia y elevacion se reutilizan")
+        self.assertIn("Write-MensorCadRelayedOutput", self.local_engine, "la salida del instalador se retransmite")
+
+    def test_engine_local_no_descarga_no_eleva_ni_abre_parametros_nuevos(self) -> None:
+        for prohibido in (
+            "Invoke-WebRequest",
+            "Invoke-RestMethod",
+            "Save-MensorCadRemoteFile",
+            "Get-MensorCadRemoteText",
+            "Resolve-MensorCadReleaseTag",
+            "Start-Process",
+            "RunAs",
+            "Install-MensorCadBundle",
+            "Uninstall-MensorCadBundle",
+            "ApplicationPlugins",
+        ):
+            self.assertNotIn(
+                prohibido,
+                self.local_engine,
+                f"la entrada local no debe incluir {prohibido}",
+            )
+        param_block = self.installer[
+            self.installer.index("param(") : self.installer.index("\n)", self.installer.index("param(")) + 2
+        ]
+        self.assertNotIn("LocalZip", param_block, "la entrada local no agrega una opcion publica al motor")
+        self.assertIn("MensorCadLocalPackagePrefix", self.local_engine, "la carpeta propia debe tener prefijo propio")
+        self.assertIn("no autentica", self.local_engine, "el SHA-256 no autentica al publicador")
+
+    # ------------------------------------------------------------------
     # Lanzador CMD
     # ------------------------------------------------------------------
 
@@ -292,6 +439,9 @@ class ManagerStructureTests(unittest.TestCase):
             "Desinstalar.bat",
             "SHA-256",
             "no autentica",
+            "-LocalZip",
+            "MensorCAD-Windows.zip.sha256",
+            "solo se admite",
             "por usuario",
             "por equipo",
             "UAC",
@@ -317,6 +467,10 @@ class ManagerStructureTests(unittest.TestCase):
             "PROTECTED-ENGINE-STDOUT",
             "Ya estás actualizado",
             "cmd.exe",
+            "-LocalZip",
+            "MensorCAD-Windows.zip",
+            "local-child|ran",
+            "mensorcad-local-",
         ):
             self.assertIn(fragmento, self.tests, f"falta en la suite: {fragmento}")
         for prohibido in (

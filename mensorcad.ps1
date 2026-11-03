@@ -11,6 +11,17 @@
       mensorcad --help          Esta ayuda.
       mensorcad --version       Version del comando gestor.
 
+    Paquete propio (sin publicar):
+      mensorcad install -LocalZip <ruta>   Instala desde un ZIP local y su .sha256.
+      mensorcad -i -LocalZip <ruta>        Alias de install.
+      mensorcad update -LocalZip <ruta>    Actualiza desde un ZIP local.
+
+    -LocalZip solo se admite en install, -i y update. El ZIP debe ser
+    MensorCAD-Windows.zip y su .sha256 debe estar en la misma carpeta. La
+    version disponible se lee del PackageContents.xml ya validado, nunca del
+    nombre del archivo ni de la red. El SHA-256 prueba integridad, no autentica
+    al publicador: usalo solo con paquetes que hayas construido vos.
+
     Este archivo es el unico que lleva la version del gestor. El motor de
     instalacion se carga de forma perezosa desde el archivo que vive junto a
     este comando. Las rutas de lectura no descargan, no piden UAC y no escriben.
@@ -68,9 +79,13 @@ function Write-MensorCadManagerHelp {
     Write-MensorCadManagerLine '  mensorcad status          Muestra el estado sin usar la red.'
     Write-MensorCadManagerLine '  mensorcad --help          Muestra esta ayuda.'
     Write-MensorCadManagerLine '  mensorcad --version       Muestra la version del comando gestor.'
+    Write-MensorCadManagerLine '  mensorcad install -LocalZip <ruta>   Instala desde un ZIP local y su .sha256.'
+    Write-MensorCadManagerLine '  mensorcad update -LocalZip <ruta>    Actualiza desde un ZIP local.'
     Write-MensorCadManagerLine ''
     Write-MensorCadManagerLine 'Comportamiento:'
     Write-MensorCadManagerLine '  install y update delegan en el motor validado que vive junto al comando.'
+    Write-MensorCadManagerLine '  -LocalZip solo se admite en install, -i y update; no consulta GitHub.'
+    Write-MensorCadManagerLine '  El .sha256 del ZIP local prueba integridad, no autentica al publicador.'
     Write-MensorCadManagerLine '  uninstall usa el motor protegido guardado dentro del complemento.'
     Write-MensorCadManagerLine '  status, --help y --version no descargan, no piden UAC y no escriben.'
     Write-MensorCadManagerLine '  El gestor se instala por usuario; el complemento se instala por equipo.'
@@ -95,11 +110,53 @@ function Get-MensorCadManagerSuggestion {
     return $null
 }
 
+function Get-MensorCadManagerLocalZipOption {
+    # Unica gramatica local: '-LocalZip <ruta>' una sola vez. Cualquier otro
+    # extra conserva el rechazo generico de argumentos adicionales, de modo que
+    # los comandos hermanos no ganan sintaxis nueva.
+    param([string[]]$Extras)
+    $items = @($Extras)
+    $path = $null
+    $index = 0
+    while ($index -lt $items.Count) {
+        $token = [string]$items[$index]
+        if ($token -ine '-LocalZip') {
+            $extra = ($items -join ' ')
+            return [pscustomobject]@{
+                Path = $null
+                Error = ('Argumentos adicionales no admitidos: ''' + $extra + '''. No se modificó nada.')
+            }
+        }
+        if ($null -ne $path) {
+            return [pscustomobject]@{
+                Path = $null
+                Error = 'La opción -LocalZip no se puede repetir. No se modificó nada.'
+            }
+        }
+        if ($index + 1 -ge $items.Count) {
+            return [pscustomobject]@{
+                Path = $null
+                Error = 'La opción -LocalZip requiere una ruta de paquete. No se modificó nada.'
+            }
+        }
+        $value = [string]$items[$index + 1]
+        if ([string]::IsNullOrWhiteSpace($value) -or $value.StartsWith('-')) {
+            return [pscustomobject]@{
+                Path = $null
+                Error = ('La opción -LocalZip requiere una ruta de paquete y se encontró ''' + $value + '''. No se modificó nada.')
+            }
+        }
+        $path = $value
+        $index += 2
+    }
+    return [pscustomobject]@{ Path = $path; Error = $null }
+}
+
 function Get-MensorCadManagerCommand {
     param([string[]]$Arguments)
     $items = @($Arguments)
     if ($items.Count -eq 0) {
-        return [pscustomobject]@{ Name = 'summary'; Error = $null }
+        return [pscustomobject]@{ Name = 'summary'; Error = $null; LocalZip = $null }
     }
     $first = [string]$items[0]
     $name = $null
@@ -123,16 +180,28 @@ function Get-MensorCadManagerCommand {
         else {
             $message = ('Comando no reconocido: ''' + $first + '''. No se modificó nada.')
         }
-        return [pscustomobject]@{ Name = 'usage'; Error = $message }
+        return [pscustomobject]@{ Name = 'usage'; Error = $message; LocalZip = $null }
     }
+    $localZip = $null
     if ($items.Count -gt 1) {
-        $extra = @($items[1..($items.Count - 1)]) -join ' '
-        return [pscustomobject]@{
-            Name = 'usage'
-            Error = ('Argumentos adicionales no admitidos: ''' + $extra + '''. No se modificó nada.')
+        $extras = @($items[1..($items.Count - 1)])
+        if ($name -eq 'install' -or $name -eq 'update') {
+            $localOption = Get-MensorCadManagerLocalZipOption -Extras $extras
+            if ($null -ne $localOption.Error) {
+                return [pscustomobject]@{ Name = 'usage'; Error = $localOption.Error; LocalZip = $null }
+            }
+            $localZip = $localOption.Path
+        }
+        else {
+            $extra = $extras -join ' '
+            return [pscustomobject]@{
+                Name = 'usage'
+                Error = ('Argumentos adicionales no admitidos: ''' + $extra + '''. No se modificó nada.')
+                LocalZip = $null
+            }
         }
     }
-    return [pscustomobject]@{ Name = $name; Error = $null }
+    return [pscustomobject]@{ Name = $name; Error = $null; LocalZip = $localZip }
 }
 
 # ---------------------------------------------------------------------------
@@ -285,7 +354,56 @@ function Write-MensorCadManagerUpToDate {
 # Rutas publicas
 # ---------------------------------------------------------------------------
 
+function Invoke-MensorCadManagerLocalInstall {
+    # Paquete propio elegido por la persona: el motor copia el ZIP y su .sha256 a
+    # una carpeta temporal propia, valida, extrae y devuelve la version real del
+    # PackageContents.xml. El gestor decide con las mismas reglas de version y
+    # solo entonces ejecuta el instalador incluido. Ninguna validacion se
+    # duplica aqui y el gestor nunca se eleva a si mismo. El .sha256 prueba
+    # integridad, no autentica al publicador: la confianza esta en el ZIP propio.
+    param([string]$LocalZip, [string]$Operation)
+    if (-not (Get-Command -Name 'Open-MensorCadLocalPackage' -ErrorAction SilentlyContinue)) {
+        Write-MensorCadManagerError 'El motor que está junto al gestor no admite -LocalZip. Volvé a registrar el comando gestor con el ZIP actual del release. No se modificó nada.'
+        return $script:MensorCadManagerExitFailure
+    }
+    $state = Get-MensorCadManagerInstalledState
+    if ($Operation -eq 'update' -and $null -eq $state) {
+        Write-MensorCadManagerError 'MensorCAD no está instalado. Ejecutá "mensorcad install" para instalarlo. No se modificó nada.'
+        return $script:MensorCadManagerExitFailure
+    }
+    $package = $null
+    try {
+        $package = Open-MensorCadLocalPackage -ArchivePath $LocalZip
+        $available = [string]$package.Version
+        if ($null -ne $state) {
+            $comparison = Compare-MensorCadManagerVersion -Installed $state.Version -Available $available
+            if ($null -eq $comparison) {
+                Write-MensorCadManagerAmbiguity -Installed $state.Version -Tag $available
+                return $script:MensorCadManagerExitFailure
+            }
+            if ($comparison -eq 0) {
+                Write-MensorCadManagerUpToDate -Version $state.Version
+                return 0
+            }
+            if ($comparison -gt 0) {
+                Write-MensorCadManagerDowngrade -Installed $state.Version -Tag $available
+                return $script:MensorCadManagerExitFailure
+            }
+        }
+        $result = Install-MensorCadLocalPackage -Package $package
+        if ($null -eq $result) { return $script:MensorCadManagerExitFailure }
+        return [int]$result
+    }
+    finally {
+        if ($null -ne $package) { Remove-MensorCadLocalPackage -Package $package }
+    }
+}
+
 function Invoke-MensorCadManagerInstall {
+    param([string]$LocalZip)
+    if (-not [string]::IsNullOrWhiteSpace($LocalZip)) {
+        return (Invoke-MensorCadManagerLocalInstall -LocalZip $LocalZip -Operation 'install')
+    }
     $state = Get-MensorCadManagerInstalledState
     $tag = Resolve-MensorCadReleaseTag
     if ($null -ne $state) {
@@ -309,7 +427,12 @@ function Invoke-MensorCadManagerInstall {
 }
 
 function Invoke-MensorCadManagerUpdate {
-    # Sin complemento se falla antes de tocar la red y se sugiere install.
+    # Sin complemento se falla antes de tocar la red o el paquete elegido y se
+    # sugiere install.
+    param([string]$LocalZip)
+    if (-not [string]::IsNullOrWhiteSpace($LocalZip)) {
+        return (Invoke-MensorCadManagerLocalInstall -LocalZip $LocalZip -Operation 'update')
+    }
     $state = Get-MensorCadManagerInstalledState
     if ($null -eq $state) {
         Write-MensorCadManagerError 'MensorCAD no está instalado. Ejecutá "mensorcad install" para instalarlo. No se modificó nada.'
@@ -391,8 +514,8 @@ else {
             'version' { Write-MensorCadManagerVersion }
             'summary' { $null = Write-MensorCadManagerState -IncludeCommands }
             'status' { $null = Write-MensorCadManagerState }
-            'install' { $managerExitCode = Invoke-MensorCadManagerInstall }
-            'update' { $managerExitCode = Invoke-MensorCadManagerUpdate }
+            'install' { $managerExitCode = Invoke-MensorCadManagerInstall -LocalZip $managerCommand.LocalZip }
+            'update' { $managerExitCode = Invoke-MensorCadManagerUpdate -LocalZip $managerCommand.LocalZip }
             'uninstall' { $managerExitCode = Invoke-MensorCadManagerUninstall }
             default { throw ('Comando no soportado: ' + $managerCommand.Name) }
         }

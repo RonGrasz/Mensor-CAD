@@ -415,6 +415,39 @@ function Test-MensorCadSource {
     }
 }
 
+function Get-MensorCadBundleVersion {
+    # Version publica del paquete leida de un PackageContents.xml ya validado
+    # (para el paquete local, bundle.sha256 ya cubrio Contents y el inventario).
+    # Prefiere AppVersion y cae a Version, como el resto de la interfaz. Nunca
+    # ejecuta nada del paquete para descubrir su version y nunca la inventa:
+    # un manifiesto ausente o ilegible devuelve $null.
+    param([string]$BundleRoot)
+    if ([string]::IsNullOrWhiteSpace($BundleRoot)) { return $null }
+    $manifestPath = Join-Path -Path $BundleRoot -ChildPath 'PackageContents.xml'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $null }
+    try {
+        if (Test-MensorCadReparsePoint -Path $manifestPath) { return $null }
+    }
+    catch {
+        return $null
+    }
+    $document = New-Object -TypeName 'System.Xml.XmlDocument'
+    $document.XmlResolver = $null
+    try {
+        $document.Load($manifestPath)
+    }
+    catch {
+        return $null
+    }
+    $root = $document.DocumentElement
+    if ($null -eq $root) { return $null }
+    foreach ($attributeName in @('AppVersion', 'Version')) {
+        $value = [string]$root.GetAttribute($attributeName)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+    }
+    return $null
+}
+
 function Read-MensorCadMarker {
     param([string]$MarkerPath)
     if (-not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
@@ -1453,8 +1486,11 @@ $script:MensorCadReleaseFixedFiles = @(
     'LICENSE',
     'bundle.sha256'
 )
-# Opcional para seguir aceptando los ZIP anteriores sin acceso por doble clic.
-$script:MensorCadReleaseOptionalFiles = @('Desinstalar.bat')
+# Opcionales para seguir aceptando los ZIP anteriores: sin Desinstalar.bat el
+# acceso por doble clic falta, y los paquetes previos al motor protegido no
+# incluyen MensorCAD.bundle/Install-MensorCAD.ps1 (lo valida bundle.sha256 y lo
+# exige la desinstalacion sin conexion del gestor, no la extraccion).
+$script:MensorCadReleaseOptionalFiles = @('Desinstalar.bat', 'MensorCAD.bundle/Install-MensorCAD.ps1')
 $script:MensorCadReleaseAllowedDirectories = @(
     'MensorCAD.bundle',
     'MensorCAD.bundle/Contents',
@@ -2067,6 +2103,186 @@ function Invoke-MensorCadRemoteInstall {
                 Write-MensorCadInfo ('Aviso: no se pudo limpiar la carpeta temporal ' + $workspace + '; se conserva en disco: ' + $_.Exception.Message)
             }
         }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Entrada local: paquete construido por el usuario (-LocalZip)
+# ---------------------------------------------------------------------------
+# El gestor acepta un paquete propio para probar sin publicar. La validacion es
+# exactamente la de la entrada remota: el ZIP y su .sha256 se copian a una
+# carpeta temporal propia, se verifica el SHA-256, se inspeccionan las entradas,
+# se extrae, se revalida el paquete extraido con bundle.sha256 y recien entonces
+# se lee la version de PackageContents.xml. El instalador que se ejecuta es solo
+# el del paquete extraido; el motor adyacente y el gestor nunca se elevan.
+# El .sha256 prueba integridad de lo que la persona eligio, no autentica al
+# publicador: la confianza depende de haber construido ese ZIP uno mismo.
+
+$script:MensorCadLocalSidecarSuffix = '.sha256'
+$script:MensorCadLocalPackagePrefix = 'mensorcad-local-'
+
+function Get-MensorCadLocalPackageSidecarPath {
+    # El sidecar es obligatorio y vive junto al ZIP elegido.
+    param([string]$ArchivePath)
+    return ($ArchivePath + $script:MensorCadLocalSidecarSuffix)
+}
+
+function Copy-MensorCadLocalPackageFile {
+    # Copia la seleccion del usuario antes de leerla: la validacion trabaja solo
+    # sobre la copia propia y el archivo original queda intacto.
+    param([string]$SourcePath, [string]$DestinationPath, [string]$Label)
+    try {
+        [System.IO.File]::Copy($SourcePath, $DestinationPath, $false)
+    }
+    catch {
+        throw ('No se pudo copiar ' + $Label + ' a la carpeta temporal propia: ' + $_.Exception.Message + ' No se modifico nada.')
+    }
+    if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
+        throw ('No se pudo copiar ' + $Label + ' a la carpeta temporal propia. No se modifico nada.')
+    }
+}
+
+function Get-MensorCadLocalPackageArchivePath {
+    # La ruta elegida se resuelve contra la ubicacion actual de PowerShell (el
+    # directorio del proveedor de archivos), no contra el cwd del proceso:
+    # Set-Location cambia solo la primera, y una ruta relativa escrita por la
+    # persona debe significar lo mismo que para cualquier otro comando. Solo se
+    # aceptan rutas del proveedor FileSystem y no se expanden comodines.
+    param([string]$ArchivePath)
+    if ([string]::IsNullOrWhiteSpace($ArchivePath)) {
+        throw 'La opcion -LocalZip requiere la ruta del paquete local. No se modifico nada.'
+    }
+    try {
+        $provider = $null
+        $drive = $null
+        $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ArchivePath, [ref]$provider, [ref]$drive)
+    }
+    catch {
+        throw ('La ruta del paquete local no es valida: ''' + $ArchivePath + '''. No se modifico nada.')
+    }
+    if ($null -eq $provider -or $provider.Name -ne 'FileSystem') {
+        throw ('La ruta del paquete local no es una ruta de archivos: ''' + $ArchivePath + '''. No se modifico nada.')
+    }
+    if ([string]::IsNullOrWhiteSpace($resolved)) {
+        throw ('La ruta del paquete local no es valida: ''' + $ArchivePath + '''. No se modifico nada.')
+    }
+    return [System.IO.Path]::GetFullPath($resolved)
+}
+
+function Open-MensorCadLocalPackage {
+    # Valida el paquete local y devuelve la carpeta temporal propia junto con su
+    # version real. NO instala y NO ejecuta nada del paquete: la decision de
+    # instalar la toma el gestor con la comparacion de versiones existente. La
+    # carpeta temporal queda viva hasta que el llamador invoque
+    # Remove-MensorCadLocalPackage; si la validacion falla se limpia aqui.
+    param([string]$ArchivePath)
+    $archiveFull = Get-MensorCadLocalPackageArchivePath -ArchivePath $ArchivePath
+    if (-not (Test-Path -LiteralPath $archiveFull -PathType Leaf)) {
+        throw ('No se encontro el paquete local ''' + $archiveFull + '''. No se modifico nada.')
+    }
+    if (Test-MensorCadReparsePoint -Path $archiveFull) {
+        throw ('El paquete local ''' + $archiveFull + ''' es un punto de reanalisis y se rechazo. No se modifico nada.')
+    }
+    $sidecarFull = Get-MensorCadLocalPackageSidecarPath -ArchivePath $archiveFull
+    if (-not (Test-Path -LiteralPath $sidecarFull -PathType Leaf)) {
+        throw ('Falta el archivo de verificacion ''' + $sidecarFull + '''. El paquete local necesita su .sha256 junto al ZIP. No se modifico nada.')
+    }
+    if (Test-MensorCadReparsePoint -Path $sidecarFull) {
+        throw ('El archivo de verificacion ''' + $sidecarFull + ''' es un punto de reanalisis y se rechazo. No se modifico nada.')
+    }
+    $tempRoot = Get-MensorCadRemoteTempRoot
+    if ([string]::IsNullOrWhiteSpace($tempRoot) -or -not (Test-Path -LiteralPath $tempRoot -PathType Container)) {
+        throw ("No existe la carpeta temporal '$tempRoot'. No se modifico nada.")
+    }
+    $workspace = Join-Path -Path $tempRoot -ChildPath ($script:MensorCadLocalPackagePrefix + [guid]::NewGuid().ToString('N'))
+    try {
+        $null = New-Item -ItemType Directory -Path $workspace
+        Assert-MensorCadNoReparseInPath -Path $workspace -Boundary $tempRoot
+        $zipPath = Join-Path -Path $workspace -ChildPath $script:MensorCadReleaseZipAssetName
+        $sidecarPath = Join-Path -Path $workspace -ChildPath $script:MensorCadReleaseChecksumAssetName
+        Copy-MensorCadLocalPackageFile -SourcePath $archiveFull -DestinationPath $zipPath -Label 'el paquete local'
+        Copy-MensorCadLocalPackageFile -SourcePath $sidecarFull -DestinationPath $sidecarPath -Label 'el archivo .sha256'
+        $null = Assert-MensorCadReleaseArchiveHash -ArchivePath $zipPath -SidecarPath $sidecarPath
+        $archiveEntries = Get-MensorCadReleaseArchiveEntries -ArchivePath $zipPath
+        $extractRoot = Join-Path -Path $workspace -ChildPath 'package'
+        $null = Expand-MensorCadReleaseArchive -ArchivePath $zipPath -DestinationRoot $extractRoot -Entries $archiveEntries -TrustedBoundary $workspace
+        $source = Test-MensorCadSource -SourceRoot $extractRoot
+        $version = Get-MensorCadBundleVersion -BundleRoot $source.BundleRoot
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            throw 'El PackageContents.xml del paquete local no declara una version utilizable. No se ejecuto el instalador incluido y no se modifico el destino.'
+        }
+        return [pscustomobject]@{
+            Workspace = $workspace
+            ArchivePath = $zipPath
+            SidecarPath = $sidecarPath
+            ExtractRoot = $extractRoot
+            BundleRoot = $source.BundleRoot
+            InstallerPath = (Join-Path -Path $extractRoot -ChildPath $script:MensorCadReleaseInstallerAssetName)
+            Version = $version
+            ArchiveEntries = $archiveEntries
+        }
+    }
+    catch {
+        # El error original se captura antes de limpiar: un fallo de limpieza no
+        # debe reemplazar la causa real del rechazo.
+        $failure = $_
+        if (Test-Path -LiteralPath $workspace) {
+            try {
+                Remove-MensorCadTree -Path $workspace
+            }
+            catch {
+                Write-MensorCadInfo ('Aviso: no se pudo limpiar la carpeta temporal ' + $workspace + '; se conserva en disco: ' + $_.Exception.Message)
+            }
+        }
+        throw $failure
+    }
+}
+
+function Install-MensorCadLocalPackage {
+    # Ejecuta solo el instalador incluido en el paquete ya extraido y validado,
+    # con la misma transferencia y elevacion que la entrada remota. Devuelve el
+    # codigo real del instalador; nunca lo convierte en un falso exito.
+    param($Package)
+    if ($null -eq $Package) {
+        throw 'No hay un paquete local validado para instalar. No se modifico nada.'
+    }
+    $installerPath = [string]$Package.InstallerPath
+    if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+        throw ('El paquete local no contiene el instalador ''' + $script:MensorCadReleaseInstallerAssetName + '''. No se ejecuto nada y no se modifico el destino.')
+    }
+    if ($script:MensorCadPlainMode -eq $false -and (Test-MensorCadOutputRedirected)) {
+        $script:MensorCadPlainMode = $true
+    }
+    $workspace = [string]$Package.Workspace
+    $stdOutPath = Join-Path -Path $workspace -ChildPath 'install.stdout.log'
+    $stdErrPath = Join-Path -Path $workspace -ChildPath 'install.stderr.log'
+    Write-MensorCadInfo ('Paquete local validado: version ' + [string]$Package.Version + '.')
+    Write-MensorCadStep -Number 1 -Total 1 -Message $script:MensorCadRemoteChildActivityMessage -Title 'Instalando MensorCAD' -Hint 'Si Windows muestra un aviso de UAC, elige Si para continuar.'
+    $child = Invoke-MensorCadRemoteChild -ScriptPath $installerPath -StdOutPath $stdOutPath -StdErrPath $stdErrPath
+    Write-MensorCadRelayedOutput -Text $child.StdOut
+    Write-MensorCadRelayedOutput -Text $child.StdErr -IsError
+    if ($child.ExitCode -eq 0) {
+        Complete-MensorCadActivity -Success -Text 'Instalacion local completada'
+        if ($script:MensorCadPlainMode) {
+            Write-MensorCadInfo 'Recuerde abrir AutoCAD para cargar el bundle instalado.'
+        }
+    }
+    return [int]$child.ExitCode
+}
+
+function Remove-MensorCadLocalPackage {
+    # Cierra el ciclo de vida de la carpeta temporal propia. Es idempotente y
+    # nunca convierte un fallo de limpieza en un fallo de la operacion.
+    param($Package)
+    if ($null -eq $Package) { return }
+    $workspace = [string]$Package.Workspace
+    if ([string]::IsNullOrWhiteSpace($workspace)) { return }
+    if (-not (Test-Path -LiteralPath $workspace)) { return }
+    try {
+        Remove-MensorCadTree -Path $workspace
+    }
+    catch {
+        Write-MensorCadInfo ('Aviso: no se pudo limpiar la carpeta temporal ' + $workspace + '; se conserva en disco: ' + $_.Exception.Message)
     }
 }
 

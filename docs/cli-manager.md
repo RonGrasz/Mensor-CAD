@@ -25,6 +25,8 @@ está disponible para usuarios finales.
 | `mensorcad` | Muestra un resumen del estado. No instala nada de forma automática. |
 | `mensorcad install` / `mensorcad -i` | Instala el complemento con la última release publicada. |
 | `mensorcad update` | Actualiza el complemento sin bajar de versión. |
+| `mensorcad install -LocalZip <ruta>` | Instala el complemento desde un ZIP construido por vos y su `.sha256`, sin GitHub. |
+| `mensorcad update -LocalZip <ruta>` | Actualiza desde ese mismo ZIP local, sin bajar de versión. |
 | `mensorcad uninstall` | Quita el complemento y conserva el comando gestor. |
 | `mensorcad status` | Muestra la versión del gestor y la versión instalada del complemento. |
 | `mensorcad --help` | Muestra la ayuda. |
@@ -51,6 +53,59 @@ del motor: el gestor no agrega porcentajes ni animaciones ficticias.
 
 El SHA-256 verifica integridad y mismo origen; **no autentica al publicador**. La
 confianza sigue dependiendo del repositorio y del release.
+
+### Instalar o actualizar desde un ZIP local (sin publicar)
+
+Si construiste el paquete `MensorCAD-Windows.zip`, no hace falta publicar nada
+para probar el circuito completo:
+
+```powershell
+mensorcad install -LocalZip "C:\ruta\MensorCAD-Windows.zip"
+mensorcad update  -LocalZip "C:\ruta\MensorCAD-Windows.zip"
+```
+
+El ZIP elegido y su sidecar (el mismo nombre más `.sha256`, por ejemplo
+`MensorCAD-Windows.zip.sha256`) deben estar en la misma carpeta. La ruta puede
+tener espacios.
+
+La ruta se resuelve contra la carpeta actual de PowerShell, igual que cualquier
+otro comando: después de `Set-Location C:\build` podés escribir
+`mensorcad install -LocalZip ".\MensorCAD-Windows.zip"`. Solo se aceptan rutas
+del sistema de archivos (no rutas de registro ni de otros proveedores).
+
+> **Consola en una ruta UNC:** si la carpeta actual es `\\servidor\recurso`,
+> Windows puede no usarla como directorio actual del proceso. En ese caso pasá
+> la ruta absoluta del ZIP (o copialo a una carpeta local) antes de ejecutar
+> `install` o `update`.
+
+Qué hace el gestor en esta ruta:
+
+1. Copia el ZIP y el `.sha256` a una carpeta temporal propia; el original no se
+   abre para validar.
+2. Verifica el SHA-256 y las entradas del ZIP, extrae y revalida el paquete
+   extraído con `bundle.sha256`.
+3. Lee la versión disponible del `PackageContents.xml` ya validado, nunca del
+   nombre del archivo ni de la red.
+4. Compara con la versión instalada con las mismas reglas de siempre y recién
+   entonces ejecuta el instalador incluido, con su propia elevación UAC.
+
+| Situación | Resultado |
+| --- | --- |
+| No hay complemento (`install`) | Instala desde el ZIP local. |
+| Versión igual | `Ya estás actualizado`; no reinstala ni ejecuta el instalador. |
+| Versión local más nueva | Instala y propaga el código real del instalador. |
+| Versión local más vieja | Rechaza la operación; no se baja de versión. |
+| Comparación ambigua | Rechaza la operación sin modificar nada. |
+| `update -LocalZip` sin complemento | Error que sugiere `mensorcad install`; no lee el ZIP ni usa la red. |
+| Falta el `.sha256`, el hash no coincide o el inventario está alterado | Error antes de ejecutar el instalador; no se modifica el destino. |
+
+`-LocalZip` solo se admite en `install`, `-i` y `update`. Cualquier otro comando
+lo rechaza como argumento adicional antes de la red, la elevación o cualquier
+escritura, y una opción repetida o sin ruta también se rechaza.
+
+**Confianza:** en esta ruta el SHA-256 prueba que el ZIP es el que vos elegiste,
+no autentica a un publicador. Usá solo paquetes que hayas construido vos:
+un ZIP ajeno con su `.sha256` sigue siendo un ZIP ajeno.
 
 ### Desinstalar sin conexión
 
@@ -106,6 +161,11 @@ a CMD y a PowerShell.
 - El gestor no se actualiza a sí mismo: la actualización del propio gestor queda
   para una segunda etapa.
 - El SHA-256 es integridad de mismo origen, no autenticación del publicador.
+- En la ruta `-LocalZip` el sidecar tiene que llamarse igual que el ZIP más
+  `.sha256`, y si su contenido nombra un archivo debe nombrar
+  `MensorCAD-Windows.zip`: un sidecar de otro paquete se rechaza.
+- La ruta local no promete un release: sirve para probar el paquete que acabás de
+  construir, sin publicar y sin GitHub.
 - Las pruebas automatizadas no piden UAC ni abren AutoCAD. La instalación real, la
   elevación y el comportamiento del complemento en AutoCAD requieren verificación
   manual.

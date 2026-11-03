@@ -167,6 +167,9 @@ function Test-Case {
         $script:FailureMessages += ($Name + ' -> ' + $message)
         Write-Host ('FAIL: ' + $Name) -ForegroundColor Red
         Write-Host ('      ' + $message) -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace([string]$_.ScriptStackTrace)) {
+            Write-Host ('      ' + [string]$_.ScriptStackTrace) -ForegroundColor DarkRed
+        }
     }
 }
 
@@ -302,6 +305,61 @@ function Expand-ZipTo {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
 }
 
+function New-LegacyWindowsArchive {
+    # Paquete anterior al motor protegido: mismos bytes del dist menos
+    # MensorCAD.bundle/Install-MensorCAD.ps1, con bundle.sha256 recalculado sin
+    # esa entrada y sidecar adjunto. Sirve para comprobar que la entrada nueva
+    # del whitelist es OPCIONAL y que los ZIP viejos siguen aceptandose.
+    param([string]$SourceZip, [string]$DestinationZip)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    $protectedEntry = $script:BundleFolderName + '/' + $script:EngineName
+    $source = [System.IO.Compression.ZipFile]::OpenRead($SourceZip)
+    try {
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $DestinationZip)) | Out-Null
+        $stream = [System.IO.File]::Open($DestinationZip, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        try {
+            $destination = New-Object System.IO.Compression.ZipArchive -ArgumentList @($stream, [System.IO.Compression.ZipArchiveMode]::Create, $true)
+            try {
+                foreach ($entry in @($source.Entries)) {
+                    if ($entry.FullName -ceq $protectedEntry) { continue }
+                    $target = $destination.CreateEntry($entry.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
+                    $input = $entry.Open()
+                    $output = $target.Open()
+                    try {
+                        if ($entry.FullName -ceq 'bundle.sha256') {
+                            $reader = New-Object System.IO.StreamReader -ArgumentList @($input)
+                            try { $text = $reader.ReadToEnd() }
+                            finally { $reader.Dispose() }
+                            $lines = @($text -split "`n" | Where-Object { $_.Trim().Length -gt 0 -and $_.Trim() -notmatch '  Install-MensorCAD\.ps1$' })
+                            $payload = [System.Text.Encoding]::UTF8.GetBytes((($lines -join "`n") + "`n"))
+                            $output.Write($payload, 0, $payload.Length)
+                        }
+                        else {
+                            $input.CopyTo($output)
+                        }
+                    }
+                    finally {
+                        $input.Dispose()
+                        $output.Dispose()
+                    }
+                }
+            }
+            finally {
+                $destination.Dispose()
+            }
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    finally {
+        $source.Dispose()
+    }
+    $sidecarText = (Get-FileSha256 -Path $DestinationZip) + '  ' + $script:WindowsZipName + "`n"
+    [System.IO.File]::WriteAllText(($DestinationZip + '.sha256'), $sidecarText, (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+    return $DestinationZip
+}
+
 function Get-ManifestVersion {
     $document = New-Object System.Xml.XmlDocument
     $document.XmlResolver = $null
@@ -390,6 +448,195 @@ function Get-ManagerFixtureResult {
 }
 
 # ---------------------------------------------------------------------------
+# Ruta local (-LocalZip) con los ZIP reales del dist
+# ---------------------------------------------------------------------------
+# El gestor y el motor son los archivos REALES del ZIP del gestor. En el fixture
+# solo se sustituyen tres costuras: la raiz Program Files aislada, la red
+# prohibida y el lanzamiento del instalador extraido (Invoke-MensorCadRemoteChild),
+# que aqui es un proceso hijo sin elevacion sobre esa misma raiz. La validacion
+# del ZIP, del sidecar y de la version de PackageContents.xml es la de
+# produccion, igual que la limpieza de la carpeta temporal propia.
+
+function Write-LocalChildWrapper {
+    # Hijo no elevado: carga el motor EXTRAIDO del paquete real y lo ejecuta
+    # contra la raiz aislada. Es el unico punto donde se evita la elevacion; el
+    # paquete que se ejecuta viaja dentro del ZIP construido, sin copias.
+    $content = @'
+param([string]$Mode, [string]$EnginePath, [string]$IsolatedRoot, [string]$Evidence)
+$ErrorActionPreference = 'Stop'
+function Add-LocalChildEvidence {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Evidence)) { return }
+    [System.IO.File]::AppendAllText($Evidence, $Line + "`n")
+}
+Add-LocalChildEvidence ('payload|start|' + $Mode + '|' + [System.IO.Path]::GetFileName($EnginePath))
+. $EnginePath
+function Get-MensorCadProgramFilesRoot { return $IsolatedRoot }
+function Test-MensorCadAdministrator { return $true }
+function Test-MensorCadAutoCadRunning { return $false }
+if ($Mode -eq 'uninstall') {
+    $code = [int](Invoke-MensorCadCli -Uninstall -NoAnimation)
+}
+else {
+    $code = [int](Invoke-MensorCadCli -NoAnimation)
+}
+Add-LocalChildEvidence ('payload|end|' + $Mode + '|' + $code)
+exit $code
+'@
+    [System.IO.File]::WriteAllText($script:LocalChildWrapper, $content, (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+}
+
+function Write-LocalRouteFixture {
+    # Las tres costuras del fixture dejan evidencia escrita y prohiben la red:
+    # si la ruta local llamara al release o descargara algo, la prueba falla.
+    $content = @'
+param(
+    [string]$Action,
+    [string]$Manager,
+    [string]$Engine,
+    [string]$IsolatedRoot,
+    [string]$LocalZip,
+    [string]$Evidence,
+    [string]$ChildWrapper
+)
+$ErrorActionPreference = 'Stop'
+. $Manager
+. $Engine
+# La ruta local de produccion valida el paquete con Open-MensorCadLocalPackage y
+# lo instala con Install-MensorCadLocalPackage; aqui no se reimplementa nada de
+# eso, solo se sustituye el lanzamiento del instalador extraido.
+function Add-LocalEvidence {
+    param([string]$Line)
+    [System.IO.File]::AppendAllText($Evidence, $Line + "`n")
+}
+function Get-MensorCadProgramFilesRoot { return $IsolatedRoot }
+function Resolve-MensorCadReleaseTag {
+    Add-LocalEvidence 'resolve|release-tag'
+    return 'v0.0.0'
+}
+function Get-MensorCadRemoteText {
+    param([string]$Uri)
+    Add-LocalEvidence 'network|text'
+    throw 'La red no esta permitida en esta prueba local (fixture).'
+}
+function Save-MensorCadRemoteFile {
+    param([string]$Uri, [string]$DestinationPath)
+    Add-LocalEvidence 'network|file'
+    throw 'La red no esta permitida en esta prueba local (fixture).'
+}
+function Invoke-LocalChildProcess {
+    param([string]$Mode, [string]$EnginePath)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = Join-Path -Path $PSHOME -ChildPath 'powershell.exe'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = $env:SystemRoot
+    if (Test-Path -LiteralPath $IsolatedRoot -PathType Container) {
+        $psi.WorkingDirectory = $IsolatedRoot
+    }
+    $psi.StandardOutputEncoding = [Console]::OutputEncoding
+    $psi.StandardErrorEncoding = [Console]::OutputEncoding
+    $psi.Arguments = @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        ('"' + $ChildWrapper + '"'),
+        '-Mode',
+        $Mode,
+        '-EnginePath',
+        ('"' + $EnginePath + '"'),
+        '-IsolatedRoot',
+        ('"' + $IsolatedRoot + '"'),
+        '-Evidence',
+        ('"' + $Evidence + '"')
+    ) -join ' '
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $outTask = $process.StandardOutput.ReadToEndAsync()
+    $errTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $result = [pscustomobject]@{
+        ExitCode = [int]$process.ExitCode
+        StdOut = [string]$outTask.Result
+        StdErr = [string]$errTask.Result
+    }
+    $process.Dispose()
+    return $result
+}
+function Invoke-MensorCadRemoteChild {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$StdOutPath,
+        [Parameter(Mandatory = $true)][string]$StdErrPath
+    )
+    Add-LocalEvidence ('child|' + $ScriptPath)
+    $result = Invoke-LocalChildProcess -Mode 'install' -EnginePath $ScriptPath
+    [System.IO.File]::WriteAllText($StdOutPath, [string]$result.StdOut)
+    [System.IO.File]::WriteAllText($StdErrPath, [string]$result.StdErr)
+    return [pscustomobject]@{ ExitCode = [int]$result.ExitCode; StdOut = [string]$result.StdOut; StdErr = [string]$result.StdErr }
+}
+switch ($Action) {
+    'status' { $null = Write-MensorCadManagerState; exit 0 }
+    'install' { exit (Invoke-MensorCadManagerInstall -LocalZip $LocalZip) }
+    'update' { exit (Invoke-MensorCadManagerUpdate -LocalZip $LocalZip) }
+    default { exit 9 }
+}
+'@
+    [System.IO.File]::WriteAllText($script:LocalHarness, $content, (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+}
+
+function Get-LocalRouteFixtureResult {
+    param([string]$Action, [string]$LocalZip = '', [string]$IsolatedRoot = '')
+    if ([string]::IsNullOrWhiteSpace($IsolatedRoot)) { $IsolatedRoot = $script:LocalRoot }
+    return (Invoke-PowerShellFile -Script $script:LocalHarness -Arguments @(
+        '-Action', $Action,
+        '-Manager', $script:ManagerScript,
+        '-Engine', $script:CliEngine,
+        '-IsolatedRoot', $IsolatedRoot,
+        '-LocalZip', $LocalZip,
+        '-Evidence', $script:LocalEvidence,
+        '-ChildWrapper', $script:LocalChildWrapper
+    ))
+}
+
+function Get-LocalEvidenceText {
+    if (-not (Test-Path -LiteralPath $script:LocalEvidence -PathType Leaf)) { return '' }
+    return [System.IO.File]::ReadAllText($script:LocalEvidence)
+}
+
+function Reset-LocalEvidence {
+    if (Test-Path -LiteralPath $script:LocalEvidence -PathType Leaf) {
+        [System.IO.File]::Delete($script:LocalEvidence)
+    }
+}
+
+function Get-LocalChildCount {
+    return @((Get-LocalEvidenceText) -split "`n" | Where-Object { $_.StartsWith('child|') }).Count
+}
+
+function Get-LocalPayloadCount {
+    return @((Get-LocalEvidenceText) -split "`n" | Where-Object { $_.StartsWith('payload|') }).Count
+}
+
+function Get-ScratchLocalWorkspaces {
+    # La carpeta temporal propia del gestor se crea bajo TEMP (el scratch de la
+    # corrida); si sobrevive una, la limpieza de la ruta local fallo.
+    return @(Get-ChildItem -LiteralPath $script:TestRoot -Directory -Filter 'mensorcad-local-*' -ErrorAction SilentlyContinue)
+}
+
+function Assert-LocalEvidenceClean {
+    param([string]$Message)
+    $text = Get-LocalEvidenceText
+    Assert-NotContains $text 'network|' ($Message + ': la ruta local no puede descargar')
+    Assert-NotContains $text 'resolve|' ($Message + ': la ruta local no puede resolver un release')
+    Assert-Equal 0 (@(Get-ScratchLocalWorkspaces)).Count ($Message + ': la carpeta temporal propia debe limpiarse')
+}
+
+# ---------------------------------------------------------------------------
 # Preparacion: version, rutas y construccion real
 # ---------------------------------------------------------------------------
 
@@ -470,6 +717,28 @@ try {
     $script:Inventory = [object[]]$script:Info.Entries
     $script:InventoryCount = [int]$script:Info.FileCount
     Write-ManagerFixture
+    # Ruta local: raiz aislada propia, evidencia propia y envoltorio del hijo no
+    # elevado. Todo queda dentro del scratch ignorado de la corrida.
+    $script:LocalRoot = Join-Path -Path $script:TestRoot -ChildPath 'l'
+    $script:OlderRoot = Join-Path -Path $script:TestRoot -ChildPath 'o'
+    $script:LocalInputRoot = Join-Path -Path $script:TestRoot -ChildPath 'i'
+    $null = [System.IO.Directory]::CreateDirectory($script:LocalInputRoot)
+    # Las raices simuladas existen antes de lanzar hijos: el proceso no puede
+    # arrancar con un directorio de trabajo inexistente y el motor valida la
+    # frontera de confianza contra una raiz real.
+    $null = [System.IO.Directory]::CreateDirectory($script:LocalRoot)
+    $null = [System.IO.Directory]::CreateDirectory($script:OlderRoot)
+    $script:LocalDestinationRoot = Join-Path -Path $script:LocalRoot -ChildPath 'Autodesk\ApplicationPlugins\MensorCAD.bundle'
+    $script:OlderDestinationRoot = Join-Path -Path $script:OlderRoot -ChildPath 'Autodesk\ApplicationPlugins\MensorCAD.bundle'
+    $script:LocalEvidence = Join-Path -Path $script:TestRoot -ChildPath 'le.log'
+    $script:LocalHarness = Join-Path -Path $script:TestRoot -ChildPath 'lr.ps1'
+    $script:LocalChildWrapper = Join-Path -Path $script:TestRoot -ChildPath 'lc.ps1'
+    Write-LocalChildWrapper
+    Write-LocalRouteFixture
+    $script:ArtifactHashes = @{}
+    foreach ($name in $script:BuildOutputNames) {
+        $script:ArtifactHashes[$name] = Get-FileSha256 -Path (Join-Path $script:BuildDir $name)
+    }
 }
 catch {
     Write-Host ('ERROR: no se pudo preparar la distribucion real: ' + $_.Exception.Message) -ForegroundColor Red
@@ -680,6 +949,240 @@ Test-Case 'el motor real desinstala sin conexion solo los archivos registrados' 
     Assert-True (Test-Path -LiteralPath $script:IsolatedRoot) 'la carpeta aislada contenedora no se debe borrar'
     $marker = Assert-MensorCadOwnedDestination -DestinationRoot $script:DestinationRoot
     Assert-True ($null -eq $marker) 'sin instalacion no debe haber marca propia'
+}
+
+# ---------------------------------------------------------------------------
+# Casos de la ruta local con los ZIP REALES construidos (-LocalZip)
+# ---------------------------------------------------------------------------
+# Los seis artefactos son los del dist construido: la suite no fabrica bytes de
+# archivo. Solo se sustituyen las costuras de aislamiento del gestor (raiz
+# Program Files, red prohibida y lanzamiento del instalador extraido) para que
+# nada salga del scratch de la corrida ni pida UAC.
+
+Test-Case 'el ZIP real del complemento se instala por la ruta local publica y sin red' {
+    Reset-LocalEvidence
+    $zipPath = Join-Path $script:BuildDir $script:WindowsZipName
+    $sidecarPath = Join-Path $script:BuildDir $script:WindowsSidecarName
+    $zipBefore = Get-FileSha256 -Path $zipPath
+    $sidecarBefore = Get-FileSha256 -Path $sidecarPath
+    $result = Get-LocalRouteFixtureResult -Action 'install' -LocalZip $zipPath
+    Assert-Equal 0 $result.ExitCode ('una instalacion local real debe terminar bien: ' + $result.StdErr)
+    Assert-Contains $result.StdOut ('Paquete local validado: version ' + $script:DistributionVersion) 'el gestor debe validar el paquete real y su version'
+    Assert-Contains $result.StdOut 'MensorCAD se instalo correctamente en' 'el motor extraido debe informar la instalacion real'
+    Assert-Contains $result.StdOut $script:LocalDestinationRoot 'la instalacion debe quedar en la raiz aislada'
+    Assert-NotContains $result.StdOut ([Environment]::GetFolderPath('ProgramFiles')) 'la salida no puede apuntar al destino real de Program Files'
+    Assert-Empty $result.StdErr 'una instalacion correcta no debe escribir en stderr'
+    Assert-True ($script:LocalDestinationRoot.StartsWith($script:TestRoot, [StringComparison]::OrdinalIgnoreCase)) 'el destino aislado debe quedar dentro del scratch de la corrida'
+    $marker = Assert-MensorCadOwnedDestination -DestinationRoot $script:LocalDestinationRoot
+    Assert-True ($null -ne $marker) 'el destino aislado debe quedar con marca propia del motor real'
+    $installedEngine = Join-Path $script:LocalDestinationRoot $script:EngineName
+    $sourceEngine = Join-Path $script:SourceRoot ($script:BundleFolderName + '\' + $script:EngineName)
+    Assert-Equal (Get-FileSha256 -Path $sourceEngine) (Get-FileSha256 -Path $installedEngine) 'el motor instalado debe ser el del ZIP real construido'
+    # Evidencia del hijo: exactamente uno, desde la copia temporal propia del
+    # paquete y con la raiz aislada como unico destino.
+    $evidence = Get-LocalEvidenceText
+    Assert-Equal 1 (Get-LocalChildCount) 'la ruta local debe ejecutar el instalador incluido una sola vez'
+    Assert-Equal 2 (Get-LocalPayloadCount) 'el paquete se ejecuta una vez y termina (inicio y fin)'
+    Assert-Contains $evidence ($script:TestRoot + '\mensorcad-local-') 'el instalador debe ejecutarse desde la copia temporal propia'
+    Assert-Contains $evidence ('payload|start|install|' + $script:EngineName) 'el hijo debe cargar el motor del paquete real'
+    Assert-Contains $evidence 'payload|end|install|0' 'el paquete real debe completar la instalacion aislada'
+    Assert-LocalEvidenceClean 'instalacion local'
+    Assert-Equal $zipBefore (Get-FileSha256 -Path $zipPath) 'el ZIP real no se puede modificar'
+    Assert-Equal $sidecarBefore (Get-FileSha256 -Path $sidecarPath) 'el sidecar real no se puede modificar'
+    Assert-True (Test-Path -LiteralPath (Join-Path $script:CliRoot 'mensorcad.ps1') -PathType Leaf) 'el gestor registrado debe seguir disponible'
+}
+
+Test-Case 'la misma version no reinstala ni ejecuta el paquete en install ni en update' {
+    Reset-LocalEvidence
+    $zipPath = Join-Path $script:BuildDir $script:WindowsZipName
+    $markerPath = Join-Path $script:LocalDestinationRoot $script:MarkerName
+    $markerBefore = Get-FileSha256 -Path $markerPath
+    $install = Get-LocalRouteFixtureResult -Action 'install' -LocalZip $zipPath
+    Assert-Equal 0 $install.ExitCode 'install con la misma version debe terminar bien'
+    Assert-Contains $install.StdOut 'Ya estás actualizado' 'install igual debe informar el texto exacto de no-op'
+    Assert-Contains $install.StdOut 'actualizado' 'install igual debe informar que ya esta actualizado'
+    Assert-Contains $install.StdOut 'sin cambios' 'install igual no debe reinstalar nada'
+    $update = Get-LocalRouteFixtureResult -Action 'update' -LocalZip $zipPath
+    Assert-Equal 0 $update.ExitCode 'update con la misma version debe terminar bien'
+    Assert-Contains $update.StdOut 'Ya estás actualizado' 'update igual debe informar el texto exacto de no-op'
+    Assert-Contains $update.StdOut 'actualizado' 'update igual debe informar que ya esta actualizado'
+    Assert-Contains $update.StdOut 'sin cambios' 'update igual no debe reinstalar nada'
+    Assert-Equal 0 (Get-LocalChildCount) 'ni install ni update iguales pueden ejecutar el paquete'
+    Assert-Equal 0 (Get-LocalPayloadCount) 'el paquete no se puede ejecutar en un no-op'
+    Assert-LocalEvidenceClean 'no-op local'
+    Assert-Equal $markerBefore (Get-FileSha256 -Path $markerPath) 'un no-op no puede reescribir la instalacion'
+}
+
+Test-Case 'el gestor rechaza el ZIP del gestor como paquete del complemento' {
+    Reset-LocalEvidence
+    $cliZip = Join-Path $script:BuildDir $script:CliZipName
+    $cliSidecar = Join-Path $script:BuildDir $script:CliSidecarName
+    $zipBefore = Get-FileSha256 -Path $cliZip
+    $sidecarBefore = Get-FileSha256 -Path $cliSidecar
+    $markerPath = Join-Path $script:LocalDestinationRoot $script:MarkerName
+    $markerBefore = Get-FileSha256 -Path $markerPath
+    $result = Get-LocalRouteFixtureResult -Action 'install' -LocalZip $cliZip
+    Assert-Equal 1 $result.ExitCode 'un ZIP que no es el complemento debe rechazarse'
+    Assert-Empty $result.StdOut 'un rechazo no debe escribir en stdout'
+    Assert-Contains $result.StdErr "corresponde a 'MensorCAD-CLI.zip'" 'el error debe nombrar el artefacto equivocado'
+    Assert-Contains $result.StdErr "y no a 'MensorCAD-Windows.zip'" 'el error debe explicar cual era el paquete esperado'
+    Assert-Equal 0 (Get-LocalChildCount) 'un rechazo no puede ejecutar el instalador incluido'
+    Assert-Equal 0 (Get-LocalPayloadCount) 'un rechazo no puede ejecutar el paquete'
+    Assert-LocalEvidenceClean 'artefacto equivocado'
+    Assert-Equal $zipBefore (Get-FileSha256 -Path $cliZip) 'el ZIP del gestor no puede cambiar'
+    Assert-Equal $sidecarBefore (Get-FileSha256 -Path $cliSidecar) 'el sidecar del gestor no puede cambiar'
+    Assert-Equal $markerBefore (Get-FileSha256 -Path $markerPath) 'el rechazo no puede tocar la instalacion aislada'
+}
+
+Test-Case 'el gestor exige el sidecar correcto y deja las entradas intactas' {
+    $zipPath = Join-Path $script:BuildDir $script:WindowsZipName
+    $zipHash = Get-FileSha256 -Path $zipPath
+    $cases = @(
+        @{ Name = 'sin sidecar'; Fragment = 'Falta el archivo de verificacion'; Prepare = 'missing' },
+        @{ Name = 'hash alterado'; Fragment = 'no coincide con el archivo .sha256'; Prepare = 'wrong-hash' },
+        @{ Name = 'sidecar de otro artefacto'; Fragment = "corresponde a 'MensorCAD-CLI.zip'"; Prepare = 'wrong-name' }
+    )
+    foreach ($case in $cases) {
+        Reset-LocalEvidence
+        $inputRoot = Join-Path $script:LocalInputRoot ([guid]::NewGuid().ToString('N').Substring(0, 8))
+        $null = [System.IO.Directory]::CreateDirectory($inputRoot)
+        $inputZip = Join-Path $inputRoot $script:WindowsZipName
+        [System.IO.File]::Copy($zipPath, $inputZip, $false)
+        $inputSidecar = $inputZip + '.sha256'
+        if ($case.Prepare -eq 'wrong-hash') {
+            $sidecarText = (('0' * 64) + '  ' + $script:WindowsZipName + "`n")
+            [System.IO.File]::WriteAllText($inputSidecar, $sidecarText, (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+        }
+        elseif ($case.Prepare -eq 'wrong-name') {
+            [System.IO.File]::Copy((Join-Path $script:BuildDir $script:CliSidecarName), $inputSidecar, $false)
+        }
+        $inputHash = Get-FileSha256 -Path $inputZip
+        $sidecarHash = ''
+        if (Test-Path -LiteralPath $inputSidecar -PathType Leaf) { $sidecarHash = Get-FileSha256 -Path $inputSidecar }
+        $markerPath = Join-Path $script:LocalDestinationRoot $script:MarkerName
+        $markerBefore = Get-FileSha256 -Path $markerPath
+        $result = Get-LocalRouteFixtureResult -Action 'install' -LocalZip $inputZip
+        Assert-Equal 1 $result.ExitCode ('el caso ' + $case.Name + ' debe rechazarse')
+        Assert-Empty $result.StdOut ('el caso ' + $case.Name + ' no debe escribir en stdout')
+        Assert-Contains $result.StdErr $case.Fragment ('el caso ' + $case.Name + ' debe explicar el rechazo')
+        Assert-Equal 0 (Get-LocalChildCount) ('el caso ' + $case.Name + ' no puede ejecutar el instalador incluido')
+        Assert-Equal 0 (Get-LocalPayloadCount) ('el caso ' + $case.Name + ' no puede ejecutar el paquete')
+        Assert-LocalEvidenceClean ('rechazo de ' + $case.Name)
+        Assert-Equal $inputHash (Get-FileSha256 -Path $inputZip) ('el caso ' + $case.Name + ' no puede modificar el ZIP de entrada')
+        if (-not [string]::IsNullOrEmpty($sidecarHash)) {
+            Assert-Equal $sidecarHash (Get-FileSha256 -Path $inputSidecar) ('el caso ' + $case.Name + ' no puede modificar el sidecar')
+        }
+        Assert-Equal $markerBefore (Get-FileSha256 -Path $markerPath) ('el caso ' + $case.Name + ' no puede tocar la instalacion')
+    }
+    Assert-Equal $zipHash (Get-FileSha256 -Path $zipPath) 'el ZIP real del complemento no puede cambiar'
+}
+
+Test-Case 'un ZIP anterior sin el motor protegido sigue aceptandose en la ruta local' {
+    # Regresion del whitelist: la entrada nueva es OPCIONAL. Un paquete anterior
+    # al motor protegido conserva su bundle.sha256 y se instala en su propia
+    # raiz aislada, sin relajar el inventario ni los hashes.
+    Reset-LocalEvidence
+    $legacyDir = Join-Path $script:LocalInputRoot 'legacy'
+    $legacyZip = New-LegacyWindowsArchive -SourceZip (Join-Path $script:BuildDir $script:WindowsZipName) -DestinationZip (Join-Path $legacyDir $script:WindowsZipName)
+    $legacySidecar = $legacyZip + '.sha256'
+    $protectedEntry = $script:BundleFolderName + '/' + $script:EngineName
+    $names = @(Get-ZipEntryNames -ZipPath $legacyZip)
+    Assert-True (-not ($names -contains $protectedEntry)) 'el ZIP anterior no puede contener el motor protegido'
+    Assert-True ($names -contains $script:EngineName) 'el ZIP anterior conserva el motor en la raiz'
+    $inventoryText = [System.Text.Encoding]::UTF8.GetString((Get-ZipEntryBytes -ZipPath $legacyZip -EntryName 'bundle.sha256'))
+    Assert-NotContains $inventoryText ('  ' + $script:EngineName) 'bundle.sha256 del ZIP anterior no declara el motor protegido'
+    Assert-Equal ($script:InventoryCount - 1) (@(($inventoryText -split "`n") | Where-Object { $_.Trim().Length -gt 0 }).Count) 'el inventario anterior debe tener una entrada menos'
+    $zipBefore = Get-FileSha256 -Path $legacyZip
+    $sidecarBefore = Get-FileSha256 -Path $legacySidecar
+    $result = Get-LocalRouteFixtureResult -Action 'install' -LocalZip $legacyZip -IsolatedRoot $script:OlderRoot
+    Assert-Equal 0 $result.ExitCode ('un ZIP anterior valido debe seguir aceptandose: ' + $result.StdErr)
+    Assert-Contains $result.StdOut ('Paquete local validado: version ' + $script:DistributionVersion) 'el ZIP anterior debe validarse con su propio inventario'
+    Assert-Contains $result.StdOut $script:OlderDestinationRoot 'el ZIP anterior debe instalarse en su raiz aislada'
+    Assert-Empty $result.StdErr 'la instalacion anterior valida no debe escribir en stderr'
+    $marker = Assert-MensorCadOwnedDestination -DestinationRoot $script:OlderDestinationRoot
+    Assert-True ($null -ne $marker) 'el destino aislado debe quedar con marca propia'
+    # PowerShell 5.1 falla con @(<List[object]>).Count; la lista ya expone Count.
+    Assert-Equal ($script:InventoryCount - 1) ([int]$marker.Files.Count) 'la marca debe registrar solo el inventario del ZIP anterior'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:OlderDestinationRoot $script:EngineName) -PathType Leaf)) 'el ZIP anterior no instala motor protegido'
+    Assert-Equal 1 (Get-LocalChildCount) 'el ZIP anterior debe ejecutar su instalador incluido una vez'
+    Assert-Contains (Get-LocalEvidenceText) 'payload|end|install|0' 'el ZIP anterior debe completar la instalacion aislada'
+    Assert-LocalEvidenceClean 'ZIP anterior'
+    Assert-Equal $zipBefore (Get-FileSha256 -Path $legacyZip) 'el ZIP anterior no se puede modificar'
+    Assert-Equal $sidecarBefore (Get-FileSha256 -Path $legacySidecar) 'el sidecar del ZIP anterior no se puede modificar'
+}
+
+Test-Case 'una instalacion posterior rechaza el paquete real sin bajar de version' {
+    Reset-LocalEvidence
+    $manifestPath = Join-Path $script:LocalDestinationRoot 'PackageContents.xml'
+    $markerPath = Join-Path $script:LocalDestinationRoot $script:MarkerName
+    $manifestText = [System.IO.File]::ReadAllText($manifestPath)
+    $installedAttribute = 'AppVersion="' + $script:DistributionVersion + '"'
+    Assert-Contains $manifestText $installedAttribute 'el manifiesto instalado debe declarar la version del build'
+    $mutated = $manifestText.Replace($installedAttribute, 'AppVersion="9.9.9"')
+    [System.IO.File]::WriteAllText($manifestPath, $mutated, (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+    # La marca real se reescribe con el hash nuevo: el estado fixture sigue
+    # siendo propiedad valida del motor y el rechazo se decide solo por version.
+    $manifestHash = Get-FileSha256 -Path $manifestPath
+    $markerJson = [System.IO.File]::ReadAllText($markerPath) | ConvertFrom-Json
+    foreach ($entry in @($markerJson.files)) {
+        if ([string]$entry.path -eq 'PackageContents.xml') { $entry.sha256 = $manifestHash }
+    }
+    $markerJson.installedAtUtc = [DateTime]::UtcNow.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+    [System.IO.File]::WriteAllText($markerPath, (($markerJson | ConvertTo-Json -Depth 6) + "`r`n"), (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+    $null = Assert-MensorCadOwnedDestination -DestinationRoot $script:LocalDestinationRoot
+    $manifestBefore = Get-FileSha256 -Path $manifestPath
+    $markerBefore = Get-FileSha256 -Path $markerPath
+    $result = Get-LocalRouteFixtureResult -Action 'install' -LocalZip (Join-Path $script:BuildDir $script:WindowsZipName)
+    Assert-Equal 1 $result.ExitCode 'un paquete anterior a la version instalada debe rechazarse'
+    Assert-Empty $result.StdOut 'el rechazo por version no debe escribir en stdout'
+    Assert-Contains $result.StdErr 'es anterior a la instalada' 'el error debe comparar las versiones'
+    Assert-Contains $result.StdErr 'No se baja de versi' 'el error debe aclarar que no se baja de version'
+    Assert-Equal 0 (Get-LocalChildCount) 'un rechazo por version no puede ejecutar el instalador incluido'
+    Assert-Equal 0 (Get-LocalPayloadCount) 'un rechazo por version no puede ejecutar el paquete'
+    Assert-LocalEvidenceClean 'rechazo por version'
+    Assert-Equal $manifestBefore (Get-FileSha256 -Path $manifestPath) 'el rechazo no puede reescribir el manifiesto instalado'
+    Assert-Equal $markerBefore (Get-FileSha256 -Path $markerPath) 'el rechazo no puede reescribir la marca instalada'
+}
+
+Test-Case 'el motor protegido del paquete local real desinstala sin conexion y conserva el gestor' {
+    Reset-LocalEvidence
+    $protectedEngine = Join-Path $script:LocalDestinationRoot $script:EngineName
+    Assert-True (Test-Path -LiteralPath $protectedEngine -PathType Leaf) 'la instalacion local debe incluir el motor protegido'
+    $installedMarker = Assert-MensorCadOwnedDestination -DestinationRoot $script:LocalDestinationRoot
+    $declared = @($installedMarker.Files | Where-Object { $_.Path -eq $script:EngineName })[0]
+    Assert-Equal ([string]$declared.Sha256) (Get-FileSha256 -Path $protectedEngine) 'el motor protegido debe coincidir con su inventario'
+    $cliFiles = @(Get-ChildItem -LiteralPath $script:CliRoot -File | ForEach-Object { $_.Name })
+    Assert-True ($cliFiles -contains 'mensorcad.ps1') 'el gestor registrado debe existir antes de desinstalar'
+    $installedInventory = @(Get-ChildItem -LiteralPath $script:LocalDestinationRoot -Recurse -File)
+    $result = Invoke-PowerShellFile -Script $script:LocalChildWrapper -Arguments @(
+        '-Mode', 'uninstall',
+        '-EnginePath', $protectedEngine,
+        '-IsolatedRoot', $script:LocalRoot,
+        '-Evidence', $script:LocalEvidence
+    )
+    Assert-Equal 0 $result.ExitCode ('la desinstalacion sin conexion debe terminar bien: ' + $result.StdErr)
+    Assert-Contains $result.StdOut 'MensorCAD se desinstalo correctamente' 'el motor protegido debe informar la desinstalacion'
+    Assert-Empty $result.StdErr 'una desinstalacion correcta no debe escribir en stderr'
+    Assert-True (-not (Test-Path -LiteralPath $script:LocalDestinationRoot)) 'el bundle desinstalado no debe existir'
+    Assert-True (Test-Path -LiteralPath $script:LocalRoot) 'la raiz aislada contenedora no se debe borrar'
+    Assert-True ($installedInventory.Count -gt 0) 'la desinstalacion debe tener un inventario previo real'
+    foreach ($name in $cliFiles) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $script:CliRoot $name) -PathType Leaf) ('el gestor debe conservarse: ' + $name)
+    }
+    Assert-Contains (Get-LocalEvidenceText) 'payload|end|uninstall|0' 'el motor protegido real debe completar la desinstalacion'
+    Assert-LocalEvidenceClean 'desinstalacion local'
+    $status = Get-LocalRouteFixtureResult -Action 'status'
+    Assert-Equal 0 $status.ExitCode 'status posterior a la desinstalacion debe terminar bien'
+    Assert-Contains $status.StdOut 'Complemento: no instalado' 'el complemento desinstalado no debe figurar instalado'
+    Assert-Contains $status.StdOut ('MensorCAD CLI ' + $script:DistributionVersion) 'el gestor debe seguir respondiendo tras desinstalar'
+}
+
+Test-Case 'las seis salidas construidas siguen intactas despues de la distribucion' {
+    Assert-Equal $script:BuildOutputNames.Count $script:ArtifactHashes.Count 'se deben recordar los seis hashes del dist'
+    foreach ($name in $script:BuildOutputNames) {
+        $current = Get-FileSha256 -Path (Join-Path $script:BuildDir $name)
+        Assert-Equal $script:ArtifactHashes[$name] $current ('el artefacto cambio durante la suite: ' + $name)
+    }
 }
 
 # ---------------------------------------------------------------------------
