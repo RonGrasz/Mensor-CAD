@@ -24,7 +24,6 @@ LATEST_COMMAND = (
     "irm 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/"
     "install.ps1' -ea Stop | iex"
 )
-LOCAL_BOOTSTRAP_COMMAND = "& .\\dist\\install.ps1; exit $LASTEXITCODE"
 
 NEW_ASSETS = ("MensorCAD-CLI.zip", "MensorCAD-CLI.zip.sha256")
 WINDOWS_ASSETS = (
@@ -296,7 +295,7 @@ class WorkflowDistributionTests(unittest.TestCase):
 
 
 class ReadmeDistributionTests(unittest.TestCase):
-    """El README no puede prometer assets que todavia no existen."""
+    """El README presenta el flujo de dos pasos como unica via de instalacion."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -309,22 +308,32 @@ class ReadmeDistributionTests(unittest.TestCase):
         end = start + following.start() if following else len(self.readme)
         return self.readme[start:end]
 
-    def test_el_zip_sigue_siendo_la_ruta_recomendada(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn("MensorCAD-Windows.zip", section)
-        self.assertIn("Instalar.bat", section)
-        self.assertIn("doble clic", section)
-        self.assertLess(
-            section.index("MensorCAD-Windows.zip"),
-            section.index("mensorcad install"),
-            "la ruta del ZIP recomendada debe aparecer antes del flujo del gestor",
-        )
-
     def test_documenta_los_dos_pasos_y_los_comandos_del_gestor(self) -> None:
         section = self.section("## Instalación")
         for fragmento in ("Paso 1", "Paso 2", *MANAGER_COMMANDS):
             self.assertIn(fragmento, section, f"falta {fragmento}")
         self.assertIn("No instala nada automáticamente", section)
+        self.assertLess(section.index("Paso 1"), section.index("Paso 2"), "el orden de los pasos debe respetarse")
+
+    def test_el_paso_uno_publica_el_bootstrap_oficial(self) -> None:
+        section = self.section("## Instalación")
+        self.assertIn(LATEST_COMMAND, section, "el README debe publicar el comando del bootstrap")
+        self.assertIn("repositorio oficial", section, "el README debe pedir verificar la URL")
+        paso_uno = section[section.index("Paso 1") : section.index("Paso 2")]
+        self.assertIn(LATEST_COMMAND, paso_uno, "el comando del bootstrap pertenece al paso 1")
+
+    def test_el_paso_dos_instala_el_complemento_con_el_gestor(self) -> None:
+        section = self.section("## Instalación")
+        paso_dos = section[section.index("Paso 2") :]
+        for fragmento in (
+            "mensorcad install",
+            "cerrá AutoCAD",
+            "terminal nueva",
+            "administrador",
+            "%ProgramFiles%",
+            "MCHELP",
+        ):
+            self.assertIn(fragmento, paso_dos, f"el paso 2 no documenta {fragmento}")
 
     def test_distingue_el_alcance_por_usuario_y_por_equipo(self) -> None:
         section = self.section("## Instalación")
@@ -332,7 +341,28 @@ class ReadmeDistributionTests(unittest.TestCase):
         self.assertIn("por equipo", section)
         self.assertIn("PATH", section)
         self.assertIn("%LOCALAPPDATA%", section)
-        self.assertIn("Program Files", section)
+        self.assertIn("%ProgramFiles%", section)
+
+    def test_no_recomienda_el_metodo_de_un_solo_paso(self) -> None:
+        section = self.section("## Instalación")
+        self.assertNotIn("La opción recomendada: descargar", self.readme, "el ZIP ya no es la via recomendada")
+        self.assertNotIn("doble clic en **`Instalar.bat`**", self.readme, "el README no debe instruir la instalacion por ZIP")
+        self.assertIn("Histórico", section, "el metodo anterior queda mencionado como historico")
+        self.assertLess(
+            section.index("Paso 1"),
+            section.index("Histórico"),
+            "el flujo de dos pasos debe preceder al historico",
+        )
+
+    def test_deriva_la_prueba_local_a_la_guia_del_gestor(self) -> None:
+        # El README no documenta la ruta local: solo la nombra y enlaza la guia.
+        section = self.section("## Instalación")
+        self.assertEqual(1, self.readme.count("-LocalZip"), "la ruta local se menciona una sola vez")
+        self.assertIn("-LocalZip", section)
+        self.assertIn("docs/cli-bootstrap.md", section)
+        self.assertIn("docs/cli-manager.md", section)
+        for comando in ("dist\\MensorCAD-CLI.zip", "dist\\MensorCAD-Windows.zip"):
+            self.assertNotIn(comando, self.readme, f"el README no debe documentar {comando}")
 
     def test_la_desinstalacion_conserva_el_gestor_y_tiene_respaldo_zip(self) -> None:
         section = self.section("## Desinstalar")
@@ -347,88 +377,6 @@ class ReadmeDistributionTests(unittest.TestCase):
         self.assertIn("mensorcad update", section)
         self.assertIn("Ya estás actualizado", section)
         self.assertIn("nunca baja de versión", section.lower())
-
-    def test_no_presenta_el_comando_actual_como_si_ya_instalara_el_gestor(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn(LATEST_COMMAND, section, "el comando publicado debe seguir documentado")
-        self.assertIn("todavía no están publicados", section)
-        self.assertIn("v0.1.0", section)
-        self.assertIn("instalador anterior", section)
-        self.assertLess(
-            section.index("todavía no están publicados"),
-            section.index(LATEST_COMMAND),
-            "el aviso de publicación pendiente debe preceder al comando remoto",
-        )
-        self.assertIn("todavía no instala el gestor", section)
-
-    def test_ofrece_el_bootstrap_local_honesto_para_artefactos_construidos(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn(LOCAL_BOOTSTRAP_COMMAND, section)
-        self.assertIn("pendiente", section)
-        self.assertIn("stderr", section)
-        for asset in NEW_ASSETS:
-            self.assertIn(asset, section, f"el README debe nombrar {asset}")
-
-
-class ReadmeLocalRouteTests(unittest.TestCase):
-    """El README debe explicar la prueba local sin publicar, con comandos exactos."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.readme = read_text(README)
-
-    def section(self, heading: str) -> str:
-        self.assertIn(heading, self.readme)
-        start = self.readme.index(heading) + len(heading)
-        following = re.search(r"(?m)^## ", self.readme[start:])
-        end = start + following.start() if following else len(self.readme)
-        return self.readme[start:end]
-
-    def test_distingue_el_zip_del_gestor_del_zip_del_complemento(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn("ZIP del gestor", section)
-        self.assertIn("ZIP del complemento", section)
-        for asset in NEW_ASSETS:
-            self.assertIn(asset, section)
-        self.assertIn("MensorCAD-Windows.zip", section)
-
-    def test_documenta_los_comandos_locales_exactos(self) -> None:
-        section = self.section("## Instalación")
-        for fragmento in (
-            "& .\\dist\\install.ps1 -LocalZip .\\dist\\MensorCAD-CLI.zip",
-            "mensorcad install -LocalZip .\\dist\\MensorCAD-Windows.zip",
-            "mensorcad update -LocalZip .\\dist\\MensorCAD-Windows.zip",
-            "Get-Command mensorcad",
-            "mensorcad --help",
-            "mensorcad --version",
-            "mensorcad status",
-            "mensorcad uninstall",
-            "MCHELP",
-            "Ya estás actualizado",
-            "conserva el comando gestor",
-        ):
-            self.assertIn(fragmento, section, f"el README no documenta {fragmento}")
-
-    def test_exige_los_sidecars_y_advierte_que_el_hash_es_integridad(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn("sidecar", section)
-        self.assertIn(".sha256", section)
-        self.assertIn("integridad", section)
-        self.assertIn("no autentica al publicador", section)
-
-    def test_advierte_la_terminal_nueva_y_las_rutas_relativas(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn("terminal nueva", section)
-        self.assertIn("PATH", section)
-        self.assertIn("UNC", section)
-        self.assertIn("ruta absoluta", section)
-        self.assertIn("Windows PowerShell 5.1", section)
-        self.assertIn("64", section)
-
-    def test_no_afirma_haber_hecho_las_comprobaciones_manuales(self) -> None:
-        section = self.section("## Instalación")
-        self.assertIn("quedan a tu cargo", section)
-        self.assertIn("todavía no están publicados", section)
 
 
 class BuildDocsDistributionTests(unittest.TestCase):
