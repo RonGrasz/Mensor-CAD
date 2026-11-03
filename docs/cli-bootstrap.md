@@ -152,6 +152,23 @@ El bootstrap escribe **solo** el `PATH` del usuario actual
 
 Repetir el bootstrap actualiza el gestor y no duplica el `PATH`.
 
+### Acceso de escritura sin permisos nuevos
+
+El proveedor de registro de PowerShell entrega `HKCU\Environment` con acceso de
+**solo lectura**: escribir sobre ese acceso falla con "No se puede escribir en la
+clave del Registro" aunque la clave sea del propio usuario. Por eso el bootstrap
+abre un acceso propio **con escritura** sobre la misma clave antes de registrar
+el `PATH`.
+
+| Tema | Decision |
+|------|----------|
+| Permisos | Pedir acceso de escritura no cambia los permisos de la clave: no se tocan ACLs, no se desactiva seguridad y no se eleva el proceso. `HKCU\Environment` ya pertenece al usuario actual. |
+| Alcance | Solo la clave del usuario actual; nunca `HKLM` ni el `PATH` de maquina. |
+| Cierre | El bootstrap cierra siempre los accesos que abre: en exito, cuando el `PATH` ya estaba registrado y cuando falla. |
+
+Si Windows rechaza abrir ese acceso, el bootstrap se detiene, revierte la
+instalacion y lo informa por stderr: no pide elevacion ni cambia permisos.
+
 ## Terminales
 
 Tras la instalacion hace falta una **terminal nueva** para usar `mensorcad`,
@@ -219,7 +236,29 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests\Te
 ```
 
 La suite funcional no toca el `PATH` real, no escribe en `Program Files`, no
-pide UAC y no llama a GitHub: usa fixtures de ZIP y un registro falso. La ruta
-local se prueba con un ZIP fixture cuyo `mensorcad.ps1` lleva la version sellada
-escrita como texto; la suite verifica cero consultas al release, cero descargas
-y que el gestor nunca se ejecuta.
+pide UAC y no llama a GitHub: usa fixtures de ZIP y un registro falso. Ese
+registro falso modela el backend real: el acceso que entrega `Get-Item` es de
+solo lectura, el bootstrap abre su propio acceso de escritura y la suite exige
+que todos los accesos queden cerrados. La ruta local se prueba con un ZIP
+fixture cuyo `mensorcad.ps1` lleva la version sellada escrita como texto; la
+suite verifica cero consultas al release, cero descargas y que el gestor nunca
+se ejecuta.
+
+### Sonda manual del registro real (opt-in)
+
+La suite anterior no escribe en el registro real. Para comprobar el backend real
+de Windows hay una sonda **aparte, manual y opt-in**:
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests\Test-CliBootstrapRegistry.ps1
+```
+
+| Tema | Decision |
+|------|----------|
+| Clave | Solo `HKCU:\Software\MensorCAD-Bootstrap-Probe`, con valores ficticios. |
+| Si ya existe | La sonda se detiene **sin tocarla**: solo crea y elimina su propia clave. |
+| PATH real | No escribe `HKCU\Environment` ni el `PATH`: los compara antes y despues y exige que no cambien. |
+| Fuera de alcance | Nada de `HKLM`, ACLs, UAC, red ni AutoCAD; `TEMP`, `LOCALAPPDATA` y el ZIP local viven en `odd/artifacts/bootstrap-registry-writable`. |
+| Limpieza | Cierra sus accesos y elimina la clave que creo; comprueba que quedo ausente. |
+
+No forma parte de la suite por defecto ni de CI: hay que ejecutarla a mano.

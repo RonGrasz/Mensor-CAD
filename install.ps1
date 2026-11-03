@@ -200,9 +200,32 @@ param(
     }
 
     function Get-CliBootstrapEnvironmentKey {
-        # Get-Item devuelve la clave de registro real: se usa .NET para leer el
-        # tipo del valor sin expandirlo y para escribirlo con el mismo tipo.
-        return Get-Item -LiteralPath $userEnvironmentKeyPath -Force
+        # Get-Item entrega la clave del proveedor con el acceso con el que el
+        # proveedor la abrio: SOLO LECTURA. .SetValue sobre esa asa falla con
+        # "No se puede escribir en la clave del Registro", aunque sea la clave
+        # del usuario actual. Se abre una asa PROPIA con acceso de escritura
+        # sobre la misma clave, sin cambiar permisos, sin tocar ACLs y sin
+        # elevar el proceso. El llamador es duenio de la asa devuelta y la
+        # cierra siempre; la asa del proveedor se cierra aqui y no se usa
+        # despues (la asa propia sigue siendo valida).
+        $providerKey = Get-Item -LiteralPath $userEnvironmentKeyPath -Force
+        $ownedKey = $null
+        try {
+            $ownedKey = $providerKey.OpenSubKey('', $true)
+        }
+        catch {
+            throw (New-CliBootstrapStopException ('No se pudo abrir el PATH del usuario con acceso de escritura: ' + $_.Exception.Message + ' Se restauro la instalacion anterior.'))
+        }
+        finally {
+            if ($null -ne $providerKey) {
+                try { $providerKey.Close() }
+                catch { }
+            }
+        }
+        if ($null -eq $ownedKey) {
+            throw (New-CliBootstrapStopException 'No se pudo abrir el PATH del usuario con acceso de escritura: la clave no devolvio un asa propia. Se restauro la instalacion anterior.')
+        }
+        return $ownedKey
     }
 
     function Get-CliBootstrapPathEntryKey {
@@ -221,60 +244,70 @@ param(
     function Set-CliBootstrapUserPath {
         # Agrega la carpeta del gestor solo si no esta ya. No reescribe ni
         # expande las entradas existentes y conserva REG_SZ o REG_EXPAND_SZ.
+        # La asa propia de escritura se cierra siempre: en exito, en no-op y
+        # en fallo, para no dejar asas abiertas en la sesion del usuario.
         param([string]$ManagerDirectory)
         $key = Get-CliBootstrapEnvironmentKey
-        $names = @($key.GetValueNames())
-        $pathName = $null
-        foreach ($name in $names) {
-            if ([string]$name -ieq 'Path') { $pathName = [string]$name; break }
-        }
-        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
-        $rawValue = ''
-        if ($null -ne $pathName) {
-            $kind = $key.GetValueKind($pathName)
-            if (($kind -ne [Microsoft.Win32.RegistryValueKind]::String) -and ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
-                throw (New-CliBootstrapStopException ('El PATH del usuario tiene un tipo no soportado: ' + [string]$kind + '. Se restauro la instalacion anterior.'))
-            }
-            $raw = $key.GetValue($pathName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-            if ($null -ne $raw) { $rawValue = [string]$raw }
-        }
-        else {
-            $pathName = 'Path'
-        }
-
-        $targetKey = Get-CliBootstrapPathEntryKey -Entry $ManagerDirectory
-        foreach ($entry in @($rawValue -split ';')) {
-            if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-            if ((Get-CliBootstrapPathEntryKey -Entry $entry) -eq $targetKey) {
-                return [pscustomobject]@{ Changed = $false; Kind = $kind; Value = $rawValue }
-            }
-        }
-
-        $newValue = $rawValue.TrimEnd(';')
-        if ($newValue.Length -eq 0) { $newValue = $ManagerDirectory }
-        else { $newValue = $newValue + ';' + $ManagerDirectory }
-
-        $written = $false
         try {
-            $key.SetValue($pathName, $newValue, $kind)
-            $written = $true
-            $readBack = $key.GetValue($pathName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-            $readKind = $key.GetValueKind($pathName)
-            if ([string]$readBack -ne $newValue) {
-                throw 'La verificacion del PATH no coincide con lo escrito.'
+            $names = @($key.GetValueNames())
+            $pathName = $null
+            foreach ($name in $names) {
+                if ([string]$name -ieq 'Path') { $pathName = [string]$name; break }
             }
-            if ($readKind -ne $kind) {
-                throw 'La verificacion del tipo del PATH no coincide con lo escrito.'
+            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            $rawValue = ''
+            if ($null -ne $pathName) {
+                $kind = $key.GetValueKind($pathName)
+                if (($kind -ne [Microsoft.Win32.RegistryValueKind]::String) -and ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
+                    throw (New-CliBootstrapStopException ('El PATH del usuario tiene un tipo no soportado: ' + [string]$kind + '. Se restauro la instalacion anterior.'))
+                }
+                $raw = $key.GetValue($pathName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                if ($null -ne $raw) { $rawValue = [string]$raw }
             }
+            else {
+                $pathName = 'Path'
+            }
+
+            $targetKey = Get-CliBootstrapPathEntryKey -Entry $ManagerDirectory
+            foreach ($entry in @($rawValue -split ';')) {
+                if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+                if ((Get-CliBootstrapPathEntryKey -Entry $entry) -eq $targetKey) {
+                    return [pscustomobject]@{ Changed = $false; Kind = $kind; Value = $rawValue }
+                }
+            }
+
+            $newValue = $rawValue.TrimEnd(';')
+            if ($newValue.Length -eq 0) { $newValue = $ManagerDirectory }
+            else { $newValue = $newValue + ';' + $ManagerDirectory }
+
+            $written = $false
+            try {
+                $key.SetValue($pathName, $newValue, $kind)
+                $written = $true
+                $readBack = $key.GetValue($pathName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $readKind = $key.GetValueKind($pathName)
+                if ([string]$readBack -ne $newValue) {
+                    throw 'La verificacion del PATH no coincide con lo escrito.'
+                }
+                if ($readKind -ne $kind) {
+                    throw 'La verificacion del tipo del PATH no coincide con lo escrito.'
+                }
+            }
+            catch {
+                if ($written) {
+                    try { $key.SetValue($pathName, $rawValue, $kind) }
+                    catch { }
+                }
+                throw (New-CliBootstrapStopException ('No se pudo registrar la carpeta del gestor en el PATH del usuario: ' + $_.Exception.Message + ' Se restauro la instalacion anterior.'))
+            }
+            return [pscustomobject]@{ Changed = $true; Kind = $kind; Value = $newValue }
         }
-        catch {
-            if ($written) {
-                try { $key.SetValue($pathName, $rawValue, $kind) }
+        finally {
+            if ($null -ne $key) {
+                try { $key.Close() }
                 catch { }
             }
-            throw (New-CliBootstrapStopException ('No se pudo registrar la carpeta del gestor en el PATH del usuario: ' + $_.Exception.Message + ' Se restauro la instalacion anterior.'))
         }
-        return [pscustomobject]@{ Changed = $true; Kind = $kind; Value = $newValue }
     }
 
     function Add-CliBootstrapProcessPath {

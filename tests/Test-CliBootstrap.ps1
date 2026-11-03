@@ -9,7 +9,11 @@
 
       - la API de GitHub y las descargas (Invoke-RestMethod / Invoke-WebRequest),
       - la clave HKCU:\Environment mediante un objeto de registro falso que
-        implementa GetValueNames / GetValue / GetValueKind / SetValue,
+        modela el backend real: Get-Item entrega un asa en SOLO LECTURA, cuyo
+        SetValue falla como en Windows, y el bootstrap debe abrir su propia asa
+        de escritura con OpenSubKey('', $true). Implementa GetValueNames /
+        GetValue / GetValueKind / SetValue / OpenSubKey / Close, cuenta cada asa
+        y rechaza cualquier uso de un asa ya cerrada,
       - las carpetas del usuario (LOCALAPPDATA y TEMP apuntan a una carpeta
         propia dentro de odd/artifacts/persistent-cli/bootstrap).
 
@@ -122,7 +126,13 @@ $script:RegState = [pscustomobject]@{
     Values = New-Object System.Collections.Hashtable ([System.StringComparer]::OrdinalIgnoreCase)
     SetCalls = 0
     ThrowOnSet = $false
+    ThrowOnOpen = $false
     SetKinds = New-Object 'System.Collections.Generic.List[string]'
+    ProviderOpens = 0
+    ProviderClosed = 0
+    ProviderSetAttempts = 0
+    WritableOpens = 0
+    WritableClosed = 0
 }
 
 $initial = [System.IO.File]::ReadAllText($registryFile) | ConvertFrom-Json
@@ -135,28 +145,50 @@ foreach ($entry in @($initial.values)) {
     }
 }
 $script:RegState.ThrowOnSet = [bool]$initial.throwOnSet
+$script:RegState.ThrowOnOpen = [bool]$initial.throwOnOpen
 
-function New-FakeEnvironmentKey {
-    $key = [pscustomobject]@{ State = $script:RegState }
-    $key | Add-Member -MemberType ScriptMethod -Name GetValueNames -Value {
+function New-FakeRegistryHandle {
+    # Modelo del backend real: el proveedor entrega el asa en SOLO LECTURA y
+    # rechaza SetValue con el mismo error que Windows. El bootstrap debe abrir
+    # su propia asa de escritura (OpenSubKey('', $true)) sobre la misma clave.
+    # Un asa cerrada rechaza cualquier uso posterior, igual que RegistryKey.
+    param([string]$Access)
+    $handle = [pscustomobject]@{
+        State = $script:RegState
+        Access = $Access
+        Closed = $false
+    }
+    $handle | Add-Member -MemberType ScriptMethod -Name AssertOpen -Value {
+        if ($this.Closed) { throw 'No se puede usar un asa de registro cerrada.' }
+    }
+    $handle | Add-Member -MemberType ScriptMethod -Name GetValueNames -Value {
+        $this.AssertOpen()
         return @($this.State.Values.Keys)
     }
-    $key | Add-Member -MemberType ScriptMethod -Name GetValue -Value {
+    $handle | Add-Member -MemberType ScriptMethod -Name GetValue -Value {
         param($name, $default, $options)
+        $this.AssertOpen()
         if (($null -ne $name) -and $this.State.Values.ContainsKey([string]$name)) {
             return [string]$this.State.Values[[string]$name].Value
         }
         return $default
     }
-    $key | Add-Member -MemberType ScriptMethod -Name GetValueKind -Value {
+    $handle | Add-Member -MemberType ScriptMethod -Name GetValueKind -Value {
         param($name)
+        $this.AssertOpen()
         if (($null -eq $name) -or (-not $this.State.Values.ContainsKey([string]$name))) {
             throw (New-Object System.ArgumentException ('No existe el valor ' + [string]$name))
         }
         return [Microsoft.Win32.RegistryValueKind]([string]$this.State.Values[[string]$name].Kind)
     }
-    $key | Add-Member -MemberType ScriptMethod -Name SetValue -Value {
+    $handle | Add-Member -MemberType ScriptMethod -Name SetValue -Value {
         param($name, $value, $kind)
+        $this.AssertOpen()
+        if ($this.Access -ne 'Write') {
+            # Error real del proveedor para una clave abierta en solo lectura.
+            $this.State.ProviderSetAttempts = $this.State.ProviderSetAttempts + 1
+            throw 'No se puede escribir en la clave del Registro.'
+        }
         if ($this.State.ThrowOnSet) {
             throw 'Acceso denegado simulado al PATH del usuario.'
         }
@@ -164,8 +196,30 @@ function New-FakeEnvironmentKey {
         $this.State.SetCalls = $this.State.SetCalls + 1
         $this.State.SetKinds.Add([string]$kind)
     }
-    $key | Add-Member -MemberType ScriptMethod -Name Close -Value { }
-    return $key
+    $handle | Add-Member -MemberType ScriptMethod -Name OpenSubKey -Value {
+        param($name, $writable)
+        $this.AssertOpen()
+        if (([string]$name -ne '') -or (-not [bool]$writable)) {
+            throw 'La prueba solo admite abrir la misma clave con acceso de escritura.'
+        }
+        if ($this.State.ThrowOnOpen) {
+            throw 'Acceso de escritura simulado denegado.'
+        }
+        $this.State.WritableOpens = $this.State.WritableOpens + 1
+        return (New-FakeRegistryHandle -Access 'Write')
+    }
+    $handle | Add-Member -MemberType ScriptMethod -Name Close -Value {
+        if ($this.Closed) { return }
+        $this.Closed = $true
+        if ($this.Access -eq 'Write') { $this.State.WritableClosed = $this.State.WritableClosed + 1 }
+        else { $this.State.ProviderClosed = $this.State.ProviderClosed + 1 }
+    }
+    return $handle
+}
+
+function New-FakeProviderKey {
+    $script:RegState.ProviderOpens = $script:RegState.ProviderOpens + 1
+    return (New-FakeRegistryHandle -Access 'ReadOnly')
 }
 
 function global:Get-Item {
@@ -179,7 +233,7 @@ function global:Get-Item {
     if ([string]::IsNullOrEmpty($target)) { $target = $Path }
     if (($target -eq 'HKCU:\Environment') -or ($target -eq 'HKCU:\Environment\')) {
         $script:KeyRequests.Add([string]$target)
-        return New-FakeEnvironmentKey
+        return (New-FakeProviderKey)
     }
     Microsoft.PowerShell.Management\Get-Item -LiteralPath $target -Force:$Force
 }
@@ -296,6 +350,11 @@ $payload = [pscustomobject]@{
         SetCalls = [int]$script:RegState.SetCalls
         SetKinds = @($script:RegState.SetKinds.ToArray())
         KeyRequests = @($script:KeyRequests.ToArray())
+        ProviderOpens = [int]$script:RegState.ProviderOpens
+        ProviderClosed = [int]$script:RegState.ProviderClosed
+        ProviderSetAttempts = [int]$script:RegState.ProviderSetAttempts
+        WritableOpens = [int]$script:RegState.WritableOpens
+        WritableClosed = [int]$script:RegState.WritableClosed
     }
     ProcessPath = [string]$env:Path
 }
@@ -594,6 +653,7 @@ function Invoke-CliCase {
         [scriptblock]$PathValueFactory = $null,
         [string]$PathKind = 'ExpandString',
         [switch]$ThrowOnSet,
+        [switch]$ThrowOnOpen,
         [switch]$SessionInLocalInput,
         [scriptblock]$Seed
     )
@@ -631,7 +691,7 @@ function Invoke-CliCase {
     if (-not $NoPathValue) {
         $values = @([pscustomobject]@{ name = 'Path'; value = $PathValue; kind = $PathKind })
     }
-    Write-FixtureFile -Path $registryPath -Content ([pscustomobject]@{ values = $values; throwOnSet = [bool]$ThrowOnSet } | ConvertTo-Json -Compress -Depth 4)
+    Write-FixtureFile -Path $registryPath -Content ([pscustomobject]@{ values = $values; throwOnSet = [bool]$ThrowOnSet; throwOnOpen = [bool]$ThrowOnOpen } | ConvertTo-Json -Compress -Depth 4)
 
     $resultPath = Join-Path -Path $caseRoot -ChildPath 'result.json'
     $stdoutPath = Join-Path -Path $caseRoot -ChildPath 'probe.stdout.txt'
@@ -719,12 +779,25 @@ function Get-WebRequests {
     return @($Case.Result.WebRequests)
 }
 
+function Assert-RegistryHandlesReleased {
+    # Contrato de asas del backend real: el asa del proveedor llega en solo
+    # lectura y no se usa para escribir; cada asa propia de escritura se cierra
+    # antes de terminar, tanto en exito como en no-op y en fallo.
+    param($Case)
+    $registry = $Case.Result.Registry
+    Assert-True ($null -ne $registry) 'la sonda debe informar el estado del registro'
+    Assert-Equal 0 ([int]$registry.ProviderSetAttempts) 'el asa de solo lectura del proveedor no se usa para escribir el PATH'
+    Assert-Equal ([int]$registry.WritableOpens) ([int]$registry.WritableClosed) 'toda asa propia de escritura debe quedar cerrada'
+    Assert-Equal ([int]$registry.ProviderOpens) ([int]$registry.ProviderClosed) 'toda asa del proveedor debe quedar cerrada'
+}
+
 function Assert-CallerSurvived {
     param($Case)
     Assert-Equal 0 $Case.ProcessExitCode 'el proceso sonda debe terminar con 0'
     Assert-True $Case.Survived 'el bootstrap cerro la sesion del llamador (falta la sentinela)'
     Assert-True ($null -ne $Case.Result) 'la sonda no dejo resultado'
     Assert-Equal '' ([string]$Case.Result.CommandError) 'el comando no debe lanzar una excepcion sin capturar'
+    Assert-RegistryHandlesReleased -Case $Case
 }
 
 function Get-SuccessStdout {
@@ -923,6 +996,49 @@ Test-Case 'no duplica una entrada ya presente con mayusculas distintas' {
     Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'una entrada equivalente en mayusculas no se duplica'
     $entry = Get-RegistryEntry -Result $case.Result -Name 'Path'
     Assert-False ($entry.value.EndsWith($case.Destination)) 'el PATH no debe recibir una segunda entrada'
+}
+
+Test-Case 'el PATH se escribe con un asa propia de escritura y el asa del proveedor queda cerrada' {
+    # Contrato del bug real: Get-Item entrega un asa de solo lectura; el
+    # bootstrap debe abrir su propia asa de escritura y cerrarla al terminar.
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -PathKind 'ExpandString'
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe ser 0'
+    Assert-Equal 1 ([int]$case.Result.Registry.ProviderOpens) 'una sola lectura de la clave del usuario'
+    Assert-Equal 1 ([int]$case.Result.Registry.WritableOpens) 'una sola asa propia de escritura'
+    Assert-Equal 1 ([int]$case.Result.Registry.WritableClosed) 'la asa propia de escritura se cierra al terminar'
+    Assert-Equal 0 ([int]$case.Result.Registry.ProviderSetAttempts) 'el asa del proveedor nunca se usa para escribir'
+    Assert-Equal 1 ([int]$case.Result.Registry.SetCalls) 'una sola escritura real del PATH'
+    $entry = Get-RegistryEntry -Result $case.Result -Name 'Path'
+    Assert-Equal ('C:\Windows;' + $case.Destination) $entry.value 'el PATH se escribe por el asa propia'
+}
+
+Test-Case 'el no-op abre y cierra el asa propia sin escribir el PATH' {
+    $factory = { param([string]$LocalAppData) return 'C:\Windows;' + $LocalAppData + '\MensorCAD\cli' }
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValueFactory $factory -Seed $seedPreviousInstall
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe ser 0'
+    Assert-Equal (Get-SuccessStdout -Destination $case.Destination -State 'actualizado' -PathAlreadyRegistered) $case.Stdout 'stdout exacto del no-op'
+    Assert-Equal 1 ([int]$case.Result.Registry.WritableOpens) 'el no-op tambien abre un asa propia'
+    Assert-Equal 1 ([int]$case.Result.Registry.WritableClosed) 'el no-op cierra el asa propia'
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'el no-op no escribe el PATH'
+}
+
+Test-Case 'si no se puede abrir el acceso de escritura se detiene sin tocar el PATH' {
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -ThrowOnOpen
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '1' ([string]$case.Result.LastExitCode) 'LASTEXITCODE debe informar el fallo'
+    Assert-True $case.Stderr.StartsWith('ERROR: No se pudo abrir el PATH del usuario con acceso de escritura: ') 'prefijo del fallo al abrir el asa propia'
+    Assert-True $case.Stderr.Contains('Acceso de escritura simulado denegado.') 'conserva la causa simulada'
+    Assert-True $case.Stderr.TrimEnd().EndsWith('Se restauro la instalacion anterior.') 'el mensaje debe informar el rollback'
+    Assert-Equal '' $case.Stdout 'un fallo no debe escribir stdout'
+    Assert-False ([System.IO.Directory]::Exists($case.Destination)) 'la instalacion nueva se revierte'
+    Assert-Equal 0 ([int]$case.Result.Registry.WritableOpens) 'no se abre ninguna asa de escritura'
+    Assert-Equal 1 ([int]$case.Result.Registry.ProviderOpens) 'el asa del proveedor se pide y se cierra'
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'sin escrituras de PATH'
+    $entry = Get-RegistryEntry -Result $case.Result -Name 'Path'
+    Assert-Equal 'C:\Windows' $entry.value 'el PATH del usuario no cambia'
+    Assert-NoLeftovers -Case $case
 }
 
 Test-Case 'una version fijada no consulta el release' {

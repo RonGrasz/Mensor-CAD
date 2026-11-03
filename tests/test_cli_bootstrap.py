@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "install.ps1"
 DOCS = ROOT / "docs" / "cli-bootstrap.md"
 FUNCTIONAL = ROOT / "tests" / "Test-CliBootstrap.ps1"
+REGISTRY_PROBE = ROOT / "tests" / "Test-CliBootstrapRegistry.ps1"
 
 LATEST_COMMAND = (
     "irm 'https://github.com/RonGrasz/Mensor-CAD/releases/latest/download/"
@@ -182,6 +183,22 @@ class CliBootstrapStructureTests(unittest.TestCase):
         self.assertIn("RegistryValueKind", self.bootstrap)
         self.assertIn("$env:Path", self.bootstrap, "falta actualizar el PATH del proceso actual")
 
+    def test_abre_acceso_de_escritura_propio_y_cierra_las_asas(self) -> None:
+        # El proveedor entrega la clave en solo lectura: el bootstrap abre un
+        # acceso propio con escritura y lo cierra siempre. No cambia permisos.
+        abrir = self.bootstrap[self.bootstrap.index("function Get-CliBootstrapEnvironmentKey") :]
+        abrir = abrir[: abrir.index("function Get-CliBootstrapPathEntryKey")]
+        self.assertIn("Get-Item -LiteralPath $userEnvironmentKeyPath -Force", abrir)
+        self.assertIn("OpenSubKey('', $true)", abrir, "falta abrir el acceso propio con escritura")
+        self.assertIn("$providerKey.Close()", abrir, "falta cerrar el acceso del proveedor")
+        self.assertIn("finally", abrir, "el cierre debe ocurrir aunque falle la apertura")
+        escribir = self.bootstrap[self.bootstrap.index("function Set-CliBootstrapUserPath") :]
+        escribir = escribir[: escribir.index("function Add-CliBootstrapProcessPath")]
+        self.assertIn("$key.Close()", escribir, "falta cerrar el acceso propio")
+        self.assertIn("finally", escribir, "el acceso propio debe cerrarse en exito, no-op y fallo")
+        for fragmento in ("SetAccessControl", "RegistrySecurity", "TakeOwnership"):
+            self.assertNotIn(fragmento, self.bootstrap, "el bootstrap no debe cambiar permisos ni ACLs")
+
     def test_no_muta_configuracion_global_ni_pide_elevacion(self) -> None:
         for fragmento in FORBIDDEN_FRAGMENTS:
             self.assertNotIn(
@@ -334,6 +351,21 @@ class CliBootstrapDocsTests(unittest.TestCase):
         self.assertIn("Ruta relativa", self.docs_flat)
         self.assertIn("carpeta actual de su sesion de PowerShell", self.docs_flat)
 
+    def test_documenta_el_acceso_de_escritura_sin_permisos_nuevos(self) -> None:
+        self.assertIn("Acceso de escritura sin permisos nuevos", self.docs)
+        self.assertIn("solo lectura", self.docs_flat)
+        self.assertIn("No se puede escribir en la clave del Registro", self.docs_flat)
+        self.assertIn("no se tocan ACLs", self.docs_flat)
+        self.assertIn("no se eleva el proceso", self.docs_flat)
+        self.assertIn("cierra siempre los accesos que abre", self.docs_flat)
+
+    def test_documenta_la_sonda_manual_del_registro_real(self) -> None:
+        self.assertIn("Test-CliBootstrapRegistry.ps1", self.docs_flat)
+        self.assertIn("HKCU:\\Software\\MensorCAD-Bootstrap-Probe", self.docs_flat)
+        self.assertIn("sin tocarla", self.docs_flat)
+        self.assertIn("opt-in", self.docs_flat)
+        self.assertIn("no forma parte de la suite por defecto", self.docs_flat.lower())
+
     def test_la_confianza_local_queda_declarada(self) -> None:
         # El hash solo prueba integridad; la confianza la aporta la persona que
         # eligio la compilacion. La guia tiene que decirlo sin ambiguedad.
@@ -368,6 +400,29 @@ class CliBootstrapFunctionalHarnessTests(unittest.TestCase):
         self.assertIn("-LocalZip", self.functional, "la suite funcional debe cubrir la ruta local")
         self.assertIn("Assert-SinRed", self.functional, "falta contar cero consultas y cero descargas")
         self.assertIn("New-LocalCliInput", self.functional, "falta la fixture del ZIP local")
+
+    def test_modela_el_acceso_de_solo_lectura_y_el_cierre_de_asas(self) -> None:
+        for fragmento in (
+            "OpenSubKey",
+            "No se puede escribir en la clave del Registro.",
+            "WritableOpens",
+            "WritableClosed",
+            "Assert-RegistryHandlesReleased",
+        ):
+            self.assertIn(fragmento, self.functional, f"la suite simulada debe modelar {fragmento}")
+
+    def test_la_sonda_de_registro_real_es_manual_y_esta_aislada(self) -> None:
+        # Sonda dedicada y opt-in: no la descubre ni la ejecuta la suite por
+        # defecto, y solo escribe en la clave privada autorizada.
+        self.assertTrue(REGISTRY_PROBE.is_file(), f"falta {REGISTRY_PROBE}")
+        probe = read_text(REGISTRY_PROBE)
+        self.assertIn("HKCU:\\Software\\MensorCAD-Bootstrap-Probe", probe)
+        self.assertIn("si la clave ya existe, la sonda se detiene SIN TOCARLA", probe)
+        self.assertIn("Remove-Item -LiteralPath $script:ProbeKeyPath -Recurse -Force", probe)
+        self.assertIn("Get-RealUserPath", probe, "falta comprobar que el PATH real no cambia")
+        self.assertIn("throw 'RED PROHIBIDA", probe, "la sonda real debe cerrar la red")
+        self.assertIn("odd\\artifacts\\bootstrap-registry-writable", probe)
+        self.assertNotIn("Test-CliBootstrapRegistry", self.functional, "la suite por defecto no debe ejecutar la sonda real")
 
 
 if __name__ == "__main__":
