@@ -89,7 +89,7 @@ Si construiste los artefactos localmente, el bootstrap local equivalente es:
 & .\dist\install.ps1; exit $LASTEXITCODE
 ```
 
-Ese bootstrap descarga `MensorCAD-CLI.zip` y su `.sha256` del tag indicado: como esa publicación todavía está pendiente, hoy falla antes de escribir nada y lo informa por `stderr`.
+Ese bootstrap descarga `MensorCAD-CLI.zip` y su `.sha256` del tag indicado: como esa publicación todavía está pendiente, hoy falla antes de escribir nada y lo informa por `stderr`. Para validar un build propio sin publicar, el mismo bootstrap acepta `-LocalZip`; el circuito completo está en [Prueba local](#prueba-local).
 
 #### Paso 1 · Instalar el comando gestor
 
@@ -116,6 +116,62 @@ El gestor reutiliza el instalador validado: descarga el ZIP del complemento, rev
 | `mensorcad --version` | Muestra la versión del gestor (no la del complemento). |
 
 `status`, `--help` y `--version` son de solo lectura: no descargan, no piden permisos de administrador y no escriben archivos. El gestor **no se autoactualiza** en esta etapa: para actualizar el propio comando se vuelve a ejecutar el bootstrap.
+
+<a id="prueba-local"></a>
+
+#### Prueba local · ZIP del gestor y ZIP del complemento
+
+Si construiste los artefactos vos mismo, podés probar el circuito completo **sin publicar ninguna release** y sin red. Los dos ZIP son distintos y no se intercambian:
+
+| ZIP | Qué contiene | Para qué sirve |
+|---|---|---|
+| `dist\MensorCAD-CLI.zip` | Solo el gestor: `mensorcad.ps1`, `mensorcad.cmd` e `Install-MensorCAD.ps1`. | Registrar `mensorcad` en tu `PATH` con el bootstrap. |
+| `dist\MensorCAD-Windows.zip` | El complemento completo de AutoCAD: `MensorCAD.bundle/`, `bundle.sha256`, `Instalar.bat` y `Desinstalar.bat`. | Instalarlo o actualizarlo con `mensorcad install -LocalZip` o `mensorcad update -LocalZip`. |
+
+Cada ZIP **necesita su sidecar `.sha256` en la misma carpeta**. Si falta, si el hash no coincide o si el sidecar nombra otro archivo, el comando se detiene antes de ejecutar nada. El SHA-256 prueba **integridad**: confirma que el ZIP es el que elegiste, pero **no autentica al publicador**. Usá esta ruta solo con paquetes que hayas construido vos.
+
+1. Construí los seis artefactos (una sola vez):
+
+```bash
+python tools/build_bundle.py --output-dir dist --version 0.1.0
+```
+
+2. Registrá el gestor desde el **ZIP del gestor** y su sidecar:
+
+```powershell
+& .\dist\install.ps1 -LocalZip .\dist\MensorCAD-CLI.zip; exit $LASTEXITCODE
+```
+
+3. **Cerrá la terminal por completo y abrí una nueva.** El bootstrap escribe el `PATH` del usuario, pero una terminal abierta antes conserva el `PATH` viejo; si la nueva se lanza desde una sesión anterior, puede heredarlo igual. Comprobá el comando:
+
+```powershell
+Get-Command mensorcad
+mensorcad --help
+mensorcad --version
+mensorcad status
+```
+
+4. Con AutoCAD cerrado, instalá el complemento desde el **ZIP del complemento**:
+
+```powershell
+mensorcad install -LocalZip .\dist\MensorCAD-Windows.zip
+```
+
+5. Para probar una actualización con el mismo build:
+
+```powershell
+mensorcad update -LocalZip .\dist\MensorCAD-Windows.zip
+```
+
+Si la versión instalada ya coincide, informa «Ya estás actualizado» y no reinstala nada. Si el paquete es anterior, no baja de versión. `status`, `--help` y `--version` siguen siendo de solo lectura.
+
+6. Abrí AutoCAD y comprobá el menú de MensorCAD y el comando `MCHELP`. Después, cerrá AutoCAD y quitá el complemento **sin conexión** con `mensorcad uninstall`: conserva el comando gestor, su carpeta y el `PATH` para reinstalar.
+
+**Rutas relativas:** se resuelven contra la carpeta actual de tu sesión de PowerShell. Si usás `CMD` con una carpeta UNC como directorio actual, `cmd.exe` cambia el directorio de trabajo y la ruta relativa deja de apuntar al ZIP: en ese caso usá una carpeta local NTFS con ruta corta o pasá una **ruta absoluta** con `-LocalZip`.
+
+**Requisitos y alcance:** Windows de 64 bits con **Windows PowerShell 5.1** x64, AutoCAD cerrado mientras instalás o actualizás, y ninguna consulta a GitHub: la ruta `-LocalZip` no descarga nada. Solo el complemento pide UAC; el gestor se instala por usuario.
+
+La ruta remota de arriba sigue vigente para cuando la release esté publicada. Las comprobaciones manuales de esta prueba (terminal nueva, UAC, menú de AutoCAD y `MCHELP`) **no se ejecutan en este repositorio: quedan a tu cargo.** Hay más detalle en [Bootstrap del gestor](docs/cli-bootstrap.md) y [Gestor `mensorcad`](docs/cli-manager.md).
 
 <a id="instalacion-personalizada"></a>
 

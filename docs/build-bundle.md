@@ -32,7 +32,7 @@ python tools/build_bundle.py --output-dir dist --version 0.1.0
 | Versión del gestor | `mensorcad.ps1` debe contener exactamente un marcador `__MENSORCAD_MANAGER_VERSION__`. El gestor no lleva la versión del producto y el motor no lleva la del gestor. |
 | Lanzador CMD | `mensorcad.cmd` se copia byte a byte dentro del ZIP del gestor; debe ser ASCII sin BOM para que CMD lo ejecute igual en cualquier configuración regional. |
 | Bootstrap | `install.ps1` no se estampa, no puede contener marcadores y no viaja dentro de ningún ZIP: es la cuarta salida y se copia sin cambios. |
-| Motor protegido | El motor estampado también se guarda como `MensorCAD.bundle/Install-MensorCAD.ps1` y figura en `bundle.sha256` con su propio hash. Así el gestor puede desinstalar sin conexión y el inventario instalado contiene el motor que lo valida. |
+| Motor protegido | El motor estampado también se guarda como `MensorCAD.bundle/Install-MensorCAD.ps1` y figura en `bundle.sha256` con su propio hash. Así el gestor puede desinstalar sin conexión y el inventario instalado contiene el motor que lo valida. Ese archivo es **opcional** al validar el paquete: los ZIP construidos antes del motor protegido siguen aceptándose con su propio `bundle.sha256`, y el resto de las entradas conserva sus comprobaciones obligatorias. |
 | Inventario | `bundle.sha256` cubre todos los archivos de `MensorCAD.bundle/`, incluido el motor protegido, con rutas relativas POSIX y hashes en minúsculas. |
 | Reproducibilidad | Entradas ordenadas, marca de tiempo fija `1980-01-01` y compresión deflate: dos construcciones con las mismas fuentes producen los mismos bytes. |
 | Colisiones | Ninguna de las seis salidas puede ser el mismo archivo que una fuente: plantilla, bootstrap, gestor o lanzador. Se rechaza antes de escribir. |
@@ -97,6 +97,50 @@ python3 -m unittest discover -s tests -p 'test_cli_distribution.py' -v
 el scratch ignorado, así que también sirve como verificación aislada sin tocar
 `dist` ni una release publicada. Nunca escribe `Program Files`, el `PATH` ni
 pide UAC.
+
+## Prueba local sin publicar
+
+Los seis artefactos permiten probar el circuito completo en Windows, sin
+publicar una release y sin red. Construí una sola vez y usá esos mismos bytes:
+
+```bash
+python tools/build_bundle.py --output-dir dist --version 0.1.0
+```
+
+```powershell
+# 1. Registrar el gestor desde el ZIP del gestor y su sidecar adjunto
+& .\dist\install.ps1 -LocalZip .\dist\MensorCAD-CLI.zip; exit $LASTEXITCODE
+
+# 2. En una terminal nueva (cerrada y abierta por completo): comprobar el comando
+Get-Command mensorcad
+mensorcad --version
+mensorcad --help
+mensorcad status
+
+# 3. Con AutoCAD cerrado: instalar y actualizar desde el ZIP del complemento
+mensorcad install -LocalZip .\dist\MensorCAD-Windows.zip
+mensorcad update  -LocalZip .\dist\MensorCAD-Windows.zip
+
+# 4. Cerrar AutoCAD y desinstalar sin conexión (conserva el gestor)
+mensorcad uninstall
+```
+
+| Tema | Regla |
+|---|---|
+| ZIP del gestor | `MensorCAD-CLI.zip` contiene solo el gestor (`mensorcad.ps1`, `mensorcad.cmd`, `Install-MensorCAD.ps1`) y registra el comando en el `PATH` del usuario. |
+| ZIP del complemento | `MensorCAD-Windows.zip` contiene `MensorCAD.bundle/`, `bundle.sha256`, `Instalar.bat` y `Desinstalar.bat`; lo instala el gestor. |
+| Sidecar | Cada ZIP exige su `.sha256` **en la misma carpeta**, con el mismo nombre más la extensión. |
+| Integridad | El SHA-256 prueba que el ZIP es el elegido; **no autentica al publicador**. Usá solo builds propios. |
+| Local vs remoto | `-LocalZip` no consulta GitHub ni descarga nada. La ruta remota (sin `-LocalZip`) sigue igual y espera la publicación pendiente. |
+| Terminal nueva | El `PATH` de usuario recién lo leen las terminales abiertas después; una terminal nueva lanzada desde una vieja puede heredar el `PATH` anterior. |
+| Rutas relativas | Se resuelven contra la carpeta de la sesión de PowerShell. Con `CMD` y una carpeta UNC de trabajo, `cmd.exe` cambia de directorio: usá una carpeta local NTFS corta o una ruta absoluta. |
+| Manual | UAC, menú de AutoCAD y `MCHELP` son comprobaciones humanas: **no se ejecutan en este repositorio**. |
+
+`Test-CliDistribution.ps1` cubre la ruta local con los ZIP reales del `dist`:
+instala, no reutiliza en la misma versión, rechaza artefacto, sidecar y versión
+equivocados sin ejecutar el paquete, y desinstala sin conexión conservando el
+gestor. Todo ocurre en un destino aislado del scratch ignorado: no escribe
+`Program Files`, no toca el `PATH`, no descarga y no pide UAC.
 
 ## Checklist
 
