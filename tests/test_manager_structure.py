@@ -360,6 +360,50 @@ class ManagerStructureTests(unittest.TestCase):
         self.assertIn("Invoke-MensorCadRemoteChild", self.local_engine, "la transferencia y elevacion se reutilizan")
         self.assertIn("Write-MensorCadRelayedOutput", self.local_engine, "la salida del instalador se retransmite")
 
+    def test_una_sola_cabecera_visible_y_la_presenta_el_proceso_visible(self) -> None:
+        # La identidad la dibuja solo el proceso que la persona mira. El hijo
+        # reenviado recibe la marca reservada y no repite el encabezado, asi la
+        # terminal interactiva y los logs muestran una unica cabecera.
+        self.assertIn(
+            "$script:MensorCadRelayedChild = ($env:MENSORCAD_RELAYED_CHILD -eq '1')",
+            self.installer,
+            "el motor debe derivar la marca reservada del entorno",
+        )
+        banner = self.installer[self.installer.index("function Write-MensorCadBanner") :]
+        banner = banner[: banner.index("\nfunction ")]
+        self.assertIn(
+            "if ($script:MensorCadRelayedChild) {",
+            banner,
+            "el banner debe apagarse en un hijo reenviado",
+        )
+        self.assertLess(
+            banner.index("if ($script:MensorCadRelayedChild) {"),
+            banner.index("if ($script:MensorCadPlainMode) {"),
+            "la marca reservada debe evaluarse antes de cualquier encabezado",
+        )
+        local_install = self.local_engine[self.local_engine.index("function Install-MensorCadLocalPackage") :]
+        local_install = local_install[: local_install.index("\nfunction ")]
+        self.assertEqual(
+            1,
+            local_install.count("Write-MensorCadBanner"),
+            "la instalacion local debe presentar el encabezado exactamente una vez",
+        )
+        self.assertLess(
+            local_install.index("Write-MensorCadBanner"),
+            local_install.index("Write-MensorCadInfo"),
+            "el encabezado debe ir antes del primer informe de la ruta local",
+        )
+        remote_child = self.installer[self.installer.index("function Invoke-MensorCadRemoteChild") :]
+        remote_child = remote_child[: remote_child.index("\nfunction ")]
+        self.assertIn("$env:MENSORCAD_RELAYED_CHILD = '1'", remote_child, "el hijo debe recibir la marca reservada")
+        self.assertIn(
+            "[Environment]::SetEnvironmentVariable('MENSORCAD_RELAYED_CHILD', $previousRelayMark)",
+            remote_child,
+            "la marca reservada debe restaurarse siempre en el proceso visible",
+        )
+        self.assertIn("MENSORCAD_RELAYED_CHILD=1", self.installer, "la ayuda debe listar la marca reservada")
+        self.assertIn("Una sola cabecera visible", self.docs, "la guia del gestor debe documentar la cabecera unica")
+
     def test_engine_local_no_descarga_no_eleva_ni_abre_parametros_nuevos(self) -> None:
         for prohibido in (
             "Invoke-WebRequest",

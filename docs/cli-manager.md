@@ -103,6 +103,13 @@ Qué hace el gestor en esta ruta:
 lo rechaza como argumento adicional antes de la red, la elevación o cualquier
 escritura, y una opción repetida o sin ruta también se rechaza.
 
+**Una sola cabecera visible:** en estas rutas la identidad —`MENSORCAD / AUTOCAD`
+con color, o `MensorCAD - Instalador local para AutoCAD` cuando la salida está
+redirigida— la dibuja una sola vez el gestor, antes de la primera fase. El
+instalador extraído corre con la salida capturada y ya no repite el encabezado:
+su texto se reenvía tal cual debajo. Así la terminal interactiva y los logs
+muestran exactamente la misma cabecera, una sola vez.
+
 **Confianza:** en esta ruta el SHA-256 prueba que el ZIP es el que vos elegiste,
 no autentica a un publicador. Usá solo paquetes que hayas construido vos:
 un ZIP ajeno con su `.sha256` sigue siendo un ZIP ajeno.

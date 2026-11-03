@@ -40,8 +40,11 @@
     Marcas reservadas (no son opciones publicas): Instalar.bat define
     MENSORCAD_BAT_LAUNCHER=1 para marcar el lanzamiento del doble clic, y la
     relanzada de entrega recibe el interruptor reservado -HoldResult para
-    mantener su resultado visible hasta Enter. Ninguna de las dos evita
-    permisos, validaciones ni comprobaciones de administrador.
+    mantener su resultado visible hasta Enter. El motor que otro proceso
+    ejecuta para reenviar su salida recibe MENSORCAD_RELAYED_CHILD=1, que apaga
+    el encabezado porque la identidad la dibuja una sola vez el proceso
+    visible. Ninguna de estas marcas evita permisos, validaciones ni
+    comprobaciones de administrador.
 #>
 [CmdletBinding()]
 param(
@@ -67,6 +70,13 @@ $script:MensorCadScriptRoot = $PSScriptRoot
 $script:MensorCadScriptPath = $PSCommandPath
 $script:MensorCadDotSourced = ($MyInvocation.InvocationName -eq '.')
 $script:MensorCadPlainMode = $false
+# Identidad visible: la presenta una sola vez el proceso que la persona mira
+# (el gestor o esta misma entrada). Cuando el motor se ejecuta como hijo cuya
+# salida otro proceso captura y reenvia, la marca reservada
+# MENSORCAD_RELAYED_CHILD=1 apaga el encabezado para no repetirlo dentro del
+# texto del padre. Sin la marca nada cambia; una version anterior del motor
+# ignora la marca y sigue funcionando igual.
+$script:MensorCadRelayedChild = ($env:MENSORCAD_RELAYED_CHILD -eq '1')
 $script:MensorCadSpinnerIndex = 0
 # Longitud del ultimo texto dibujado por el indicador. Se usa solo para rellenar
 # el sufijo que quedaria visible cuando la linea siguiente es mas corta.
@@ -1136,6 +1146,11 @@ function Write-MensorCadCompactBanner {
 
 function Write-MensorCadBanner {
     param([switch]$ShowVersion)
+    # Un hijo reenviado no presenta identidad: su salida se muestra bajo el
+    # encabezado que ya dibujo el proceso visible.
+    if ($script:MensorCadRelayedChild) {
+        return
+    }
     if ($script:MensorCadPlainMode) {
         Write-Host 'MensorCAD - Instalador local para AutoCAD'
         return
@@ -1446,7 +1461,7 @@ function Write-MensorCadUsage {
     Write-Host '  -FromRelease  Instala desde el ultimo release publicado en GitHub.'
     Write-Host '  -Version      Fija un tag concreto de la release (requiere -FromRelease).'
     Write-Host '  -Help         Muestra esta ayuda.'
-    Write-Host 'Marcas reservadas: MENSORCAD_BAT_LAUNCHER=1 (Instalar.bat); -HoldResult (relanzada de entrega).'
+    Write-Host 'Marcas reservadas: MENSORCAD_BAT_LAUNCHER=1 (Instalar.bat); -HoldResult (relanzada de entrega); MENSORCAD_RELAYED_CHILD=1 (hijo con salida reenviada).'
     Write-Host ''
     Write-Host 'Destino fijo:'
     Write-Host '  <Program Files>\Autodesk\ApplicationPlugins\MensorCAD.bundle'
@@ -1929,12 +1944,19 @@ function Invoke-MensorCadRemoteChild {
         }
     }
     $process = $null
+    # Marca reservada para el hijo: su encabezado lo dibuja este proceso, que es
+    # el visible. Se restaura siempre para no contaminar el resto de la corrida.
+    $previousRelayMark = $env:MENSORCAD_RELAYED_CHILD
     try {
         try {
+            $env:MENSORCAD_RELAYED_CHILD = '1'
             $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentString -NoNewWindow -PassThru -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
         }
         catch {
             throw ('No se pudo ejecutar el instalador extraido: ' + $_.Exception.Message + ' La instalacion no se realizo.')
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('MENSORCAD_RELAYED_CHILD', $previousRelayMark)
         }
         if ($null -eq $process) {
             throw 'No se pudo iniciar el instalador extraido. La instalacion no se realizo.'
@@ -2253,6 +2275,10 @@ function Install-MensorCadLocalPackage {
     if ($script:MensorCadPlainMode -eq $false -and (Test-MensorCadOutputRedirected)) {
         $script:MensorCadPlainMode = $true
     }
+    # Este es el proceso visible de la instalacion local, asi que presenta la
+    # identidad una sola vez y antes de la primera fase. El instalador extraido
+    # se ejecuta con la salida capturada y ya no la repite.
+    Write-MensorCadBanner -ShowVersion
     $workspace = [string]$Package.Workspace
     $stdOutPath = Join-Path -Path $workspace -ChildPath 'install.stdout.log'
     $stdErrPath = Join-Path -Path $workspace -ChildPath 'install.stderr.log'

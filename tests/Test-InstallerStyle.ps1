@@ -142,6 +142,13 @@ function Assert-Equal {
     }
 }
 
+function Assert-LessThan {
+    param([int]$Smaller, [int]$Larger, [string]$Message)
+    if ($Smaller -ge $Larger) {
+        throw ('ASSERT: ' + $Message + ' (esperado: ' + $Smaller + ' < ' + $Larger + ')')
+    }
+}
+
 function Skip-Case {
     param([string]$Reason)
     $script:CaseSkipped = $true
@@ -214,6 +221,61 @@ function Invoke-CliCaptureAll {
 function Join-HostRecords {
     param([string[]]$Records)
     return ($Records -join '')
+}
+
+function Invoke-LocalInstallProbe {
+    # Ejecuta la ruta local real de presentacion con un hijo stub y devuelve lo
+    # que veria la persona (host), el texto reenviado del hijo y la marca que el
+    # hijo recibio. No escribe en Program Files ni pide elevacion.
+    param([switch]$Styled)
+    $root = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('MCRELAY-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $null = New-Item -ItemType Directory -Path $root -Force
+    $stubPath = Join-Path -Path $root -ChildPath 'child.ps1'
+    $markerPath = Join-Path -Path $root -ChildPath 'child-mark.txt'
+    $stub = @'
+param()
+[System.IO.File]::WriteAllText($env:MCRELAY_MARKER, [string]$env:MENSORCAD_RELAYED_CHILD)
+Write-Output 'CHILD-STDOUT'
+exit 0
+'@
+    [System.IO.File]::WriteAllText($stubPath, $stub, (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+    $script:MensorCadPlainMode = $false
+    $script:StyleOutputRedirected = (-not $Styled)
+    $script:StyleVirtualTerminal = [bool]$Styled
+    $script:StyleConsoleWidth = 120
+    $package = [pscustomobject]@{ InstallerPath = $stubPath; Workspace = $root; Version = '9.9.9' }
+    $previousRelayMark = $env:MENSORCAD_RELAYED_CHILD
+    $previousStubMarker = $env:MCRELAY_MARKER
+    $originalOut = [Console]::Out
+    $writer = New-Object 'System.IO.StringWriter'
+    $records = @()
+    $childMark = $null
+    $relayAfter = 'sin-marca'
+    try {
+        $env:MCRELAY_MARKER = $markerPath
+        [Console]::SetOut($writer)
+        $records = Get-HostRecords { Install-MensorCadLocalPackage -Package $package }
+        # Se leen antes de limpiar la carpeta: el caso no conserva residuos.
+        if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+            $childMark = ([string](Get-Content -LiteralPath $markerPath -Raw)).Trim()
+        }
+        $relayAfter = [string]$env:MENSORCAD_RELAYED_CHILD
+    }
+    finally {
+        [Console]::SetOut($originalOut)
+        [Environment]::SetEnvironmentVariable('MCRELAY_MARKER', $previousStubMarker)
+        [Environment]::SetEnvironmentVariable('MENSORCAD_RELAYED_CHILD', $previousRelayMark)
+        if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return [pscustomobject]@{
+        Host = (Join-HostRecords -Records $records)
+        Records = $records
+        Relayed = $writer.ToString()
+        ChildMark = $childMark
+        RelayAfter = $relayAfter
+    }
 }
 
 function Remove-StyleAnsi {
@@ -345,6 +407,58 @@ try {
             [Console]::SetError($originalError)
         }
         Assert-Equal ('ERROR: AutoCAD esta en ejecucion.' + [Environment]::NewLine) $writer.ToString() 'stderr debe conservar el mensaje original.'
+    }
+
+    Test-Case 'Un hijo reenviado no repite el encabezado visible' {
+        # La identidad la dibuja una sola vez el proceso que la persona mira. El
+        # motor ejecutado con la salida capturada no vuelve a presentarse.
+        $script:MensorCadPlainMode = $false
+        $script:StyleVirtualTerminal = $true
+        $script:StyleConsoleWidth = 120
+        $script:MensorCadRelayedChild = $true
+        try {
+            $pretty = Get-HostRecords { Write-MensorCadBanner -ShowVersion }
+        }
+        finally {
+            $script:MensorCadRelayedChild = $false
+        }
+        Assert-Equal 0 $pretty.Count 'Un hijo reenviado no debe dibujar el banner con color.'
+
+        $script:MensorCadPlainMode = $true
+        $script:MensorCadRelayedChild = $true
+        try {
+            $plain = Get-HostRecords { Write-MensorCadBanner }
+        }
+        finally {
+            $script:MensorCadRelayedChild = $false
+        }
+        Assert-Equal 0 $plain.Count 'Un hijo reenviado tampoco debe repetir el encabezado plano.'
+    }
+
+    Test-Case 'La instalacion local presenta el encabezado una sola vez y antes de la primera fase' {
+        # Sin color: el encabezado plano lo dibuja el gestor, no el hijo.
+        $plain = Invoke-LocalInstallProbe
+        $header = 'MensorCAD - Instalador local para AutoCAD'
+        Assert-True ($plain.Records.Count -ge 2) 'La instalacion local debe informar su avance.'
+        Assert-Equal $header $plain.Records[0] 'El encabezado debe ser la primera linea visible.'
+        Assert-Equal 1 ([regex]::Matches($plain.Host, [regex]::Escape($header))).Count 'El encabezado visible debe dibujarse una sola vez.'
+        Assert-True ($plain.Host.Contains('[1/1]')) 'La fase real debe seguir informandose.'
+        Assert-True ($plain.Relayed.Contains('CHILD-STDOUT')) 'La salida del hijo debe reenviarse.'
+        Assert-Equal '1' $plain.ChildMark 'El hijo reenviado debe recibir MENSORCAD_RELAYED_CHILD=1.'
+        Assert-True ([string]::IsNullOrEmpty($plain.RelayAfter)) 'La marca no debe quedar en el proceso visible.'
+
+        # Con color: la identidad es el banner jade del proceso visible y el
+        # encabezado plano no aparece nunca.
+        $styled = Invoke-LocalInstallProbe -Styled
+        $styledText = Remove-StyleAnsi -Text $styled.Host
+        Assert-Equal 1 ([regex]::Matches($styledText, [regex]::Escape('MENSORCAD / AUTOCAD'))).Count 'El banner jade debe dibujarse una sola vez.'
+        Assert-True (-not $styledText.Contains($header)) 'Con color no debe aparecer el encabezado plano.'
+        $brandIndex = $styledText.IndexOf('MENSORCAD / AUTOCAD')
+        $stepIndex = $styledText.IndexOf('[1/1]')
+        Assert-True ($brandIndex -ge 0) 'Con color debe verse la marca del banner.'
+        Assert-True ($stepIndex -ge 0) 'Con color la fase real debe seguir informandose.'
+        Assert-LessThan $brandIndex $stepIndex 'El banner debe ir antes de la primera fase.'
+        Assert-Equal '1' $styled.ChildMark 'Con color el hijo tambien debe recibir la marca reservada.'
     }
 
     Test-Case 'Las fases muestran titulos amigables solo con color' {
