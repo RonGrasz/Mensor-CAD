@@ -7,24 +7,30 @@ Latin-1 cuando no reconoce el BOM, no como UTF-8: un BOM al inicio de
 arranque se rompe con ``CommandNotFoundException``. Estas pruebas reproducen esa
 decodificacion y ejecutan el archivo real.
 
-Nada sale de la maquina: la descarga y la creacion de la carpeta temporal se
-sustituyen por centinelas ANTES de invocar el script, de modo que incluso una
-ejecucion rota por el BOM queda contenida. No se tocan Program Files, no se pide
-UAC, no se autentica, no se cambia configuracion global y no se llama a GitHub.
-La sonda exige Windows PowerShell Desktop 5.1 y se rechaza en cualquier otro
-interprete.
+Nada sale de la maquina ni del proyecto: cada corrida usa una carpeta temporal
+propia dentro de ``odd/artifacts/persistent-cli/bootstrap`` y apunta TEMP, TMP y
+LOCALAPPDATA ahi antes de invocar el script. La API y la descarga del release se
+interceptan las dos con centinelas contados, de modo que ninguna peticion real
+puede salir aunque el arranque por BOM ejecute el flujo completo. No se tocan
+Program Files, no se pide UAC, no se autentica, no se cambia configuracion
+global y no se llama a GitHub. La sonda exige Windows PowerShell Desktop 5.1 y
+se rechaza en cualquier otro interprete.
 """
 
 from __future__ import annotations
 
 import base64
+import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 RAIZ_REPO = Path(__file__).resolve().parents[1]
 BOOTSTRAP = RAIZ_REPO / "install.ps1"
+# Scratch ignorado por git: aqui viven las carpetas aisladas de cada corrida.
+CARPETA_SCRATCH = RAIZ_REPO / "odd" / "artifacts" / "persistent-cli" / "bootstrap"
 POWERSHELL = "powershell.exe"
 WSLPATH = "wslpath"
 # iso-8859-1: la decodificacion que aplica el cliente HTTP al no ver un BOM.
@@ -32,7 +38,11 @@ CODIFICACION_LATIN1 = 28591
 SALIDA_POWERSHELL = "utf-8"
 TIMEOUT_SONDA = 120
 TIMEOUT_RUTA = 60
+# Objetivo del release oficial: no debe consultarse la red real.
+API_LATEST = "https://api.github.com/repos/RonGrasz/Mensor-CAD/releases/latest"
 MARCA_CENTINELA = "CENTINELA-NEW-ITEM"
+MARCA_API = "CENTINELA-API"
+MARCA_DESCARGA = "CENTINELA-DESCARGA"
 TAG_INVALIDO = "v0.1.0/malo"
 # Los dos objetivos exactos de CommandNotFoundException que reporto el usuario.
 CNF_MOJIBAKE = "00EF,00BB,00BF,0023,"  # '#' con el BOM interpretado como Latin-1
@@ -42,22 +52,27 @@ ERROR_TAG_INVALIDO = (
     + TAG_INVALIDO
     + ". Se espera un tag como v1.2.3. No se descargo nada ni se escribio nada.<LF>"
 )
-ERROR_CENTINELA = (
-    "ERROR: No se pudo descargar o ejecutar el instalador de MensorCAD: "
-    + MARCA_CENTINELA
-    + " No se da la instalacion por hecha.<LF>"
+# Error exacto del flujo por defecto: la API controlada corta antes de descargar.
+ERROR_API_CENTINELA = (
+    "ERROR: No se pudo consultar el release oficial de MensorCAD: "
+    + MARCA_API
+    + " No se instalo nada.<LF>"
 )
 
 # Sonda ASCII: lee los bytes reales del asset, los decodifica como Latin-1 y los
 # ejecuta con el mismo punto de entrada publico (scriptblock con parametros).
-# Las fronteras de red y de escritura se interceptan con centinelas. Toda la
-# evidencia se emite como lineas ASCII ``SONDA-*`` para no depender de la
-# codificacion de la consola ni de los mensajes localizados de PowerShell.
+# TEMP, TMP y LOCALAPPDATA se fijan a la carpeta aislada de la corrida ANTES de
+# ejecutar el asset, y las dos fronteras de red (API y descarga) se interceptan
+# con centinelas contados. Toda la evidencia se emite como lineas ASCII
+# ``SONDA-*`` para no depender de la codificacion de la consola ni de los
+# mensajes localizados de PowerShell.
 SONDA = r"""
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $ruta = @@RUTA@@
 $modo = '@@MODO@@'
+$tempAislado = @@TEMP@@
+$localAislado = @@LOCALAPPDATA@@
 
 # Guarda explicita: esta evidencia solo vale en Windows PowerShell Desktop 5.1.
 # En cualquier otro interprete la sonda se rechaza en voz alta en vez de medir
@@ -72,15 +87,32 @@ if (($versionPs.Major -ne 5) -or ($versionPs.Minor -ne 1) -or ($edicionPs -ne 'D
 [Console]::Out.WriteLine('SONDA-VERSION=' + $versionPs.ToString())
 [Console]::Out.WriteLine('SONDA-ARRANQUE=ok')
 
+# Aislamiento real de las carpetas del usuario: todo queda en el scratch del
+# proyecto, nunca en el perfil real ni fuera de la raiz permitida.
+$env:TEMP = $tempAislado
+$env:TMP = $tempAislado
+$env:LOCALAPPDATA = $localAislado
+
 $bytes = [System.IO.File]::ReadAllBytes($ruta)
 $texto = [System.Text.Encoding]::GetEncoding(@@LATIN1@@).GetString($bytes)
 
-# Fronteras sustituidas: ninguna descarga y ninguna escritura real.
+# Red interceptada por completo: API y descarga cuentan y fallan con centinela.
+$global:SondaApi = 0
+$global:SondaApiUri = ''
 $global:SondaDescargas = 0
+$global:SondaUrlDescarga = ''
 $global:SondaEscrituras = 0
+function Invoke-RestMethod {
+    param([switch]$UseBasicParsing, [Parameter(Position = 0)][string]$Uri, [hashtable]$Headers)
+    $global:SondaApi = $global:SondaApi + 1
+    $global:SondaApiUri = [string]$Uri
+    throw [System.InvalidOperationException]::new('@@MARCA_API@@')
+}
 function Invoke-WebRequest {
+    param([switch]$UseBasicParsing, [Parameter(Position = 0)][string]$Uri, [string]$OutFile)
     $global:SondaDescargas = $global:SondaDescargas + 1
-    throw [System.InvalidOperationException]::new('DESCARGA-INESPERADA')
+    $global:SondaUrlDescarga = [string]$Uri
+    throw [System.InvalidOperationException]::new('@@MARCA_DESCARGA@@')
 }
 function New-Item {
     $global:SondaEscrituras = $global:SondaEscrituras + 1
@@ -129,8 +161,13 @@ foreach ($caracter in $captura.ToString().ToCharArray()) {
     else { $limpio = $limpio + $caracter }
 }
 [Console]::Out.WriteLine('SONDA-CODIGO=' + $codigo)
+[Console]::Out.WriteLine('SONDA-API=' + $global:SondaApi)
+[Console]::Out.WriteLine('SONDA-APIURI=' + $global:SondaApiUri)
 [Console]::Out.WriteLine('SONDA-DESCARGAS=' + $global:SondaDescargas)
+[Console]::Out.WriteLine('SONDA-URLDESCARGA=' + $global:SondaUrlDescarga)
 [Console]::Out.WriteLine('SONDA-ESCRITURAS=' + $global:SondaEscrituras)
+[Console]::Out.WriteLine('SONDA-TEMP=' + $env:TEMP)
+[Console]::Out.WriteLine('SONDA-LOCALAPPDATA=' + $env:LOCALAPPDATA)
 [Console]::Out.WriteLine('SONDA-TERMINANTE=' + $terminante)
 [Console]::Out.WriteLine('SONDA-CNF=' + ($cnf -join '|'))
 [Console]::Out.WriteLine('SONDA-ERROR=' + $limpio)
@@ -141,8 +178,13 @@ CLAVES_SONDA = (
     "SONDA-VERSION",
     "SONDA-ARRANQUE",
     "SONDA-CODIGO",
+    "SONDA-API",
+    "SONDA-APIURI",
     "SONDA-DESCARGAS",
+    "SONDA-URLDESCARGA",
     "SONDA-ESCRITURAS",
+    "SONDA-TEMP",
+    "SONDA-LOCALAPPDATA",
     "SONDA-TERMINANTE",
     "SONDA-CNF",
     "SONDA-ERROR",
@@ -170,13 +212,21 @@ def ruta_para_windows(ruta: Path) -> str:
     return completado.stdout.strip()
 
 
-def construir_sonda(modo: str, ruta: str) -> str:
-    literal = "'" + ruta.replace("'", "''") + "'"
+def literal_ps(texto: str) -> str:
+    """Devuelve un literal de cadena de PowerShell 5.1 seguro."""
+    return "'" + texto.replace("'", "''") + "'"
+
+
+def construir_sonda(modo: str, rutas: dict) -> str:
     return (
-        SONDA.replace("@@RUTA@@", literal)
+        SONDA.replace("@@RUTA@@", literal_ps(rutas["ruta"]))
         .replace("@@MODO@@", modo)
         .replace("@@TAG@@", TAG_INVALIDO)
         .replace("@@CENTINELA@@", MARCA_CENTINELA)
+        .replace("@@MARCA_API@@", MARCA_API)
+        .replace("@@MARCA_DESCARGA@@", MARCA_DESCARGA)
+        .replace("@@TEMP@@", literal_ps(rutas["temp"]))
+        .replace("@@LOCALAPPDATA@@", literal_ps(rutas["localappdata"]))
         .replace("@@LATIN1@@", str(CODIFICACION_LATIN1))
     )
 
@@ -213,9 +263,33 @@ class BootstrapEncodingTests(unittest.TestCase):
 
     @classmethod
     def ejecutar(cls, modo: str):
-        """Lanza una sonda aislada de punta a punta con tiempo acotado."""
-        sonda = construir_sonda(modo, ruta_para_windows(BOOTSTRAP))
+        """Lanza una sonda aislada de punta a punta con tiempo acotado.
+
+        La carpeta temporal de Python se crea dentro del scratch ignorado del
+        proyecto y se entrega a Windows ya convertida. TEMP, TMP y
+        LOCALAPPDATA del proceso hijo apuntan ahi: ni el perfil real ni rutas
+        fuera de la raiz permitida se tocan, incluso si el asset arranca mal.
+        """
+        CARPETA_SCRATCH.mkdir(parents=True, exist_ok=True)
+        raiz = tempfile.TemporaryDirectory(
+            prefix="bootstrap-encoding-", dir=str(CARPETA_SCRATCH)
+        )
+        cls.addClassCleanup(raiz.cleanup)
+        temp = Path(raiz.name) / "temp"
+        localappdata = Path(raiz.name) / "localappdata"
+        temp.mkdir()
+        localappdata.mkdir()
+        rutas = {
+            "ruta": ruta_para_windows(BOOTSTRAP),
+            "temp": ruta_para_windows(temp),
+            "localappdata": ruta_para_windows(localappdata),
+        }
+        sonda = construir_sonda(modo, rutas)
         codificada = base64.b64encode(sonda.encode("utf-16-le")).decode("ascii")
+        entorno = dict(os.environ)
+        entorno["TEMP"] = rutas["temp"]
+        entorno["TMP"] = rutas["temp"]
+        entorno["LOCALAPPDATA"] = rutas["localappdata"]
         completado = subprocess.run(
             [
                 POWERSHELL,
@@ -234,13 +308,14 @@ class BootstrapEncodingTests(unittest.TestCase):
             timeout=TIMEOUT_SONDA,
             check=False,
             cwd=str(RAIZ_REPO),
+            env=entorno,
         )
-        return completado, leer_sonda(completado.stdout)
+        return completado, leer_sonda(completado.stdout), rutas, temp, localappdata
 
     def test_la_sonda_corre_en_windows_powershell_desktop_51(self) -> None:
         # La evidencia solo es valida en el motor que documenta el producto: la
         # sonda rechaza cualquier otro interprete antes de medir el arranque.
-        _, valores = self.sonda_entrada
+        _, valores, _, _, _ = self.sonda_entrada
         self.assertEqual(
             valores["SONDA-INTERPRETE"],
             "Desktop-5.1",
@@ -252,7 +327,7 @@ class BootstrapEncodingTests(unittest.TestCase):
         )
 
     def test_el_arranque_no_reporta_comandos_inexistentes(self) -> None:
-        completado, valores = self.sonda_entrada
+        completado, valores, _, _, _ = self.sonda_entrada
         self.assertEqual(
             valores["SONDA-ARRANQUE"],
             "ok",
@@ -276,8 +351,11 @@ class BootstrapEncodingTests(unittest.TestCase):
             f"PowerShell reporto comandos inexistentes al arrancar: {completado.stderr.strip()}",
         )
 
-    def test_la_entrada_por_defecto_termina_en_el_centinela_sin_descargar(self) -> None:
-        completado, valores = self.sonda_entrada
+    def test_la_entrada_por_defecto_usa_la_api_oficial_sin_descargar(self) -> None:
+        # El flujo por defecto resuelve el release UNA vez. La sonda intercepta
+        # Invoke-RestMethod y lo corta con un centinela: la evidencia demuestra
+        # que la unica frontera que se toca es la API oficial, sin red real.
+        completado, valores, _, _, _ = self.sonda_entrada
         self.assertEqual(completado.returncode, 0, completado.stderr.strip())
         self.assertEqual(
             completado.stderr,
@@ -285,17 +363,59 @@ class BootstrapEncodingTests(unittest.TestCase):
             "el stderr del proceso debe quedar vacio: solo la sonda escribe en stdout",
         )
         self.assertEqual(valores["SONDA-CODIGO"], "1", "el codigo de salida debe ser 1")
+        self.assertEqual(valores["SONDA-API"], "1", "se resuelve el release una sola vez")
+        self.assertEqual(
+            valores["SONDA-APIURI"],
+            API_LATEST,
+            "la consulta debe ir a la API del repositorio oficial",
+        )
         self.assertEqual(valores["SONDA-DESCARGAS"], "0", "no debe descargarse nada")
-        self.assertEqual(valores["SONDA-ESCRITURAS"], "1", "solo se crea la carpeta propia")
+        self.assertEqual(
+            valores["SONDA-URLDESCARGA"], "", "no debe existir URL de descarga"
+        )
+        self.assertEqual(
+            valores["SONDA-ESCRITURAS"],
+            "0",
+            "el bootstrap no debe usar cmdlets de escritura (usa .NET dentro de la carpeta aislada)",
+        )
         self.assertEqual(valores["SONDA-TERMINANTE"], "ninguna", "no debe haber error terminante")
+        self.assertEqual(valores["SONDA-CNF"], "", "el arranque no puede reportar comandos rotos")
         self.assertEqual(
             valores["SONDA-ERROR"],
-            ERROR_CENTINELA,
-            "el error controlado del centinela es el unico que puede escribirse en stderr",
+            ERROR_API_CENTINELA,
+            "el error controlado de la API es el unico que puede escribirse en stderr",
+        )
+
+    def test_la_entrada_por_defecto_aisla_carpetas_y_no_persiste_archivos(self) -> None:
+        completado, valores, rutas, temp, localappdata = self.sonda_entrada
+        self.assertEqual(completado.returncode, 0, completado.stderr.strip())
+        self.assertEqual(
+            valores["SONDA-TEMP"],
+            rutas["temp"],
+            "el proceso hijo debe ver TEMP aislado en el scratch del proyecto",
+        )
+        self.assertEqual(
+            valores["SONDA-LOCALAPPDATA"],
+            rutas["localappdata"],
+            "el proceso hijo debe ver LOCALAPPDATA aislado en el scratch del proyecto",
+        )
+        self.assertEqual(
+            [ruta.name for ruta in temp.iterdir()],
+            [],
+            "la carpeta temporal aislada debe quedar vacia (sin carpetas propias colgadas)",
+        )
+        self.assertEqual(
+            [ruta.name for ruta in localappdata.iterdir()],
+            [],
+            "la carpeta LOCALAPPDATA aislada debe quedar vacia",
+        )
+        self.assertFalse(
+            (localappdata / "MensorCAD").exists(),
+            "no debe crearse la carpeta del gestor antes de validar el release",
         )
 
     def test_el_tag_invalido_se_rechaza_antes_de_la_red_y_de_escrituras(self) -> None:
-        completado, valores = self.sonda_tag
+        completado, valores, rutas, temp, localappdata = self.sonda_tag
         self.assertEqual(completado.returncode, 0, completado.stderr.strip())
         self.assertEqual(
             completado.stderr,
@@ -303,12 +423,24 @@ class BootstrapEncodingTests(unittest.TestCase):
             "el stderr del proceso debe quedar vacio: solo la sonda escribe en stdout",
         )
         self.assertEqual(valores["SONDA-CODIGO"], "1", "el tag invalido debe salir con 1")
+        self.assertEqual(valores["SONDA-API"], "0", "el tag invalido no puede consultar la API")
+        self.assertEqual(valores["SONDA-APIURI"], "", "no debe existir URI de API")
         self.assertEqual(valores["SONDA-DESCARGAS"], "0", "el tag invalido no puede descargar")
+        self.assertEqual(
+            valores["SONDA-URLDESCARGA"], "", "no debe existir URL de descarga"
+        )
         self.assertEqual(valores["SONDA-ESCRITURAS"], "0", "el tag invalido no puede escribir")
         self.assertEqual(valores["SONDA-TERMINANTE"], "ninguna", "no debe haber error terminante")
         self.assertEqual(valores["SONDA-CNF"], "", "el arranque no puede reportar comandos rotos")
         self.assertEqual(valores["SONDA-ERROR"], ERROR_TAG_INVALIDO)
-
+        self.assertEqual(valores["SONDA-TEMP"], rutas["temp"], "TEMP aislado en el scratch")
+        self.assertEqual(
+            valores["SONDA-LOCALAPPDATA"], rutas["localappdata"], "LOCALAPPDATA aislado en el scratch"
+        )
+        self.assertEqual([ruta.name for ruta in temp.iterdir()], [], "sin escrituras temporales")
+        self.assertEqual(
+            [ruta.name for ruta in localappdata.iterdir()], [], "sin escrituras en el perfil aislado"
+        )
 
 if __name__ == "__main__":
     unittest.main()
