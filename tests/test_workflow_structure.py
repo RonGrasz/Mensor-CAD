@@ -240,7 +240,7 @@ class WorkflowStructureTests(unittest.TestCase):
         for fragmento in (
             "mensorcad uninstall",
             "Desinstalar.bat",
-            "conserva el comando gestor",
+            "queda instalado",
             "permanecen en tus dibujos",
         ):
             self.assertIn(fragmento, section, f"la desinstalacion no menciona {fragmento}")
@@ -250,9 +250,9 @@ class WorkflowStructureTests(unittest.TestCase):
         section = self.readme_section("## Antes de instalar")
         for fragmento in (
             "Windows de 64 bits",
-            "Windows PowerShell 5.1",
-            "administrador",
-            "cierra AutoCAD",
+            "Windows 10 u 11",
+            "permiso de administrador",
+            "Cierra AutoCAD",
         ):
             self.assertIn(fragmento, section, f"los requisitos no mencionan {fragmento}")
 
