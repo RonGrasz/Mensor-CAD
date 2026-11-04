@@ -154,8 +154,11 @@ function Start-CapturedProcess {
     if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
         $psi.WorkingDirectory = $WorkingDirectory
     }
-    $psi.StandardOutputEncoding = [Console]::OutputEncoding
-    $psi.StandardErrorEncoding = [Console]::OutputEncoding
+    # La salida del gestor redirigida es UTF-8: se decodifica con la
+    # misma codificacion explicita para no depender de la pagina de codigos del host.
+    $capturedEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    $psi.StandardOutputEncoding = $capturedEncoding
+    $psi.StandardErrorEncoding = $capturedEncoding
     $process = [System.Diagnostics.Process]::Start($psi)
     $outTask = $process.StandardOutput.ReadToEndAsync()
     $errTask = $process.StandardError.ReadToEndAsync()

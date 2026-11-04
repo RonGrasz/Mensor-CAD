@@ -200,8 +200,11 @@ function Start-CapturedProcess {
     if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
         $psi.WorkingDirectory = $WorkingDirectory
     }
-    $psi.StandardOutputEncoding = [Console]::OutputEncoding
-    $psi.StandardErrorEncoding = [Console]::OutputEncoding
+    # La salida del gestor redirigida es UTF-8: se decodifica con la
+    # misma codificacion explicita para no depender de la pagina de codigos del host.
+    $capturedEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    $psi.StandardOutputEncoding = $capturedEncoding
+    $psi.StandardErrorEncoding = $capturedEncoding
     $process = [System.Diagnostics.Process]::Start($psi)
     $outTask = $process.StandardOutput.ReadToEndAsync()
     $errTask = $process.StandardError.ReadToEndAsync()
@@ -402,6 +405,9 @@ function Write-ManagerFixture {
     # prueba: la carpeta Program Files y la resolucion del tag de release.
     $content = @'
 param([string]$Action, [string]$Manager, [string]$Engine, [string]$IsolatedRoot, [string]$Version)
+# El fixture escribe la salida del gestor: la emite en UTF-8, igual que el
+# punto de entrada real, para no depender de la pagina de codigos del host.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
 $ErrorActionPreference = 'Stop'
 # El motor tiene su propio -Version en el bloque param: al hacer dot-source lo
 # deja vacio en este ambito. La version fixture se captura antes y con otro
@@ -463,6 +469,9 @@ function Write-LocalChildWrapper {
     # paquete que se ejecuta viaja dentro del ZIP construido, sin copias.
     $content = @'
 param([string]$Mode, [string]$EnginePath, [string]$IsolatedRoot, [string]$Evidence)
+# El fixture escribe la salida del gestor: la emite en UTF-8, igual que el
+# punto de entrada real, para no depender de la pagina de codigos del host.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
 $ErrorActionPreference = 'Stop'
 function Add-LocalChildEvidence {
     param([string]$Line)
@@ -499,6 +508,9 @@ param(
     [string]$Evidence,
     [string]$ChildWrapper
 )
+# El fixture escribe la salida del gestor: la emite en UTF-8, igual que el
+# punto de entrada real, para no depender de la pagina de codigos del host.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
 $ErrorActionPreference = 'Stop'
 . $Manager
 . $Engine
@@ -536,8 +548,11 @@ function Invoke-LocalChildProcess {
     if (Test-Path -LiteralPath $IsolatedRoot -PathType Container) {
         $psi.WorkingDirectory = $IsolatedRoot
     }
-    $psi.StandardOutputEncoding = [Console]::OutputEncoding
-    $psi.StandardErrorEncoding = [Console]::OutputEncoding
+    # La salida del gestor redirigida es UTF-8: se decodifica con la
+    # misma codificacion explicita para no depender de la pagina de codigos del host.
+    $capturedEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    $psi.StandardOutputEncoding = $capturedEncoding
+    $psi.StandardErrorEncoding = $capturedEncoding
     $psi.Arguments = @(
         '-NoProfile',
         '-NonInteractive',

@@ -360,6 +360,22 @@ class ManagerStructureTests(unittest.TestCase):
         self.assertIn("Invoke-MensorCadRemoteChild", self.local_engine, "la transferencia y elevacion se reutilizan")
         self.assertIn("Write-MensorCadRelayedOutput", self.local_engine, "la salida del instalador se retransmite")
 
+    def test_la_salida_redirigida_es_utf8_y_no_toca_la_terminal(self) -> None:
+        # Un log o una tuberia no dependen de la pagina de codigos del host: con
+        # redireccion el gestor escribe UTF-8; sin redireccion no cambia nada.
+        self.assertIn("if ([Console]::IsOutputRedirected) {", self.manager)
+        self.assertIn(
+            "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)",
+            self.manager,
+            "la salida redirigida debe fijar UTF-8 sin BOM",
+        )
+        entrada = self.manager[self.manager.index("if ($script:MensorCadManagerDotSourced) { return }") :]
+        self.assertLess(
+            entrada.index("if ([Console]::IsOutputRedirected) {"),
+            entrada.index("Get-MensorCadManagerCommand -Arguments $args"),
+            "la codificacion se decide antes de emitir la primera linea",
+        )
+
     def test_una_sola_cabecera_visible_y_la_presenta_el_proceso_visible(self) -> None:
         # La identidad la dibuja solo el proceso que la persona mira. El hijo
         # reenviado recibe la marca reservada y no repite el encabezado, asi la

@@ -496,6 +496,19 @@ function Invoke-MensorCadManagerUninstall {
 # pruebas aisladas no debe ejecutar la CLI ni terminar el proceso llamador.
 if ($script:MensorCadManagerDotSourced) { return }
 
+# Salida redirigida: siempre UTF-8. Un log o una tuberia no pueden depender de la
+# pagina de codigos de la consola que los captura, y los acentos de los mensajes
+# se conservan igual en Windows, en CI y en cualquier otra terminal. Sin
+# redireccion no se toca nada: la terminal del usuario conserva su codificacion.
+if ([Console]::IsOutputRedirected) {
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    }
+    catch {
+        # Sin consola propia el cambio no aplica: se conserva la salida actual.
+    }
+}
+
 $managerCommand = Get-MensorCadManagerCommand -Arguments $args
 $managerExitCode = 0
 if ($null -ne $managerCommand.Error) {
