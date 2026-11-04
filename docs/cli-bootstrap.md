@@ -15,9 +15,10 @@ La instalacion tiene dos pasos a proposito:
 2. el usuario decide cuando instalar o actualizar el complemento con
    `mensorcad install`.
 
-Los assets de release de esta etapa todavia no estan publicados; estos comandos
-funcionaran cuando el release oficial incluya `install.ps1`, `MensorCAD-CLI.zip`
-y `MensorCAD-CLI.zip.sha256`. La ruta local no depende de esa publicacion.
+La release oficial publica los seis artefactos del paquete, incluidos
+`install.ps1`, `MensorCAD-CLI.zip` y `MensorCAD-CLI.zip.sha256`; el comando corto
+de abajo usa ese `install.ps1`. La ruta local no depende de la publicacion y
+sirve para probar una construccion propia antes de publicar.
 
 ---
 

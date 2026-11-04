@@ -323,10 +323,12 @@ class CliBootstrapDocsTests(unittest.TestCase):
         self.assertIn("PATH de maquina", self.docs_flat)
         self.assertIn("una sola vez", self.docs_flat)
 
-    def test_no_promete_assets_publicados_ni_autenticacion_de_editor(self) -> None:
+    def test_describe_la_publicacion_y_no_autentica_al_editor(self) -> None:
+        # La release oficial publica los seis artefactos; la guia lo dice y a la
+        # vez conserva el limite de confianza del SHA-256.
         self.assertTrue(
-            re.search(r"no est\wn publicad|todavia no|todav\wa no", self.docs_flat, re.IGNORECASE),
-            "la guia no debe afirmar que los assets ya estan publicados",
+            re.search(r"publica los seis artefactos", self.docs_flat, re.IGNORECASE),
+            "la guia debe describir el release que publica los seis artefactos",
         )
         self.assertTrue(
             re.search(r"no autentica al publicador|no autentica el origen", self.docs_flat, re.IGNORECASE),

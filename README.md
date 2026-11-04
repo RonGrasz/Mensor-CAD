@@ -55,10 +55,6 @@ desde la terminal.
   <a href="https://github.com/RonGrasz/Mensor-CAD/releases/latest">Ver la última versión y sus novedades</a>
 </p>
 
-> **Estado de publicación:** el flujo de dos pasos llega con la release
-> `v0.2.0`. Mientras la última release siga siendo anterior, el comando del paso
-> 1 ejecuta el instalador de un solo paso de esa release y no registra el gestor.
-
 <a id="instalacion-cli"></a>
 
 ### Paso 1 · Instalar el comando gestor
