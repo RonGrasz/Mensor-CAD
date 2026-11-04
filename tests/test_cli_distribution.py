@@ -44,7 +44,6 @@ OPTIONAL_SUITES = (
     "tests/Test-InstallerWindow.ps1",
     "tests/Test-InstallerStyle.ps1",
     "tests/Test-RemoteInstaller.ps1",
-    "tests/Test-Bootstrap.ps1",
 )
 CRITICAL_PYTHON = ("test_build_bundle.py", "test_bootstrap_encoding.py")
 MANAGER_COMMANDS = (

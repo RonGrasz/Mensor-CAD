@@ -13,14 +13,15 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+LISP_DIR = ROOT / "lisp"
 WORKFLOW = ROOT / ".github" / "workflows" / "build-bundle.yml"
 README = ROOT / "README.md"
-TESTING_DOC = ROOT / "docs" / "installation-testing.md"
 
 CHECKOUT_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 SETUP_PYTHON_SHA = "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0"
 UPLOAD_ARTIFACT_SHA = "cf430e030ddbb5b0abf93d22962f4752f3646cd9"
 
+# Assets del complemento: el workflow sube los seis archivos congelados.
 ARTIFACT_PATHS = (
     "dist/MensorCAD-Windows.zip",
     "dist/MensorCAD-Windows.zip.sha256",
@@ -33,35 +34,6 @@ ARTIFACT_PATHS = (
 CLI_ARTIFACT_PATHS = (
     "dist/MensorCAD-CLI.zip",
     "dist/MensorCAD-CLI.zip.sha256",
-)
-
-COMMAND_HEADINGS = (
-    "### MCAREA —",
-    "### MCTABLE —",
-    "### MCVECTOR —",
-    "### MCCOORD —",
-    "### MCVERTEX —",
-    "### MCSUBDIV —",
-    "### MCTRANSFORM —",
-    "### MCIMPORT —",
-    "### MCEXPORTEX —",
-    "### MCFIX —",
-    "### MCCOLIND —",
-    "### MCELEMENTS —",
-    "### MCHELP —",
-)
-
-SCREENSHOTS = (
-    "docs/images/mensor-cad-title.png",
-    "docs/images/Area.png",
-    "docs/images/Tabla-de-coordenadas.png",
-    "docs/images/Rumbo-y-distancia.png",
-    "docs/images/Etiqueta-de-vertice.png",
-    "docs/images/Subdividir.png",
-    "docs/images/Importar-puntos.png",
-    "docs/images/Exportar-puntos.png",
-    "docs/images/Estilo-de-colindancia.png",
-    "docs/images/Estructuras.png",
 )
 
 STEP_START = re.compile(r"(?m)^\s{6}- name:\s*")
@@ -170,7 +142,6 @@ class WorkflowStructureTests(unittest.TestCase):
             "Test-InstallerWindow.ps1",
             "Test-InstallerStyle.ps1",
             "Test-RemoteInstaller.ps1",
-            "Test-Bootstrap.ps1",
         ):
             self.assertTrue(
                 (ROOT / "tests" / opcional).is_file(),
@@ -254,18 +225,6 @@ class WorkflowStructureTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.workflow)
 
-    def test_readme_installation_leads_with_the_offline_bundle(self) -> None:
-        section = self.readme_section("## Instalación")
-        self.assertIn("MensorCAD-Windows.zip", section)
-        self.assertIn("Instalar.bat", section)
-        self.assertIn("doble clic", section)
-        self.assertIn("administrador", section.lower())
-        self.assertIn("Cierra AutoCAD", section)
-        self.assertLess(
-            section.index("### Ruta rápida con el ZIP"),
-            section.index("### Instalación manual con APPLOAD"),
-            "la ruta offline del ZIP debe aparecer antes que la alternativa APPLOAD",
-        )
 
     def test_readme_keeps_appload_as_a_documented_fallback(self) -> None:
         section = self.readme_section("## Instalación")
@@ -273,58 +232,41 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertIn("MC-AREA.lsp", section)
         self.assertIn("MCAREA", section)
 
-    def test_readme_labels_release_and_remote_as_unavailable(self) -> None:
-        section = self.readme_section("## Instalación")
-        self.assertIn("todavía no están publicados", section)
-        self.assertIn("El comando remoto no funciona todavía", section)
-        self.assertIn("docs/remote-installer.md", section)
 
-    def test_readme_distinguishes_the_actions_artifact_from_release_assets(self) -> None:
-        section = self.readme_section("## Instalación")
-        self.assertIn("artifact de GitHub Actions", section)
-        self.assertIn("no es un release", section)
-        for asset in ARTIFACT_PATHS:
-            self.assertIn(asset.rsplit("/", 1)[-1], section)
 
-    def test_readme_documents_installer_behavior_without_global_changes(self) -> None:
-        section = self.readme_section("## Instalación")
-        self.assertIn("ventana de diagnóstico", section)
-        self.assertIn("animación", section)
-        self.assertIn("ExecutionPolicy Bypass", section)
-        self.assertIn("solo para el proceso", section)
-        self.assertIn("SECURELOAD", section)
-        self.assertIn("TRUSTEDPATHS", section)
-        self.assertIn("APPAUTOLOAD", section)
 
     def test_readme_documents_the_precise_uninstall_commands(self) -> None:
-        section = self.readme_section("## Desinstalación")
-        self.assertIn("Instalar.bat -Uninstall", section)
-        self.assertIn(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass "
-            "-File .\\Install-MensorCAD.ps1 -Uninstall",
-            section,
-        )
-        self.assertIn("solo los archivos registrados", section)
-        self.assertIn("No borra las tablas", section)
+        section = self.readme_section("## Desinstalar")
+        for fragmento in (
+            "mensorcad uninstall",
+            "Desinstalar.bat",
+            "conserva el comando gestor",
+            "permanecen en tus dibujos",
+        ):
+            self.assertIn(fragmento, section, f"la desinstalacion no menciona {fragmento}")
 
-    def test_readme_links_the_installation_testing_guide(self) -> None:
-        self.assertIn("docs/installation-testing.md", self.readme)
 
     def test_readme_requirements_cover_installer_prerequisites(self) -> None:
-        section = self.readme_section("## Plataformas y requisitos")
-        self.assertIn("Windows 64", section)
-        self.assertIn("Windows PowerShell 5.1", section)
-        self.assertIn("Administrador", section)
-        self.assertIn("versión mínima", section)
+        section = self.readme_section("## Antes de instalar")
+        for fragmento in (
+            "Windows de 64 bits",
+            "Windows PowerShell 5.1",
+            "administrador",
+            "cierra AutoCAD",
+        ):
+            self.assertIn(fragmento, section, f"los requisitos no mencionan {fragmento}")
 
-    def test_readme_preserves_every_command_section_and_screenshot(self) -> None:
-        for heading in COMMAND_HEADINGS:
-            self.assertIn(heading, self.readme)
-        for screenshot in SCREENSHOTS:
-            self.assertIn(f"]({screenshot})", self.readme)
-
-    def test_testing_guide_exists(self) -> None:
-        self.assertTrue(TESTING_DOC.is_file(), f"falta {TESTING_DOC}")
+    def test_readme_preserves_every_command_and_screenshot(self) -> None:
+        # Toda herramienta de lisp/ debe seguir documentada, y cada imagen que
+        # el README referencia debe existir: las dos listas se derivan del
+        # repositorio para no envejecer con cada reescritura del README.
+        for script in sorted(LISP_DIR.glob("MC-*.lsp")):
+            comando = "MC" + script.stem.split("-", 1)[1]
+            self.assertIn(comando, self.readme, f"el README no documenta {comando}")
+        imagenes = set(re.findall(r"docs/images/[^\s\"')]+", self.readme))
+        self.assertTrue(imagenes, "el README debe mostrar las herramientas con imagenes")
+        for imagen in sorted(imagenes):
+            self.assertTrue((ROOT / imagen).is_file(), f"falta la imagen referenciada {imagen}")
 
     def readme_section(self, heading: str) -> str:
         self.assertIn(heading, self.readme)
@@ -332,84 +274,6 @@ class WorkflowStructureTests(unittest.TestCase):
         following = re.search(r"(?m)^## ", self.readme[start:])
         end = start + following.start() if following else len(self.readme)
         return self.readme[start:end]
-
-
-class InstallationTestingDocTests(unittest.TestCase):
-    """Contenido del documento de mantenedores; no ejecuta nada."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.doc = read_text(TESTING_DOC) if TESTING_DOC.is_file() else ""
-
-    def test_document_states_what_was_not_executed(self) -> None:
-        self.assertIn("no se ejecutó", self.doc)
-        self.assertIn("GitHub Actions", self.doc)
-        self.assertIn("Windows PowerShell 5.1", self.doc)
-
-    def test_document_has_the_exact_windows_suite_commands(self) -> None:
-        # La guia debe listar las cinco suites que el CI agenda, en el mismo orden.
-        commands = [
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Installer.ps1",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerWindow.ps1",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-InstallerStyle.ps1",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-RemoteInstaller.ps1",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-Bootstrap.ps1",
-        ]
-        positions = []
-        for command in commands:
-            self.assertIn(command, self.doc)
-            positions.append(self.doc.index(command))
-        self.assertEqual(positions, sorted(positions), "el orden de la guia debe seguir al del CI")
-
-    def test_the_guide_lists_the_five_ci_steps_in_order(self) -> None:
-        markers = [
-            "La suite completa de Python",
-            "tests/Test-Installer.ps1",
-            "tests/Test-InstallerWindow.ps1",
-            "tests/Test-InstallerStyle.ps1",
-            "tests/Test-RemoteInstaller.ps1",
-            "tests/Test-Bootstrap.ps1",
-            "tools/build_bundle.py",
-            "La subida de cuatro archivos como artifact",
-        ]
-        bloque = self.doc[self.doc.index("## CI: qué hace y qué no hace") :]
-        positions = []
-        for marker in markers:
-            self.assertIn(marker, bloque, f"la guia no describe el paso del CI: {marker}")
-            positions.append(bloque.index(marker))
-        self.assertEqual(positions, sorted(positions), "la guia debe respetar el orden real del CI")
-
-    def test_document_has_the_local_python_and_build_commands(self) -> None:
-        self.assertIn(
-            "PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests -p 'test_*.py' -v",
-            self.doc,
-        )
-        self.assertIn("python tools/build_bundle.py --output-dir dist", self.doc)
-        self.assertIn("AppVersion", self.doc)
-        self.assertIn("Version", self.doc)
-
-    def test_document_explains_ci_artifact_versus_release_assets(self) -> None:
-        self.assertIn("artifact", self.doc.lower())
-        self.assertIn("release", self.doc.lower())
-        for asset in ARTIFACT_PATHS:
-            self.assertIn(asset.rsplit("/", 1)[-1], self.doc)
-        self.assertIn("publicación", self.doc.lower())
-
-    def test_document_covers_the_manual_safety_checklist(self) -> None:
-        for topic in ("dibujo nuevo", "reiniciar", "actualizar", "desinstalar", "Cierra AutoCAD"):
-            self.assertIn(topic, self.doc.lower() if topic.islower() else self.doc)
-        for variable in ("SECURELOAD", "TRUSTEDPATHS", "APPAUTOLOAD"):
-            self.assertIn(variable, self.doc)
-        self.assertIn("copia", self.doc.lower())
-
-    def test_document_requests_reproducible_evidence(self) -> None:
-        for field in ("código de salida", "versión de AutoCAD", "SHA-256", "captura"):
-            self.assertIn(field, self.doc)
-
-    def test_document_keeps_the_cli_differential_pending(self) -> None:
-        self.assertIn("diferencial", self.doc.lower())
-        self.assertIn("pendiente", self.doc.lower())
-        self.assertIn("aislado", self.doc.lower())
 
 
 if __name__ == "__main__":

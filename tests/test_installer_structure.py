@@ -17,7 +17,6 @@ INSTALLER = ROOT / "Install-MensorCAD.ps1"
 BAT = ROOT / "Instalar.bat"
 WINDOWS_TESTS = ROOT / "tests" / "Test-Installer.ps1"
 WINDOW_TESTS = ROOT / "tests" / "Test-InstallerWindow.ps1"
-DOCS = ROOT / "docs" / "local-installer.md"
 
 REMOTE_SECTION_MARKER = "# Entrada remota: descarga y verificacion de releases de GitHub"
 
@@ -54,7 +53,6 @@ class InstallerStructureTests(unittest.TestCase):
         cls.bat = read_text(BAT)
         cls.windows_tests = read_text(WINDOWS_TESTS)
         cls.window_tests = read_text(WINDOW_TESTS)
-        cls.docs = read_text(DOCS)
         cls.top_param_block = cls._top_param_block(cls.installer)
         cls.local_branch, _, cls.remote_branch = cls.installer.partition(REMOTE_SECTION_MARKER)
 
@@ -65,7 +63,7 @@ class InstallerStructureTests(unittest.TestCase):
         return text[start : end + 2]
 
     def test_expected_files_exist(self) -> None:
-        for path in (INSTALLER, BAT, WINDOWS_TESTS, WINDOW_TESTS, DOCS):
+        for path in (INSTALLER, BAT, WINDOWS_TESTS, WINDOW_TESTS):
             self.assertTrue(path.is_file(), f"falta {path}")
 
     def test_public_switches_are_limited_to_documented_interface(self) -> None:
@@ -75,7 +73,6 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertNotIn("Destination", block)
         self.assertNotIn("SourceRoot", block)
         self.assertNotIn("Url", block)
-        self.assertIn("-HoldResult", self.docs, "la documentacion local debe mencionar -HoldResult")
         # -HoldResult es un interruptor reservado; no aparece como opcion publica
         # usable desde la entrada remota, solo como senal interna de la relanzada.
 
@@ -410,29 +407,6 @@ class InstallerStructureTests(unittest.TestCase):
         self.assertIn("Assert-Equal 1 $failure.ExitCode", caso)
         self.assertIn("$failure.Stderr -match", caso)
         self.assertIn("MensorCAD.bundle", caso)
-
-    def test_docs_document_interface_marker_and_limits(self) -> None:
-        for fragment in (
-            "-Uninstall",
-            "-NoAnimation",
-            "-Help",
-            "Program Files",
-            "MensorCAD.bundle",
-            "bundle.sha256",
-            ".mensorcad-install.json",
-            "mensorcad-bundle-marker",
-            "sourceManifestSha256",
-            "UAC",
-            "ExecutionPolicy Bypass",
-            "Windows PowerShell 5.1",
-            "Test-Installer.ps1",
-            "FromRelease",
-            "64 bits",
-            "Sysnative",
-            "no autentica",
-        ):
-            self.assertIn(fragment, self.docs, f"la documentacion no menciona {fragment}")
-        self.assertIn("instalación", self.docs)  # documento en espanol
 
     def test_ps1_files_are_utf8_with_bom_for_windows_powershell_51(self) -> None:
         for path in (INSTALLER, WINDOWS_TESTS, WINDOW_TESTS):
@@ -931,28 +905,6 @@ class InstallerStructureTests(unittest.TestCase):
         )
         self.assertIn("Assert-Equal '' $handoff.Stderr.Trim()", caso)
 
-    def test_docs_document_single_window_limits_and_manual_proof(self) -> None:
-        for fragment in (
-            "Ventana única",
-            "UAC",
-            "Windows Terminal",
-            "closeOnExit",
-            "fail-open",
-            "prueba visual",
-            "Test-InstallerWindow.ps1",
-            "MENSORCAD_BAT_LAUNCHER",
-            "HoldResult",
-            "continua en la ventana elevada",
-            "sentinel privado",
-            "75",
-            "wt.exe",
-            "ventana nueva",
-            "EncodedCommand",
-            "banner",
-            "indicador",
-        ):
-            self.assertIn(fragment, self.docs, f"la documentacion no menciona {fragment}")
-        self.assertNotIn("oculta la consola", self.docs, "la documentacion no debe describir la ruta obsoleta")
 
 
 if __name__ == "__main__":

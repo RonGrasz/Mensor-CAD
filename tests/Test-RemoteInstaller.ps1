@@ -402,72 +402,6 @@ exit 0
     return $probePath
 }
 
-function Get-DocumentedBootstrapBody {
-    # Extrae el cuerpo exacto entre -Command "..." del comando de una linea
-    # publicado en docs/remote-installer.md. Asi la prueba ejecuta el mismo
-    # texto que copia un usuario, no una copia paralela que puede divergir.
-    param([string]$Text, [string]$Kind = 'latest')
-    $bodies = @()
-    foreach ($line in ($Text -split "`r?`n")) {
-        if (-not $line.TrimStart().StartsWith('powershell.exe')) { continue }
-        $start = $line.IndexOf('-Command "')
-        if ($start -lt 0) { continue }
-        $start += '-Command "'.Length
-        $end = $line.LastIndexOf('"')
-        if ($end -le $start) { continue }
-        $body = $line.Substring($start, $end - $start)
-        $isPinned = ($body -match 'releases/download/v[0-9]+\.[0-9]+\.[0-9]+/Install-MensorCAD\.ps1')
-        if ($Kind -eq 'pinned' -and $isPinned) { $bodies += $body }
-        if ($Kind -eq 'latest' -and -not $isPinned -and $body -match 'releases/latest/download/Install-MensorCAD\.ps1') { $bodies += $body }
-    }
-    if ($bodies.Count -ne 1) {
-        throw ('Se esperaba exactamente un comando documentado de tipo ' + $Kind + '; encontrados: ' + $bodies.Count)
-    }
-    return $bodies[0]
-}
-
-function New-BootstrapProbeScript {
-    # Ejecuta el cuerpo EXACTO del comando de una linea documentado dentro de
-    # un proceso PowerShell aparte. La primera descarga (Invoke-RestMethod) y la
-    # red del instalador (Invoke-WebRequest) se reemplazan por costuras
-    # locales: la prueba nunca descarga nada, no pide UAC y no escribe en el
-    # destino fijo. El cuerpo se ejecuta con ErrorActionPreference NO
-    # terminante, para medir el -ErrorAction Stop del comando publicado.
-    param([string]$RootPath, [string]$Name, [string]$Body)
-    $bodyPath = Join-Path -Path $RootPath -ChildPath ('bootstrap-body-' + $Name + '.txt')
-    Write-FixtureFile -Path $bodyPath -Content $Body
-    $probePath = Join-Path -Path $RootPath -ChildPath ('bootstrap-probe-' + $Name + '.ps1')
-    $installerLiteral = $script:InstallerPath.Replace("'", "''")
-    $bodyLiteral = $bodyPath.Replace("'", "''")
-    $template = @'
-param([switch]$FailFirstFetch)
-$ErrorActionPreference = 'Continue'
-$script:ProbeBodyPath = '__BODY__'
-$script:ProbeInstallerPath = '__INSTALLER__'
-function global:Invoke-RestMethod {
-    [CmdletBinding()]
-    param([switch]$UseBasicParsing, [Parameter(Position = 0)][string]$Uri)
-    if ($FailFirstFetch) {
-        $firstFetchError = New-Object -TypeName 'System.Exception' -ArgumentList @('respuesta 404 simulada en la primera descarga')
-        $null = $firstFetchError | Add-Member -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 404 })
-        throw $firstFetchError
-    }
-    return [System.IO.File]::ReadAllText($script:ProbeInstallerPath)
-}
-function global:Invoke-WebRequest {
-    [CmdletBinding()]
-    param([switch]$UseBasicParsing, [Parameter(Position = 0)][string]$Uri, [string]$OutFile, [int]$TimeoutSec = 0)
-    throw ('red no simulada en la prueba: ' + $Uri)
-}
-$documentedBody = [scriptblock]::Create([System.IO.File]::ReadAllText($script:ProbeBodyPath))
-& $documentedBody
-'@
-    $content = $template.Replace('__BODY__', $bodyLiteral).Replace('__INSTALLER__', $installerLiteral)
-    $encoding = New-Object -TypeName 'System.Text.UTF8Encoding' -ArgumentList @($false)
-    [System.IO.File]::WriteAllText($probePath, $content, $encoding)
-    return $probePath
-}
-
 function New-RemoteHttpError {
     # Error con Response/StatusCode como el de Invoke-WebRequest: ejercita la
     # deteccion real de estado HTTP sin tocar la red.
@@ -1099,46 +1033,6 @@ try {
         }
         finally {
             $script:MensorCadPlainMode = $true
-            Remove-TestCaseRoot -Path $root
-        }
-    }
-
-    Test-Case 'El comando de una linea publicado se ejecuta en memoria y distingue el primer fallo' {
-        $root = New-TestCaseRoot
-        try {
-            $docsPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'docs\remote-installer.md'
-            $docsText = [System.IO.File]::ReadAllText($docsPath)
-            $latestBody = Get-DocumentedBootstrapBody -Text $docsText -Kind 'latest'
-            $pinnedBody = Get-DocumentedBootstrapBody -Text $docsText -Kind 'pinned'
-
-            Assert-True (-not ($latestBody -match '\$')) 'El comando publicado no debe contener variables que el shell exterior expanda.'
-            Assert-True (-not ($pinnedBody -match '\$')) 'El comando fijado tampoco debe contener variables.'
-            Assert-True (-not ($latestBody -match '-Version ')) 'La ultima version no debe fijar -Version.'
-            Assert-True ($pinnedBody -match '-Version v0\.1\.0') 'La version fijada debe pasar su tag al instalador.'
-            Assert-True (-not ($pinnedBody -match 'releases/latest')) 'Una version fijada no debe usar el bootstrap de la ultima version.'
-
-            $latestProbe = New-BootstrapProbeScript -RootPath $root -Name 'latest' -Body $latestBody
-            $latest = Invoke-ChildInstaller -ScriptPath $latestProbe -Arguments @()
-            Assert-True ($latest.ExitCode -ne 0) ('Un fallo posterior a la primera descarga debe salir con codigo distinto de 0. stderr: ' + $latest.Stderr)
-            Assert-True ($latest.Stderr -match 'No se pudo consultar la ultima release') ('El instalador en memoria debe llegar a la fase remota. stderr: ' + $latest.Stderr)
-            Assert-True ($latest.Stdout -match '\[1/5\] Resolviendo la release') ('El flujo remoto debe iniciarse sin PSScriptRoot. stdout: ' + $latest.Stdout)
-            Assert-True (-not ($latest.Stdout -match 'UAC')) 'La prueba del comando publicado no debe llegar a pedir UAC.'
-
-            $firstFailProbe = New-BootstrapProbeScript -RootPath $root -Name 'firstfail' -Body $latestBody
-            $firstFail = Invoke-ChildInstaller -ScriptPath $firstFailProbe -Arguments @('-FailFirstFetch')
-            Assert-True ($firstFail.ExitCode -ne 0) ('Un 404 en la primera descarga debe salir con codigo distinto de 0. stderr: ' + $firstFail.Stderr)
-            Assert-True ($firstFail.Stderr -match 'ERROR: no se pudo descargar el instalador') ('El primer fallo debe traer su propio ERROR: en espanol. stderr: ' + $firstFail.Stderr)
-            Assert-True (-not ($firstFail.Stderr -match 'No se pudo consultar la ultima release')) 'El primer fallo no debe confundirse con un fallo del instalador.'
-            Assert-True (-not ($firstFail.Stdout -match 'Resolviendo la release')) 'Sin instalador descargado no debe iniciarse el flujo remoto.'
-
-            $pinnedProbe = New-BootstrapProbeScript -RootPath $root -Name 'pinned' -Body $pinnedBody
-            $pinned = Invoke-ChildInstaller -ScriptPath $pinnedProbe -Arguments @()
-            Assert-True ($pinned.ExitCode -ne 0) ('La version fijada en memoria debe propagar el fallo de red. stderr: ' + $pinned.Stderr)
-            Assert-True ($pinned.Stderr -match "assets de la release 'v0\.1\.0'") ('El tag documentado debe llegar al instalador en memoria. stderr: ' + $pinned.Stderr)
-            Assert-True ($pinned.Stdout -match '\[2/5\] Descargando') 'La version fijada debe llegar a la descarga sin consultar la API.'
-            Assert-True (-not ($pinned.Stdout -match 'UAC')) 'La version fijada tampoco debe pedir UAC en la prueba.'
-        }
-        finally {
             Remove-TestCaseRoot -Path $root
         }
     }

@@ -20,7 +20,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "Install-MensorCAD.ps1"
 STYLE_TESTS = ROOT / "tests" / "Test-InstallerStyle.ps1"
-DOCS = ROOT / "docs" / "local-installer.md"
 ARTBOARD = ROOT / "design" / "cli-installer" / "01-jade-banner.html"
 DESIGN_MANIFEST = ROOT / "design" / "cli-installer" / "design.json"
 
@@ -56,7 +55,6 @@ class InstallerStyleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.installer = read_text(INSTALLER)
-        cls.docs = read_text(DOCS)
         cls.artboard = read_text(ARTBOARD)
         cls.cli = cls.installer[cls.installer.index("function Invoke-MensorCadCli") :]
 
@@ -633,37 +631,6 @@ class InstallerStyleTests(unittest.TestCase):
                 helper_body,
                 f"{helper} debe reutilizar el helper de captura para no desenrollar",
             )
-
-    def test_docs_explain_presentation_and_its_fallbacks(self) -> None:
-        for fragment in (
-            "jade",
-            "banner",
-            "bloques",
-            "compacto",
-            "VT",
-            "ANSI",
-            "ConsoleColor",
-            "58",
-            "stderr",
-            "estática",
-            "títulos",
-            "metadato",
-            "versión",
-            "badge",
-            "manifiesto",
-            "estamp",
-            "plantilla",
-            "desarrollo",
-            "regla",
-            "padding",
-            "✓",
-            "Todo listo",
-            "compleción",
-            "Test-InstallerStyle.ps1",
-        ):
-            self.assertIn(fragment, self.docs, f"la documentacion no describe {fragment}")
-        self.assertIn("prueba visual", self.docs)
-        self.assertIn("no demuestra el resultado visual", self.docs)
 
     def test_style_suite_and_installer_keep_windows_encoding(self) -> None:
         self.assertTrue(STYLE_TESTS.is_file(), "falta tests/Test-InstallerStyle.ps1")
