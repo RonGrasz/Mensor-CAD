@@ -48,6 +48,7 @@
       (write-line "      }" f)
       (write-line "    }" f)
       (write-line "  }" f)
+      (write-line "  : text { label = \"Polígono cerrado con C o con extremos coincidentes (Object Snap).\"; }" f)
       ;; Sección: Formato y Estilo
       (write-line "  : boxed_column {" f)
       (write-line "    label = \"Formato y Estilo\";" f)
@@ -184,14 +185,21 @@
 ;;; SECCIÓN 7: VALIDACIÓN DE ENTIDAD LWPOLYLINE CERRADA
 ;;; ============================================================
 
-(defun mcarea:cerrada-p (vla-obj / raw)
-  "Evaluador de la propiedad Closed para LWPOLYLINE."
+(defun mcarea:cerrada-p (vla-obj / raw puntos)
+  "Acepta cierre nativo o extremos coincidentes sin modificar la entidad."
   (setq raw (vlax-get vla-obj 'Closed))
-  (not (zerop raw))
+  (or (not (zerop raw))
+      (progn
+        (setq puntos (mcarea:obtener-vertices vla-obj))
+        ;; Un cierre manual necesita al menos tres vértices y la repetición
+        ;; del primero. La tolerancia solo absorbe ruido numérico del ajuste.
+        ;; En AutoLISP, last devuelve el punto completo, no una lista de puntos.
+        (and (>= (length puntos) 4)
+             (<= (distance (car puntos) (last puntos)) 1e-8))))
 )
 
 (defun mcarea:validar-polilinea (ename / vla-obj tipo)
-  "Verifica que la entidad sea una LWPOLYLINE cerrada."
+  "Verifica una LWPOLYLINE cerrada con C o por extremos coincidentes."
   (if (null ename)
     nil
     (progn
@@ -201,7 +209,7 @@
         (if (mcarea:cerrada-p vla-obj)
           vla-obj
           (progn
-            (alert "La polilínea seleccionada NO está cerrada.")
+            (alert "La polilínea seleccionada NO está cerrada.\nUse Cerrar (C) o haga coincidir el último vértice con el primero mediante Object Snap.")
             nil)
         )
         (progn
@@ -339,7 +347,7 @@
            (progn
              (setvar "OSMODE" 0)
              (if (not seleccion-boundary)
-               (setq ename (car (entsel "\nSeleccione la LWPOLYLINE cerrada: ")))
+               (setq ename (car (entsel "\nSeleccione la LWPOLYLINE cerrada (C o extremos coincidentes): ")))
                (setq ename (mcarea:seleccionar-boundary))
              )
              (setq vla-obj (mcarea:validar-polilinea ename))

@@ -158,11 +158,21 @@ Consulta las opciones de cada herramienta. Puedes plegar las secciones si lo pre
 
 Elige el formato del área, los decimales y el tamaño del texto.
 
+**Cierre del polígono.** Puedes seleccionar una `LWPOLYLINE` cerrada con `Cerrar (C)` o cerrada manualmente haciendo coincidir el último vértice con el primero mediante Object Snap. El cierre manual requiere al menos tres vértices más el punto final repetido; se admite una diferencia máxima de `0.00000001` unidades de dibujo entre los extremos para absorber ruido numérico. No se modifica la polilínea original ni se cierran contornos con extremos separados por encima de esa tolerancia. Funciona en los dos métodos de cálculo.
+
 <img src="docs/images/Area.png" width="660" alt="Ventana de MCAREA con opciones de cálculo y rotulación de superficies" loading="lazy">
 
 ### Subdivisión
 
 Configura cortes paralelos o en abanico y define cómo repartir la superficie.
+
+**Etiqueta personalizada (opcional).** En «Precisión y etiquetas» podés cambiar el nombre de los lotes. Si dejás el campo vacío, se mantiene `Lote 1`, `Lote 2`… Si escribís un texto, la secuencia desde `1` se agrega directamente, sin espacios ni separadores adicionales; el área sigue apareciendo debajo.
+
+| Texto ingresado | Rótulos generados |
+| --- | --- |
+| Vacío | `Lote 1`, `Lote 2`, `Lote 3`… |
+| `Solar` | `Solar1`, `Solar2`, `Solar3`… |
+| `6622026107043_1_` | `6622026107043_1_1`, `6622026107043_1_2`, `6622026107043_1_3`… |
 
 <img src="docs/images/Subdividir.png" width="660" alt="Ventana de MCSUBDIV para dividir parcelas" loading="lazy">
 

@@ -464,7 +464,7 @@
 
 (defun mcsdiv:guardar-dlg (/ clave)
   (foreach clave '("metodo" "partes" "area" "porcentaje" "guia_modo"
-                   "corte" "ancla" "rotar" "angulo" "lado" "altura" "precision" "tolerancia")
+                   "corte" "ancla" "rotar" "angulo" "lado" "altura" "precision" "tolerancia" "etiqueta")
     (mcsdiv:fijar-opcion clave (get_tile clave))))
 
 (defun mcsdiv:actualizar-dlg (/ partes rotacion)
@@ -513,6 +513,9 @@
       "  : edit_box { key = \"tolerancia\"; label = \"Tolerancia de área (m2):\"; edit_width = 18; }"
       "  : edit_box { key = \"altura\"; label = \"Altura del texto (m):\"; edit_width = 18; }"
       "  : popup_list { key = \"precision\"; label = \"Decimales de la etiqueta:\"; edit_width = 18; }"
+      "  : edit_box { key = \"etiqueta\"; label = \"Etiqueta personalizada (opcional):\"; edit_width = 25; }"
+      "  : text { label = \"Vacío: Lote 1, Lote 2... Otro texto: Solar1, Solar2...\"; }"
+      "  : text { label = \"El número se agrega sin espacios ni separadores adicionales.\"; }"
       " }"
       " : row { : button { key = \"accept\"; label = \"Subdividir\"; is_default = true; }"
       "          : button { key = \"cancel\"; label = \"Cancelar\"; is_cancel = true; } }"
@@ -700,14 +703,18 @@
       (setq unidos (cons actual unidos) actual tramo)))
   (reverse (cons actual unidos)))
 
-(defun mcsdiv:publicar (resultado / cortes parcelas indice parcela obj centro texto altura precision corte tramo pts)
+(defun mcsdiv:publicar (resultado / cortes parcelas indice parcela obj centro texto altura precision prefijo corte tramo pts)
   (setq cortes (car resultado) parcelas (cadr resultado) indice 1
         altura (mcsdiv:numero (mcsdiv:opcion "altura"))
-        precision (atoi (mcsdiv:opcion "precision")))
+        precision (atoi (mcsdiv:opcion "precision"))
+        prefijo (mcsdiv:opcion "etiqueta"))
+  ;; El campo vacío conserva el rótulo anterior; el texto personalizado
+  ;; se une al número sin añadir ni quitar espacios o separadores.
+  (if (= prefijo "") (setq prefijo "Lote "))
   (foreach parcela parcelas
     (setq pts (car parcela) centro (caddr parcela))
     (mcsdiv:polilinea (mapcar 'mcsdiv:wcs pts) nil)
-    (setq texto (strcat "Lote " (itoa indice) "\\PÁrea: "
+    (setq texto (strcat prefijo (itoa indice) "\\PÁrea: "
                        (rtos (cadr parcela) 2 precision) " m\\U+00B2")
           obj (mcsdiv:salida (vla-AddMText mcsdiv-espacio
                 (vlax-3d-point (mcsdiv:wcs centro)) 0.0 texto)))
@@ -802,7 +809,7 @@
           '("guia_modo" . "0") '("corte" . "0") '("ancla" . "0")
           '("rotar" . "0") '("angulo" . "0") '("lado" . "2")
           (cons "altura" (rtos (max 0.01 (getvar "TEXTSIZE")) 2 4))
-          '("precision" . "2") '("tolerancia" . "0.01")))
+          '("precision" . "2") '("tolerancia" . "0.01") '("etiqueta" . "")))
   (if (not (mcsdiv:dialogo)) (exit))
   (setq aviso (mcsdiv:validar-opciones))
   (if aviso (mcsdiv:fallar aviso))
