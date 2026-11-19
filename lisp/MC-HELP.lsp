@@ -23,7 +23,7 @@
     (princ))
 
   ;; Información de presentación; no depende de Git ni de otros scripts.
-  (setq version "v0.1.0"
+  (setq version "v0.2.1"
         repositorio "https://github.com/RonGrasz/Mensor-CAD"
         ruta (vl-filename-mktemp "mchelp_" nil ".dcl"))
   (if (null ruta)
