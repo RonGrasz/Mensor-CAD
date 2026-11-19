@@ -288,14 +288,14 @@ function Test-Case {
 
 function New-ProbeZip {
     # ZIP fixture real del gestor en la entrada local, con su sidecar adjunto.
-    # El mensorcad.ps1 lleva una version sellada como texto: el bootstrap debe
+    # El mensorcad-manager.ps1 lleva una version sellada como texto: el bootstrap debe
     # leerla sin ejecutar el archivo.
     param([string]$Path)
     Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
     $managerText = "param()`r`n`$script:MensorCadManagerVersion = '1.2.3'`r`n"
     $entries = @(
-        @{ Name = 'mensorcad.ps1'; Content = $managerText },
+        @{ Name = 'mensorcad-manager.ps1'; Content = $managerText },
         @{ Name = 'mensorcad.cmd'; Content = "@echo off`r`nexit /b 0`r`n" },
         @{ Name = 'Install-MensorCAD.ps1'; Content = $managerText }
     )

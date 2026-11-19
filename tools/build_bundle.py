@@ -52,7 +52,7 @@ RUTA_CUIX = "Contents/UI/MensorCAD.cuix"
 RUTA_LISP = "Contents/Lisp"
 NOMBRE_PRODUCTO = "MensorCAD"
 NOMBRE_SCRIPT = "Install-MensorCAD.ps1"
-NOMBRE_GESTOR = "mensorcad.ps1"
+NOMBRE_GESTOR = "mensorcad-manager.ps1"
 NOMBRE_LANZADOR = "mensorcad.cmd"
 NOMBRE_BOOTSTRAP = "install.ps1"
 MARCADOR_VERSION_SCRIPT = b"__MENSORCAD_RELEASE_VERSION__"
@@ -767,7 +767,7 @@ def _analizar_argumentos(argv: list[str] | None) -> argparse.Namespace:
         type=Path,
         default=raiz_defecto / NOMBRE_GESTOR,
         help=(
-            "comando gestor mensorcad.ps1; debe contener exactamente un marcador "
+            "comando gestor mensorcad-manager.ps1; debe contener exactamente un marcador "
             "__MENSORCAD_MANAGER_VERSION__ que se reemplaza con --version y viaja "
             "dentro de MensorCAD-CLI.zip"
         ),

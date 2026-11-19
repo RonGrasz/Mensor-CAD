@@ -26,11 +26,11 @@ ZIP_CLI = "MensorCAD-CLI.zip"
 SIDECAR_CLI = "MensorCAD-CLI.zip.sha256"
 RUTA_SCRIPT_STANDALONE = "Install-MensorCAD.ps1"
 RUTA_BOOTSTRAP = "install.ps1"
-RUTA_GESTOR = "mensorcad.ps1"
+RUTA_GESTOR = "mensorcad-manager.ps1"
 RUTA_LANZADOR = "mensorcad.cmd"
 MARCADOR_VERSION = b"__MENSORCAD_RELEASE_VERSION__"
 MARCADOR_GESTOR = b"__MENSORCAD_MANAGER_VERSION__"
-ENTRADAS_CLI = ("Install-MensorCAD.ps1", "mensorcad.cmd", "mensorcad.ps1")
+ENTRADAS_CLI = ("Install-MensorCAD.ps1", "mensorcad.cmd", "mensorcad-manager.ps1")
 TMP_PREVIO = ".MensorCAD-Windows.zip.tmp"
 RAIZ_BUNDLE = "MensorCAD.bundle/"
 
@@ -137,7 +137,7 @@ class FuentesDePrueba:
         )
         self.launcher_script.write_bytes(
             b"@echo off\r\n"
-            b"set \"MENSORCAD_MANAGER_SCRIPT=%~dp0mensorcad.ps1\"\r\n"
+            b"set \"MENSORCAD_MANAGER_SCRIPT=%~dp0mensorcad-manager.ps1\"\r\n"
             b"exit /b %ERRORLEVEL%\r\n"
         )
         self.bat_script.write_bytes(b"@echo off\r\npowershell -File Install-MensorCAD.ps1\r\n")

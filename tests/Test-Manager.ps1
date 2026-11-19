@@ -29,7 +29,7 @@ $script:Passed = 0
 $script:Failed = 0
 $script:FailureMessages = @()
 $script:RepositoryRoot = Split-Path -Parent $PSScriptRoot
-$script:ManagerPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'mensorcad.ps1'
+$script:ManagerPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'mensorcad-manager.ps1'
 $script:LauncherPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'mensorcad.cmd'
 $script:PowerShellPath = Join-Path -Path $PSHOME -ChildPath 'powershell.exe'
 # Scratch propio dentro de una ruta ignorada. No se usa TEMP del sistema: la
@@ -300,7 +300,7 @@ function New-ManagerCase {
     if (-not [string]::IsNullOrEmpty($Version)) {
         $source = $source.Replace('__MENSORCAD_MANAGER_VERSION__', $Version)
     }
-    Write-Utf8File -Path (Join-Path $managerDir 'mensorcad.ps1') -Content $source -Bom
+    Write-Utf8File -Path (Join-Path $managerDir 'mensorcad-manager.ps1') -Content $source -Bom
     if ($WithLauncher) {
         [System.IO.File]::Copy($script:LauncherPath, (Join-Path $managerDir 'mensorcad.cmd'))
     }
@@ -310,7 +310,7 @@ function New-ManagerCase {
     return [pscustomobject]@{
         Root = $root
         ManagerDir = $managerDir
-        ManagerPath = (Join-Path $managerDir 'mensorcad.ps1')
+        ManagerPath = (Join-Path $managerDir 'mensorcad-manager.ps1')
         LauncherPath = (Join-Path $managerDir 'mensorcad.cmd')
         EvidencePath = (Join-Path $root 'evidence.log')
         BundlePath = (Join-Path $root 'MensorCAD.bundle')
@@ -853,6 +853,30 @@ Test-Case 'el motor real se carga con dot-source y la guarda devuelve el control
 # ---------------------------------------------------------------------------
 # Casos: lanzador CMD
 # ---------------------------------------------------------------------------
+
+Test-Case 'PowerShell resuelve mensorcad por PATH con scripts deshabilitados' {
+    $case = New-ManagerCase -Version '9.9.9' -WithLauncher
+    $before = Get-TreeSnapshot -Path $case.ManagerDir
+    $probe = @'
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+$env:Path = '__MANAGER_DIR__;' + $env:Path
+[Console]::Out.WriteLine([System.IO.Path]::GetFileName((Get-Command mensorcad -ErrorAction Stop).Source))
+mensorcad --version
+$code = $LASTEXITCODE
+if ((Get-ExecutionPolicy -Scope Process) -ne 'Restricted') { exit 98 }
+exit $code
+'@
+    $probe = $probe.Replace('__MANAGER_DIR__', $case.ManagerDir.Replace("'", "''"))
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+    $result = Start-CapturedProcess -FileName $script:PowerShellPath -ArgumentString ('-NoProfile -NonInteractive -ExecutionPolicy Restricted -EncodedCommand ' + $encoded) -WorkingDirectory $env:SystemRoot
+    Assert-Equal 0 $result.ExitCode 'mensorcad debe funcionar sin habilitar scripts en el llamador'
+    Assert-Equal "mensorcad.cmd`nmensorcad 9.9.9" ($result.StdOut.Trim() -replace "`r`n", "`n") 'resolucion y version exactas'
+    Assert-Empty $result.StdErr 'stderr con politica Restricted'
+    Assert-Equal $before (Get-TreeSnapshot -Path $case.ManagerDir) 'la consulta no cambia archivos'
+    Assert-True (-not (Test-Path -LiteralPath $case.EvidencePath)) 'la version no carga el motor'
+}
 
 Test-Case 'lanzador CMD reenvia version, ayuda y codigo de uso' {
     $case = New-ManagerCase -Version '9.9.9' -WithLauncher

@@ -30,7 +30,7 @@ PINNED_COMMAND = (
 )
 NO_ANIMATION_COMMAND = PINNED_COMMAND + " -NoAnimation"
 
-MANAGER_FILES = ("mensorcad.ps1", "mensorcad.cmd", "Install-MensorCAD.ps1")
+MANAGER_FILES = ("mensorcad-manager.ps1", "mensorcad.cmd", "Install-MensorCAD.ps1")
 
 # Nada de elevacion, PATH de maquina, politica de ejecucion global ni procesos
 # hijos: este bootstrap solo escribe el gestor y el PATH del usuario actual.
@@ -150,7 +150,7 @@ class CliBootstrapStructureTests(unittest.TestCase):
         self.assertIn(SIDECAR_PATTERN_FRAGMENT, self.bootstrap, "falta el formato estricto del sidecar")
         self.assertIn("ZipFile]::OpenRead", self.bootstrap)
         self.assertIn(
-            "$managerFiles = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')",
+            "$managerFiles = @('mensorcad-manager.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')",
             self.bootstrap,
             "el ZIP debe declarar exactamente los tres archivos del gestor",
         )
@@ -159,6 +159,34 @@ class CliBootstrapStructureTests(unittest.TestCase):
         self.assertIn("ReparsePoint", self.bootstrap, "faltan las comprobaciones de enlaces")
         for tope in ("$maxZipBytes", "$maxEntryBytes", "$maxTotalEntryBytes"):
             self.assertIn(tope, self.bootstrap, f"falta el tope {tope}")
+
+    def test_migra_el_nombre_anterior_solo_en_el_destino_ya_instalado(self) -> None:
+        # El ZIP solo puede traer los nombres actuales. Un destino YA instalado
+        # tambien reconoce el lanzador anterior mensorcad.ps1, pero solo cuando
+        # el marcador declara el formato anterior completo y el gestor interno
+        # nuevo no existe: la concesion nunca es incondicional.
+        self.assertIn(
+            "$legacyManagerFiles = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')",
+            self.bootstrap,
+            "falta el formato anterior completo",
+        )
+        self.assertNotIn("destinationManagerFiles", self.bootstrap, "no debe existir una union incondicional de nombres")
+        destino = self.bootstrap[self.bootstrap.index("function Assert-CliBootstrapDestination") :]
+        destino = destino[: destino.index("function Get-CliBootstrapEnvironmentKey")]
+        self.assertIn("if ((-not $allowed) -and $legacyLayout)", destino, "la concesion debe depender del formato declarado")
+        self.assertLess(
+            destino.index("Get-CliBootstrapMarker"),
+            destino.index("$legacyLayout"),
+            "el marcador se lee antes de decidir si el nombre anterior es propio",
+        )
+        self.assertIn("foreach ($name in $managerFiles)", destino, "el destino siempre acepta los nombres actuales")
+        entradas = self.bootstrap[self.bootstrap.index("function Assert-CliBootstrapZipEntries") :]
+        entradas = entradas[: entradas.index("function Expand-CliBootstrapZip")]
+        self.assertIn("foreach ($name in $managerFiles)", entradas, "el ZIP solo acepta los nombres actuales")
+        self.assertNotIn("legacyManagerFiles", entradas, "el ZIP no debe aceptar el nombre anterior")
+        expandir = self.bootstrap[self.bootstrap.index("function Expand-CliBootstrapZip") :]
+        expandir = expandir[: expandir.index("function Write-CliBootstrapMarker")]
+        self.assertNotIn("legacyManagerFiles", expandir, "la extraccion no debe usar la lista anterior")
 
     def test_no_ejecuta_ningun_script_descargado(self) -> None:
         self.assertNotIn("FromRelease", self.bootstrap)

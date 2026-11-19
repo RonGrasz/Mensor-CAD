@@ -24,8 +24,8 @@
 #      el ZIP local y su sidecar adjunto a una carpeta temporal propia;
 #   3. valida tamano, SHA-256 y las tres entradas planas exactas del ZIP
 #      (sin duplicados, traversal ni enlaces) ANTES de escribir el destino;
-#   4. en la ruta local, lee la version del gestor del mensorcad.ps1 ya extraido
-#      como texto inerte: nunca ejecuta el gestor para averiguarla;
+#   4. en la ruta local, lee la version del gestor del mensorcad-manager.ps1 ya
+#      extraido como texto inerte: nunca ejecuta el gestor para averiguarla;
 #   5. prepara una carpeta de staging propia, escribe el marcador y reemplaza
 #      el gestor de forma transaccional, con respaldo y rollback;
 #   6. agrega la carpeta al PATH del USUARIO una sola vez, conservando el
@@ -66,7 +66,15 @@ param(
     # Destino fijo del gestor, siempre dentro del perfil del usuario actual.
     $managerFolderName = 'MensorCAD'
     $managerSubfolderName = 'cli'
-    $managerFiles = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
+    # El lanzador publico es mensorcad.cmd. Para que PowerShell no elija un
+    # script homonimo, el gestor interno se llama mensorcad-manager.ps1 y no
+    # mensorcad.ps1. El nombre anterior solo se
+    # acepta en un destino ya instalado, para poder migrarlo al actualizar.
+    $managerFiles = @('mensorcad-manager.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
+    # Formato anterior completo: el gestor interno se llamaba mensorcad.ps1.
+    # Solo se acepta en un destino que el marcador declara completo en ese
+    # formato; la sola presencia del archivo no lo vuelve propio.
+    $legacyManagerFiles = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
     $markerName = '.mensorcad-cli.json'
     # Carpetas propias: el GUID completo hace imposible reutilizar una ajena.
     $workspacePrefix = 'mensorcad-cli-'
@@ -80,8 +88,8 @@ param(
     $userEnvironmentKeyPath = 'HKCU:\Environment'
     $hashPattern = '^(?<hash>[0-9a-fA-F]{64})  MensorCAD-CLI\.zip\r?\n\z'
     # Version del gestor local: una sola asignacion sellada y estable dentro de
-    # mensorcad.ps1. Se lee como texto inerte; el gestor jamas se ejecuta para
-    # averiguar su version y no se inventa un tag de release.
+    # mensorcad-manager.ps1. Se lee como texto inerte; el gestor jamas se ejecuta
+    # para averiguar su version y no se inventa un tag de release.
     $managerVersionLinePattern = '(?m)^\$script:MensorCadManagerVersion ='
     $managerVersionPattern = '(?m)^\$script:MensorCadManagerVersion = ''(?<version>[0-9]+\.[0-9]+\.[0-9]+)''\r?$'
 
@@ -180,12 +188,41 @@ param(
         if ($null -eq $marker) {
             throw (New-CliBootstrapStopException (Get-CliBootstrapDestinationMessage -DestinationPath $DestinationPath))
         }
+        # Formato anterior: solo cuenta si el marcador declara exactamente los
+        # tres nombres antiguos y el gestor interno nuevo no existe. Una
+        # instalacion actual con un mensorcad.ps1 agregado, o una mezcla con
+        # ambos scripts, es contenido ajeno y se rechaza sin borrar nada.
+        $legacyLayout = $false
+        $filesProperty = $marker.PSObject.Properties['files']
+        if ($null -ne $filesProperty) {
+            $declaredFiles = @($filesProperty.Value)
+            if ($declaredFiles.Count -eq $legacyManagerFiles.Count) {
+                $legacyLayout = $true
+                foreach ($name in $legacyManagerFiles) {
+                    $declared = $false
+                    foreach ($candidate in $declaredFiles) {
+                        if ([string]$candidate -ieq $name) { $declared = $true; break }
+                    }
+                    if (-not $declared) { $legacyLayout = $false; break }
+                }
+            }
+        }
+        if ($legacyLayout -and [System.IO.File]::Exists((Join-Path -Path $DestinationPath -ChildPath $managerFiles[0]))) {
+            $legacyLayout = $false
+        }
         foreach ($entryPath in [System.IO.Directory]::GetFileSystemEntries($DestinationPath)) {
             $entryName = [System.IO.Path]::GetFileName($entryPath)
             $allowed = $false
             if ($entryName -ieq $markerName) { $allowed = $true }
             foreach ($name in $managerFiles) {
                 if ($entryName -ieq $name) { $allowed = $true; break }
+            }
+            # El lanzador anterior solo es propio en el formato anterior ya
+            # identificado; el ZIP nuevo nunca acepta ese nombre.
+            if ((-not $allowed) -and $legacyLayout) {
+                foreach ($name in $legacyManagerFiles) {
+                    if ($entryName -ieq $name) { $allowed = $true; break }
+                }
             }
             if (-not $allowed) {
                 throw (New-CliBootstrapStopException (Get-CliBootstrapDestinationMessage -DestinationPath $DestinationPath))
@@ -455,24 +492,25 @@ param(
 
     function Read-CliBootstrapLocalManagerVersion {
         # La version del gestor local sale del unico archivo que la lleva:
-        # mensorcad.ps1. Se lee como texto inerte y se compara con un patron
-        # estricto de version estable, sin ejecutar el gestor ni inventar un tag.
+        # mensorcad-manager.ps1. Se lee como texto inerte y se compara con un
+        # patron estricto de version estable, sin ejecutar el gestor ni inventar
+        # un tag.
         param([string]$ManagerPath)
         $length = (New-Object -TypeName System.IO.FileInfo -ArgumentList @($ManagerPath)).Length
         if (($length -le 0) -or ($length -gt $maxEntryBytes)) {
-            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local esta vacio o supera el limite permitido. No se instalo nada.')
+            throw (New-CliBootstrapStopException 'El mensorcad-manager.ps1 del ZIP local esta vacio o supera el limite permitido. No se instalo nada.')
         }
         $text = [System.IO.File]::ReadAllText($ManagerPath)
         $lines = [System.Text.RegularExpressions.Regex]::Matches($text, $managerVersionLinePattern)
         if ($lines.Count -eq 0) {
-            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.')
+            throw (New-CliBootstrapStopException 'El mensorcad-manager.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.')
         }
         if ($lines.Count -gt 1) {
-            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local declara mas de una version. No se instalo nada.')
+            throw (New-CliBootstrapStopException 'El mensorcad-manager.ps1 del ZIP local declara mas de una version. No se instalo nada.')
         }
         $match = [System.Text.RegularExpressions.Regex]::Match($text, $managerVersionPattern)
         if (-not $match.Success) {
-            throw (New-CliBootstrapStopException 'El mensorcad.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.')
+            throw (New-CliBootstrapStopException 'El mensorcad-manager.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.')
         }
         return $match.Groups['version'].Value
     }
@@ -528,7 +566,7 @@ param(
         try {
             $entries = @($archive.Entries)
             if ($entries.Count -ne $managerFiles.Count) {
-                throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
+                throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
             }
             $seen = New-Object 'System.Collections.Generic.List[string]'
             $totalLength = [long]0
@@ -548,7 +586,7 @@ param(
                     if ($entryName -ieq $name) { $matchedName = $name; break }
                 }
                 if ($null -eq $matchedName) {
-                    throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
+                    throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
                 }
                 foreach ($already in $seen) {
                     if ($already -ieq $matchedName) {
@@ -569,7 +607,7 @@ param(
                 }
             }
             if ($seen.Count -ne $managerFiles.Count) {
-                throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
+                throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
             }
         }
         finally {
@@ -592,7 +630,7 @@ param(
                     if ([string]$candidate.FullName -ieq $name) { $entry = $candidate; break }
                 }
                 if ($null -eq $entry) {
-                    throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
+                    throw (New-CliBootstrapStopException 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.')
                 }
                 $targetPath = Join-Path -Path $StagingPath -ChildPath $name
                 $source = $entry.Open()
@@ -816,7 +854,7 @@ param(
         if ($localZipSpecified) {
             # Version del build local: sale del gestor ya extraido y validado,
             # leido como texto inerte.
-            $releaseTag = Read-CliBootstrapLocalManagerVersion -ManagerPath (Join-Path -Path $stagingPath -ChildPath 'mensorcad.ps1')
+            $releaseTag = Read-CliBootstrapLocalManagerVersion -ManagerPath (Join-Path -Path $stagingPath -ChildPath 'mensorcad-manager.ps1')
         }
         Write-CliBootstrapMarker -DirectoryPath $stagingPath -Tag $releaseTag
 

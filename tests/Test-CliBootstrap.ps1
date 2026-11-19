@@ -21,7 +21,7 @@
     abre AutoCAD, no se pide UAC y no se llama a GitHub. Los ZIP y sus sidecars
     son fixtures reales creados en el disco para que la validacion SHA-256, el
     recuento exacto de entradas y el rechazo de enlaces sean codigo real. La
-    ruta local usa un ZIP fixture con su sidecar adjunto: su mensorcad.ps1 lleva
+    ruta local usa un ZIP fixture con su sidecar adjunto: su mensorcad-manager.ps1 lleva
     una version sellada escrita como texto y, si el bootstrap lo ejecutara para
     averiguarla, dejaria una sentinela que la suite comprueba ausente.
 
@@ -70,7 +70,7 @@ $script:ProbeEnvironmentNames = @(
     'MCB_MODE', 'MCB_REGISTRY', 'MCB_RESULT', 'MCB_TAG', 'MCB_PAYLOAD_SENTINEL',
     'MCB_LOCATION'
 )
-$script:ManagerFiles = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
+$script:ManagerFiles = @('mensorcad-manager.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
 $script:MarkerName = '.mensorcad-cli.json'
 
 if (-not (Test-Path -LiteralPath $script:BootstrapPath -PathType Leaf)) {
@@ -491,7 +491,7 @@ exit 99
     $payloadCmd = "@echo off`r`nexit /b 0`r`n"
     $payloadInstall = $payloadPs
     $base = @(
-        @{ Name = 'mensorcad.ps1'; Content = $payloadPs },
+        @{ Name = 'mensorcad-manager.ps1'; Content = $payloadPs },
         @{ Name = 'mensorcad.cmd'; Content = $payloadCmd },
         @{ Name = 'Install-MensorCAD.ps1'; Content = $payloadInstall }
     )
@@ -505,28 +505,37 @@ exit 99
         }
         'zip-duplicate' {
             $entries = @(
-                @{ Name = 'mensorcad.ps1'; Content = $payloadPs },
-                @{ Name = 'MENSORCAD.PS1'; Content = $payloadPs },
+                @{ Name = 'mensorcad-manager.ps1'; Content = $payloadPs },
+                @{ Name = 'MENSORCAD-MANAGER.PS1'; Content = $payloadPs },
                 @{ Name = 'mensorcad.cmd'; Content = $payloadCmd }
             )
         }
         'zip-traversal' {
             $entries = @(
-                @{ Name = '../mensorcad.ps1'; Content = $payloadPs },
+                @{ Name = '../mensorcad-manager.ps1'; Content = $payloadPs },
                 @{ Name = 'mensorcad.cmd'; Content = $payloadCmd },
                 @{ Name = 'Install-MensorCAD.ps1'; Content = $payloadInstall }
             )
         }
         'zip-symlink' {
             $entries = @(
-                @{ Name = 'mensorcad.ps1'; Content = $payloadPs; ExternalAttributes = [int](0xA1FF -shl 16) },
+                @{ Name = 'mensorcad-manager.ps1'; Content = $payloadPs; ExternalAttributes = [int](0xA1FF -shl 16) },
+                @{ Name = 'mensorcad.cmd'; Content = $payloadCmd },
+                @{ Name = 'Install-MensorCAD.ps1'; Content = $payloadInstall }
+            )
+        }
+        'zip-legacy-entry' {
+            # El nombre anterior del lanzador ya no es una entrada valida: el ZIP
+            # nuevo debe traer exactamente los tres nombres actuales.
+            $entries = @(
+                @{ Name = 'mensorcad.ps1'; Content = $payloadPs },
                 @{ Name = 'mensorcad.cmd'; Content = $payloadCmd },
                 @{ Name = 'Install-MensorCAD.ps1'; Content = $payloadInstall }
             )
         }
         'zip-oversize' {
             $entries = @(
-                @{ Name = 'mensorcad.ps1'; Bytes = (New-Object byte[] 5242880) },
+                @{ Name = 'mensorcad-manager.ps1'; Bytes = (New-Object byte[] 5242880) },
                 @{ Name = 'mensorcad.cmd'; Content = $payloadCmd },
                 @{ Name = 'Install-MensorCAD.ps1'; Content = $payloadInstall }
             )
@@ -575,7 +584,7 @@ function New-LocalCliInput {
         $managerText = "param()`r`n`$script:MensorCadManagerVersion = '1.2.3'`r`n`$script:MensorCadManagerVersion = '1.2.4'`r`n"
     }
     $entries = @(
-        @{ Name = 'mensorcad.ps1'; Content = $managerText },
+        @{ Name = 'mensorcad-manager.ps1'; Content = $managerText },
         @{ Name = 'mensorcad.cmd'; Content = "@echo off`r`nexit /b 0`r`n" },
         @{ Name = 'Install-MensorCAD.ps1'; Content = $managerText }
     )
@@ -868,12 +877,74 @@ $seedPreviousInstall = {
         source = 'RonGrasz/Mensor-CAD'
         version = 'v0.9.0'
         installed = '2024-01-01T00:00:00Z'
+        files = @('mensorcad-manager.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
+    }
+    [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath '.mensorcad-cli.json'), ($marker | ConvertTo-Json -Compress), $script:Utf8)
+    foreach ($name in @('mensorcad-manager.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')) {
+        [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath $name), ('anterior ' + $name), $script:Utf8)
+    }
+}
+
+$seedLegacyInstall = {
+    param([string]$LocalAppData)
+    & $seedPreviousInstall $LocalAppData
+    $destination = Join-Path (Join-Path $LocalAppData 'MensorCAD') 'cli'
+    [System.IO.File]::Move((Join-Path $destination 'mensorcad-manager.ps1'), (Join-Path $destination 'mensorcad.ps1'))
+    $markerPath = Join-Path $destination '.mensorcad-cli.json'
+    $markerText = [System.IO.File]::ReadAllText($markerPath).Replace('mensorcad-manager.ps1', 'mensorcad.ps1')
+    [System.IO.File]::WriteAllText($markerPath, $markerText, $script:Utf8)
+}
+
+$seedLegacyInvalidMarker = {
+    # Nombre anterior con un marcador que NO es valido (otro duenio): el archivo
+    # por si solo no autoriza a borrar ni reemplazar nada.
+    param([string]$LocalAppData)
+    & $seedPreviousInstall $LocalAppData
+    $destination = Join-Path (Join-Path $LocalAppData 'MensorCAD') 'cli'
+    [System.IO.File]::Move((Join-Path $destination 'mensorcad-manager.ps1'), (Join-Path $destination 'mensorcad.ps1'))
+    $marker = [pscustomobject]@{
+        schema = 1
+        owner = 'OtraHerramienta'
+        source = 'RonGrasz/Mensor-CAD'
+        version = 'v0.9.0'
+        installed = '2024-01-01T00:00:00Z'
         files = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')
     }
     [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath '.mensorcad-cli.json'), ($marker | ConvertTo-Json -Compress), $script:Utf8)
-    foreach ($name in @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1')) {
-        [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath $name), ('anterior ' + $name), $script:Utf8)
-    }
+}
+
+$seedLegacyInstallWithForeignFile = {
+    param([string]$LocalAppData)
+    & $seedLegacyInstall $LocalAppData
+    $destination = Join-Path (Join-Path $LocalAppData 'MensorCAD') 'cli'
+    [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath 'ajeno.txt'), 'archivo ajeno dentro del gestor anterior', $script:Utf8)
+}
+
+$seedNewMarkerWithOldScript = {
+    # Instalacion actual valida mas un mensorcad.ps1 agregado despues, por
+    # ejemplo una copia de respaldo del usuario: es contenido ajeno.
+    param([string]$LocalAppData)
+    & $seedPreviousInstall $LocalAppData
+    $destination = Join-Path (Join-Path $LocalAppData 'MensorCAD') 'cli'
+    [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath 'mensorcad.ps1'), 'anterior mensorcad.ps1', $script:Utf8)
+}
+
+$seedLegacyMarkerWithBothScripts = {
+    # Marcador anterior con los dos nombres internos: mezcla no reconocida.
+    param([string]$LocalAppData)
+    & $seedLegacyInstall $LocalAppData
+    $destination = Join-Path (Join-Path $LocalAppData 'MensorCAD') 'cli'
+    [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath 'mensorcad.ps1'), 'anterior mensorcad.ps1', $script:Utf8)
+    [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath 'mensorcad-manager.ps1'), 'anterior mensorcad-manager.ps1', $script:Utf8)
+}
+
+$seedNewMarkerWithOnlyOldScript = {
+    # Marcador actual con solo el nombre anterior: tampoco es el formato viejo.
+    param([string]$LocalAppData)
+    & $seedPreviousInstall $LocalAppData
+    $destination = Join-Path (Join-Path $LocalAppData 'MensorCAD') 'cli'
+    [System.IO.File]::Delete((Join-Path -Path $destination -ChildPath 'mensorcad-manager.ps1'))
+    [System.IO.File]::WriteAllText((Join-Path -Path $destination -ChildPath 'mensorcad.ps1'), 'anterior mensorcad.ps1', $script:Utf8)
 }
 
 $seedForeignDestination = {
@@ -958,9 +1029,82 @@ Test-Case 'repetir la instalacion actualiza el gestor sin duplicar el PATH' {
     Assert-Equal 'C:\Windows;%LOCALAPPDATA%\MensorCAD\cli' $entry.value 'el PATH original queda intacto'
     $marker = Get-Marker -Destination $case.Destination
     Assert-Equal 'v1.2.3' ([string]$marker.version) 'el marcador se actualiza'
-    $content = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))
+    $content = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad-manager.ps1'))
     Assert-False ($content -like 'anterior*') 'los archivos del gestor se reemplazan'
     Assert-Equal 'cli' ((Get-ManagedRootNames -Case $case) -join ',') 'sin respaldos ni staging'
+}
+
+Test-Case 'actualiza el gestor anterior sin dejar el script que oculta al CMD' {
+    $initialPath = 'C:\Windows;%LOCALAPPDATA%\MensorCAD\cli'
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue $initialPath -Seed $seedLegacyInstall
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '0' ([string]$case.Result.LastExitCode) 'codigo de migracion'
+    Assert-Equal (Get-SuccessStdout -Destination $case.Destination -State 'actualizado' -PathAlreadyRegistered) $case.Stdout 'stdout exacto'
+    Assert-Equal '' $case.Stderr 'stderr exacto'
+    $expectedNames = @((@($script:ManagerFiles) + @($script:MarkerName)) | Sort-Object)
+    Assert-Equal ($expectedNames -join ',') ((Get-InstalledNames -Case $case) -join ',') 'solo quedan los archivos nuevos y el marcador'
+    Assert-False ([System.IO.File]::Exists((Join-Path $case.Destination 'mensorcad.ps1'))) 'no queda el nombre que oculta al CMD'
+    $marker = Get-Marker -Destination $case.Destination
+    Assert-Equal 'v1.2.3' ([string]$marker.version) 'version actualizada'
+    Assert-Equal (($script:ManagerFiles | Sort-Object) -join ',') (($marker.files | Sort-Object) -join ',') 'marcador con nombres nuevos'
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'no se reescribe el PATH'
+    Assert-Equal $initialPath (Get-RegistryEntry -Result $case.Result -Name 'Path').value 'PATH intacto'
+    Assert-Equal 1 (@(Get-ApiCalls -Case $case).Count) 'una consulta de release'
+    Assert-Equal 2 (@(Get-WebRequests -Case $case).Count) 'solo ZIP y sidecar'
+    Assert-False $case.PayloadSentinel 'no se ejecuta el gestor descargado'
+    Assert-NoLeftovers -Case $case
+}
+
+Test-Case 'el rollback conserva el gestor con nombre anterior' {
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -Seed $seedLegacyInstall -ThrowOnSet
+    Assert-CallerSurvived -Case $case
+    Assert-Equal '1' ([string]$case.Result.LastExitCode) 'codigo de fallo'
+    Assert-Equal '' $case.Stdout 'sin stdout de exito'
+    Assert-True $case.Stderr.TrimEnd().EndsWith('Se restauro la instalacion anterior.') 'se informa rollback'
+    Assert-Equal 'anterior mensorcad-manager.ps1' ([System.IO.File]::ReadAllText((Join-Path $case.Destination 'mensorcad.ps1'))) 'vuelve el archivo anterior'
+    Assert-False ([System.IO.File]::Exists((Join-Path $case.Destination 'mensorcad-manager.ps1'))) 'no queda el archivo nuevo'
+    Assert-Equal 'v0.9.0' ([string](Get-Marker -Destination $case.Destination).version) 'vuelve el marcador'
+    Assert-Equal 'C:\Windows' (Get-RegistryEntry -Result $case.Result -Name 'Path').value 'PATH intacto'
+    Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'sin escritura del PATH'
+    Assert-Equal 1 (@(Get-ApiCalls -Case $case).Count) 'una consulta de release'
+    Assert-Equal 2 (@(Get-WebRequests -Case $case).Count) 'solo ZIP y sidecar'
+    Assert-False $case.PayloadSentinel 'no se ejecuta el gestor descargado'
+    Assert-NoLeftovers -Case $case
+}
+
+Test-Case 'el nombre anterior sin marcador valido no autoriza a borrar nada' {
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -Seed $seedLegacyInvalidMarker
+    Assert-FailureNoWrites -Case $case -ErrorMessage ('El destino no es una instalacion del gestor de MensorCAD: ' + $case.Destination + '. Se cancela sin tocar archivos ajenos.') -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0 -SkipDestinationAbsent
+    Assert-Equal 'anterior mensorcad-manager.ps1' ([System.IO.File]::ReadAllText((Join-Path $case.Destination 'mensorcad.ps1'))) 'el lanzador anterior sigue ahi'
+    Assert-Equal 'anterior mensorcad.cmd' ([System.IO.File]::ReadAllText((Join-Path $case.Destination 'mensorcad.cmd'))) 'los archivos de la carpeta siguen ahi'
+    Assert-Equal 'v0.9.0' ([string](Get-Marker -Destination $case.Destination).version) 'el marcador ajeno no se reescribe'
+}
+
+Test-Case 'un archivo ajeno junto al gestor anterior no se borra' {
+    $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -Seed $seedLegacyInstallWithForeignFile
+    Assert-FailureNoWrites -Case $case -ErrorMessage ('El destino no es una instalacion del gestor de MensorCAD: ' + $case.Destination + '. Se cancela sin tocar archivos ajenos.') -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0 -SkipDestinationAbsent
+    Assert-Equal 'archivo ajeno dentro del gestor anterior' ([System.IO.File]::ReadAllText((Join-Path $case.Destination 'ajeno.txt'))) 'el archivo ajeno sigue ahi'
+    Assert-Equal 'anterior mensorcad-manager.ps1' ([System.IO.File]::ReadAllText((Join-Path $case.Destination 'mensorcad.ps1'))) 'el lanzador anterior no se reemplaza'
+    Assert-Equal 'v0.9.0' ([string](Get-Marker -Destination $case.Destination).version) 'el marcador anterior queda intacto'
+}
+
+Test-Case 'una mezcla de nombres en el destino no autoriza a borrar el anterior' {
+    $scenarios = @(
+        @{ Seed = $seedNewMarkerWithOldScript; Files = @('mensorcad-manager.ps1', 'mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1') },
+        @{ Seed = $seedLegacyMarkerWithBothScripts; Files = @('mensorcad.ps1', 'mensorcad-manager.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1') },
+        @{ Seed = $seedNewMarkerWithOnlyOldScript; Files = @('mensorcad.ps1', 'mensorcad.cmd', 'Install-MensorCAD.ps1') }
+    )
+    foreach ($scenario in $scenarios) {
+        $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -Seed $scenario.Seed
+        Assert-FailureNoWrites -Case $case -ErrorMessage ('El destino no es una instalacion del gestor de MensorCAD: ' + $case.Destination + '. Se cancela sin tocar archivos ajenos.') -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0 -SkipDestinationAbsent
+        Assert-Equal ((@(@($scenario.Files) + @($script:MarkerName)) | Sort-Object) -join ',') ((Get-InstalledNames -Case $case) -join ',') 'ningun archivo se agrega ni se borra'
+        $marker = Get-Marker -Destination $case.Destination
+        Assert-Equal 'v0.9.0' ([string]$marker.version) 'el marcador no se reescribe'
+        Assert-Equal '2024-01-01T00:00:00Z' ([string]$marker.installed) 'el marcador conserva su contenido'
+        foreach ($name in @($scenario.Files)) {
+            Assert-Equal ('anterior ' + $name) ([System.IO.File]::ReadAllText((Join-Path $case.Destination $name))) 'cada archivo conserva su contenido'
+        }
+    }
 }
 
 Test-Case 'crea el PATH cuando el usuario no tenia el valor' {
@@ -1133,8 +1277,13 @@ Test-Case 'un sidecar con formato invalido no escribe nada' {
 Test-Case 'un ZIP con entradas que no son las tres exactas no escribe nada' {
     foreach ($mode in @('zip-extra', 'zip-missing-entry')) {
         $case = Invoke-CliCase -CommandText $latestCommand -AssetMode $mode -PathValue 'C:\Windows'
-        Assert-FailureNoWrites -Case $case -ErrorMessage 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.' -PathValue 'C:\Windows'
+        Assert-FailureNoWrites -Case $case -ErrorMessage 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.' -PathValue 'C:\Windows'
     }
+}
+
+Test-Case 'un ZIP con el nombre anterior del gestor no escribe nada' {
+    $case = Invoke-CliCase -CommandText $latestCommand -AssetMode 'zip-legacy-entry' -PathValue 'C:\Windows'
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.' -PathValue 'C:\Windows'
 }
 
 Test-Case 'un ZIP con duplicados o traversal no escribe nada' {
@@ -1164,7 +1313,7 @@ Test-Case 'un archivo ajeno dentro del gestor instalado no se borra' {
     $case = Invoke-CliCase -CommandText $latestCommand -PathValue 'C:\Windows' -Seed $seedManagedDestinationWithForeignFile
     Assert-FailureNoWrites -Case $case -ErrorMessage ('El destino no es una instalacion del gestor de MensorCAD: ' + $case.Destination + '. Se cancela sin tocar archivos ajenos.') -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0 -SkipDestinationAbsent
     Assert-Equal 'archivo ajeno dentro del gestor' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'ajeno.txt'))) 'el archivo ajeno sigue ahi'
-    Assert-Equal 'anterior mensorcad.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))) 'la instalacion anterior no se reemplaza'
+    Assert-Equal 'anterior mensorcad-manager.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad-manager.ps1'))) 'la instalacion anterior no se reemplaza'
 }
 
 Test-Case 'un destino que es un archivo no se toca' {
@@ -1205,7 +1354,7 @@ Test-Case 'el rollback devuelve la version anterior del gestor' {
     Assert-True $case.Stderr.Contains('Se restauro la instalacion anterior.') 'el mensaje debe informar el rollback'
     $marker = Get-Marker -Destination $case.Destination
     Assert-Equal 'v0.9.0' ([string]$marker.version) 'vuelve el marcador anterior'
-    Assert-Equal 'anterior mensorcad.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))) 'vuelven los archivos anteriores'
+    Assert-Equal 'anterior mensorcad-manager.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad-manager.ps1'))) 'vuelven los archivos anteriores'
     Assert-Equal 'cli' ((Get-ManagedRootNames -Case $case) -join ',') 'sin respaldos ni staging'
     Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'el PATH no se escribe'
 }
@@ -1225,7 +1374,7 @@ Test-Case 'instala el gestor desde un ZIP local sin red y sin ejecutarlo' {
     Assert-Equal '1.2.3' ([string]$marker.version) 'el marcador guarda la version derivada del gestor local, no un tag inventado'
     Assert-Equal 'MensorCAD-CLI' ([string]$marker.owner) 'el marcador identifica al gestor'
     Assert-Equal 3 (@($marker.files).Count) 'el marcador declara los tres archivos del gestor'
-    $installed = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))
+    $installed = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad-manager.ps1'))
     Assert-Equal (Get-LocalManagerText -Version '1.2.3') $installed 'se instala el texto del ZIP local tal cual'
     Assert-Equal 1 ([int]$case.Result.Registry.SetCalls) 'una sola escritura de PATH'
     $entry = Get-RegistryEntry -Result $case.Result -Name 'Path'
@@ -1303,7 +1452,7 @@ Test-Case 'la ruta local reutiliza el PATH ya registrado sin duplicarlo' {
     Assert-Equal 0 ([int]$case.Result.Registry.SetCalls) 'no debe reescribir un PATH ya registrado'
     $marker = Get-Marker -Destination $case.Destination
     Assert-Equal '1.2.3' ([string]$marker.version) 'el marcador guarda la version local'
-    $content = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))
+    $content = [System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad-manager.ps1'))
     Assert-False ($content -like 'anterior*') 'los archivos del gestor se reemplazan'
     Assert-NoLeftovers -Case $case
 }
@@ -1327,7 +1476,7 @@ Test-Case 'el rollback de la ruta local devuelve la version anterior' {
     Assert-True $case.Stderr.Contains('Se restauro la instalacion anterior.') 'el mensaje debe informar el rollback'
     $marker = Get-Marker -Destination $case.Destination
     Assert-Equal 'v0.9.0' ([string]$marker.version) 'vuelve el marcador anterior'
-    Assert-Equal 'anterior mensorcad.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad.ps1'))) 'vuelven los archivos anteriores'
+    Assert-Equal 'anterior mensorcad-manager.ps1' ([System.IO.File]::ReadAllText((Join-Path -Path $case.Destination -ChildPath 'mensorcad-manager.ps1'))) 'vuelven los archivos anteriores'
     Assert-Equal 'cli' ((Get-ManagedRootNames -Case $case) -join ',') 'sin respaldos ni staging'
     Assert-SinRed -Case $case
 }
@@ -1356,18 +1505,18 @@ Test-Case 'el sidecar del ZIP del complemento no sirve como sidecar del gestor' 
 
 Test-Case 'un ZIP local con entradas que no son las tres exactas no escribe nada' {
     $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'zip-extra' -PathValue 'C:\Windows'
-    Assert-FailureNoWrites -Case $case -ErrorMessage 'El ZIP no contiene exactamente mensorcad.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El ZIP no contiene exactamente mensorcad-manager.ps1, mensorcad.cmd e Install-MensorCAD.ps1. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
 }
 
-Test-Case 'un mensorcad.ps1 local sin version sellada no escribe nada' {
+Test-Case 'un mensorcad-manager.ps1 local sin version sellada no escribe nada' {
     $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'unversioned' -PathValue 'C:\Windows'
-    Assert-FailureNoWrites -Case $case -ErrorMessage 'El mensorcad.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El mensorcad-manager.ps1 del ZIP local no declara una version estable sellada, por ejemplo 1.2.3. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
     Assert-False $case.PayloadSentinel 'la version se lee como texto; el gestor no se ejecuta'
 }
 
-Test-Case 'un mensorcad.ps1 local con dos versiones no escribe nada' {
+Test-Case 'un mensorcad-manager.ps1 local con dos versiones no escribe nada' {
     $case = Invoke-CliCase -CommandTemplate (New-LocalCommandTemplate "-LocalZip '@@LOCALZIP@@'") -LocalAssetMode 'ambiguous' -PathValue 'C:\Windows'
-    Assert-FailureNoWrites -Case $case -ErrorMessage 'El mensorcad.ps1 del ZIP local declara mas de una version. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
+    Assert-FailureNoWrites -Case $case -ErrorMessage 'El mensorcad-manager.ps1 del ZIP local declara mas de una version. No se instalo nada.' -PathValue 'C:\Windows' -ExpectedApiCalls 0 -ExpectedWebRequests 0
 }
 
 Test-Case 'la ruta local rechaza -Version antes de la red y de las escrituras' {

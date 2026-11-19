@@ -8,7 +8,7 @@
     esos bytes, no con copias de conveniencia:
 
       1. inspecciona el indice y el sidecar de MensorCAD-CLI.zip;
-      2. extrae el ZIP del gestor y comprueba que mensorcad.ps1 viaja estampado,
+      2. extrae el ZIP del gestor y comprueba que mensorcad-manager.ps1 viaja estampado,
          que el motor tambien esta estampado y que mensorcad.cmd no cambio;
       3. extrae MensorCAD-Windows.zip, valida su inventario con el motor real
          (Test-MensorCadSource) y comprueba que Install-MensorCAD.ps1 figura en
@@ -686,7 +686,7 @@ $script:CliRoot = Join-Path -Path $script:TestRoot -ChildPath 'c'
 # real, pero siempre dentro del scratch de la corrida.
 $script:IsolatedRoot = $script:TestRoot
 $script:DestinationRoot = Join-Path -Path $script:IsolatedRoot -ChildPath 'Autodesk\ApplicationPlugins\MensorCAD.bundle'
-$script:ManagerScript = Join-Path -Path $script:CliRoot -ChildPath 'mensorcad.ps1'
+$script:ManagerScript = Join-Path -Path $script:CliRoot -ChildPath 'mensorcad-manager.ps1'
 $script:CliEngine = Join-Path -Path $script:CliRoot -ChildPath $script:EngineName
 $script:CliLauncher = Join-Path -Path $script:CliRoot -ChildPath 'mensorcad.cmd'
 $script:HarnessScript = Join-Path -Path $script:TestRoot -ChildPath 'h.ps1'
@@ -787,7 +787,7 @@ Test-Case 'el ZIP del gestor tiene tres entradas planas exactas y su sidecar' {
     $cliZip = Join-Path $script:BuildDir $script:CliZipName
     $names = @(Get-ZipEntryNames -ZipPath $cliZip)
     Assert-Equal 3 $names.Count 'el ZIP del gestor debe tener tres entradas'
-    $expected = @('Install-MensorCAD.ps1', 'mensorcad.cmd', 'mensorcad.ps1')
+    $expected = @('Install-MensorCAD.ps1', 'mensorcad-manager.ps1', 'mensorcad.cmd')
     for ($index = 0; $index -lt $expected.Count; $index++) {
         Assert-Equal $expected[$index] $names[$index] 'entrada del ZIP del gestor fuera de orden'
     }
@@ -809,7 +809,7 @@ Test-Case 'el ZIP del gestor tiene tres entradas planas exactas y su sidecar' {
 
 Test-Case 'el gestor viaja estampado, el motor estampado y el lanzador intacto' {
     $cliZip = Join-Path $script:BuildDir $script:CliZipName
-    $managerText = [System.Text.Encoding]::UTF8.GetString((Get-ZipEntryBytes -ZipPath $cliZip -EntryName 'mensorcad.ps1'))
+    $managerText = [System.Text.Encoding]::UTF8.GetString((Get-ZipEntryBytes -ZipPath $cliZip -EntryName 'mensorcad-manager.ps1'))
     Assert-Contains $managerText $script:DistributionVersion 'el gestor debe llevar la version estampada'
     Assert-NotContains $managerText '__MENSORCAD_MANAGER_VERSION__' 'el gestor no puede conservar el marcador'
     Assert-NotContains $managerText '__MENSORCAD_RELEASE_VERSION__' 'el gestor no lleva la version del producto'
@@ -1004,7 +1004,7 @@ Test-Case 'el ZIP real del complemento se instala por la ruta local publica y si
     Assert-LocalEvidenceClean 'instalacion local'
     Assert-Equal $zipBefore (Get-FileSha256 -Path $zipPath) 'el ZIP real no se puede modificar'
     Assert-Equal $sidecarBefore (Get-FileSha256 -Path $sidecarPath) 'el sidecar real no se puede modificar'
-    Assert-True (Test-Path -LiteralPath (Join-Path $script:CliRoot 'mensorcad.ps1') -PathType Leaf) 'el gestor registrado debe seguir disponible'
+    Assert-True (Test-Path -LiteralPath (Join-Path $script:CliRoot 'mensorcad-manager.ps1') -PathType Leaf) 'el gestor registrado debe seguir disponible'
 }
 
 Test-Case 'la misma version no reinstala ni ejecuta el paquete en install ni en update' {
@@ -1167,7 +1167,7 @@ Test-Case 'el motor protegido del paquete local real desinstala sin conexion y c
     $declared = @($installedMarker.Files | Where-Object { $_.Path -eq $script:EngineName })[0]
     Assert-Equal ([string]$declared.Sha256) (Get-FileSha256 -Path $protectedEngine) 'el motor protegido debe coincidir con su inventario'
     $cliFiles = @(Get-ChildItem -LiteralPath $script:CliRoot -File | ForEach-Object { $_.Name })
-    Assert-True ($cliFiles -contains 'mensorcad.ps1') 'el gestor registrado debe existir antes de desinstalar'
+    Assert-True ($cliFiles -contains 'mensorcad-manager.ps1') 'el gestor registrado debe existir antes de desinstalar'
     $installedInventory = @(Get-ChildItem -LiteralPath $script:LocalDestinationRoot -Recurse -File)
     $result = Invoke-PowerShellFile -Script $script:LocalChildWrapper -Arguments @(
         '-Mode', 'uninstall',

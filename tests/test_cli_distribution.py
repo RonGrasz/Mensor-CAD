@@ -112,7 +112,7 @@ class DistributionSuiteStructureTests(unittest.TestCase):
             "Test-MensorCadSource",
             "Install-MensorCadBundle",
             "Uninstall-MensorCadBundle",
-            "mensorcad.ps1",
+            "mensorcad-manager.ps1",
             "mensorcad.cmd",
         ):
             self.assertIn(fragmento, self.suite, f"la suite no ejercita {fragmento}")

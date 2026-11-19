@@ -211,7 +211,7 @@ function Get-MensorCadManagerCommand {
 function Get-MensorCadManagerEnginePath {
     $path = Join-Path -Path $script:MensorCadManagerScriptRoot -ChildPath $script:MensorCadManagerEngineFileName
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw ('No se encontró el motor "' + $script:MensorCadManagerEngineFileName + '" junto a mensorcad.ps1. Reinstalá el comando gestor.')
+        throw ('No se encontró el motor "' + $script:MensorCadManagerEngineFileName + '" junto a mensorcad-manager.ps1. Reinstalá el comando gestor.')
     }
     return $path
 }

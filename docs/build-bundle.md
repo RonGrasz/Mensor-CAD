@@ -19,7 +19,7 @@ python tools/build_bundle.py --output-dir dist --version 0.2.0
 |---|---|
 | `MensorCAD-Windows.zip` | Complemento de AutoCAD: `MensorCAD.bundle/`, `bundle.sha256`, `Install-MensorCAD.ps1`, `Instalar.bat`, `Desinstalar.bat` y `LICENSE`. |
 | `MensorCAD-Windows.zip.sha256` | Sidecar del ZIP del complemento: `64 hex`, dos espacios y `MensorCAD-Windows.zip`. |
-| `MensorCAD-CLI.zip` | Gestor: exactamente tres entradas planas, `Install-MensorCAD.ps1`, `mensorcad.cmd` y `mensorcad.ps1`. |
+| `MensorCAD-CLI.zip` | Gestor: exactamente tres entradas planas, `Install-MensorCAD.ps1`, `mensorcad.cmd` y `mensorcad-manager.ps1`. |
 | `MensorCAD-CLI.zip.sha256` | Sidecar del ZIP del gestor: `64 hex`, dos espacios y `MensorCAD-CLI.zip`. |
 | `Install-MensorCAD.ps1` | Motor estampado con la versión, para instalar desde una carpeta extraída. |
 | `install.ps1` | Bootstrap corto de la entrada remota, copiado **byte a byte** y fuera del ZIP. |
@@ -29,7 +29,7 @@ python tools/build_bundle.py --output-dir dist --version 0.2.0
 | Tema | Decisión |
 |---|---|
 | Versión del producto | La plantilla `Install-MensorCAD.ps1` debe contener exactamente un marcador `__MENSORCAD_RELEASE_VERSION__`; se reemplaza solo ese marcador y se conservan BOM y fines de línea. |
-| Versión del gestor | `mensorcad.ps1` debe contener exactamente un marcador `__MENSORCAD_MANAGER_VERSION__`. El gestor no lleva la versión del producto y el motor no lleva la del gestor. |
+| Versión del gestor | `mensorcad-manager.ps1` debe contener exactamente un marcador `__MENSORCAD_MANAGER_VERSION__`. El gestor no lleva la versión del producto y el motor no lleva la del gestor. |
 | Lanzador CMD | `mensorcad.cmd` se copia byte a byte dentro del ZIP del gestor; debe ser ASCII sin BOM para que CMD lo ejecute igual en cualquier configuración regional. |
 | Bootstrap | `install.ps1` no se estampa, no puede contener marcadores y no viaja dentro de ningún ZIP: es la cuarta salida y se copia sin cambios. |
 | Motor protegido | El motor estampado también se guarda como `MensorCAD.bundle/Install-MensorCAD.ps1` y figura en `bundle.sha256` con su propio hash. Así el gestor puede desinstalar sin conexión y el inventario instalado contiene el motor que lo valida. Ese archivo es **opcional** al validar el paquete: los ZIP construidos antes del motor protegido siguen aceptándose con su propio `bundle.sha256`, y el resto de las entradas conserva sus comprobaciones obligatorias. |
@@ -48,7 +48,7 @@ python tools/build_bundle.py --output-dir dist --version 0.2.0
 | `--cuix-dir` | `cuix/` | Árbol OPC completo; se preserva cada byte y cada ruta relativa. |
 | `--install-script` | `Install-MensorCAD.ps1` | Plantilla del motor; un único `__MENSORCAD_RELEASE_VERSION__`. |
 | `--bootstrap-script` | `install.ps1` | Se copia sin estampar y no puede contener marcadores. |
-| `--manager-script` | `mensorcad.ps1` | Gestor; un único `__MENSORCAD_MANAGER_VERSION__`. |
+| `--manager-script` | `mensorcad-manager.ps1` | Gestor; un único `__MENSORCAD_MANAGER_VERSION__`. |
 | `--launcher-script` | `mensorcad.cmd` | Lanzador CMD; ASCII sin BOM, copia byte a byte. |
 | `--bat-script` | `Instalar.bat` | Entrada de doble clic del ZIP del complemento. |
 | `--uninstall-bat-script` | `Desinstalar.bat` | Desinstalador de doble clic del ZIP del complemento. |
@@ -127,7 +127,7 @@ mensorcad uninstall
 
 | Tema | Regla |
 |---|---|
-| ZIP del gestor | `MensorCAD-CLI.zip` contiene solo el gestor (`mensorcad.ps1`, `mensorcad.cmd`, `Install-MensorCAD.ps1`) y registra el comando en el `PATH` del usuario. |
+| ZIP del gestor | `MensorCAD-CLI.zip` contiene solo el gestor (`mensorcad-manager.ps1`, `mensorcad.cmd`, `Install-MensorCAD.ps1`) y registra el comando en el `PATH` del usuario. |
 | ZIP del complemento | `MensorCAD-Windows.zip` contiene `MensorCAD.bundle/`, `bundle.sha256`, `Instalar.bat` y `Desinstalar.bat`; lo instala el gestor. |
 | Sidecar | Cada ZIP exige su `.sha256` **en la misma carpeta**, con el mismo nombre más la extensión. |
 | Integridad | El SHA-256 prueba que el ZIP es el elegido; **no autentica al publicador**. Usá solo builds propios. |

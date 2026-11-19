@@ -79,7 +79,7 @@ detiene sin tocar el destino ni el `PATH`.
 |------|----------|
 | Red | No consulta la API de GitHub y no descarga nada. |
 | Validacion | Reutiliza el mismo SHA-256, el recuento exacto de entradas, el staging transaccional y el `PATH` de usuario de la ruta remota. |
-| Version | Sale del `mensorcad.ps1` incluido en el ZIP, leido como texto inerte: una sola linea `$script:MensorCadManagerVersion = 'X.Y.Z'`. El gestor no se ejecuta para averiguarla y no se inventa ningun tag de release. |
+| Version | Sale del `mensorcad-manager.ps1` incluido en el ZIP, leido como texto inerte: una sola linea `$script:MensorCadManagerVersion = 'X.Y.Z'`. El gestor no se ejecuta para averiguarla y no se inventa ningun tag de release. |
 | Excluyente | `-LocalZip` y `-Version` son mutuamente excluyentes; el rechazo ocurre antes de cualquier red o escritura. |
 | Ruta relativa | Se resuelve contra la carpeta actual de su sesion de PowerShell, la misma que usa `Get-ChildItem`, aunque el comando se haya ejecutado despues de `Set-Location`. Las rutas absolutas, UNC y con espacios se aceptan tal cual; una ruta que no pertenece al sistema de archivos se rechaza sin red y sin escrituras. |
 | Complemento | No instala el complemento y no pide UAC: eso sigue siendo `mensorcad install`. |
@@ -104,7 +104,7 @@ En este orden, sin saltarse ninguno:
    descarga del tag fijado o los copia a una carpeta temporal propia;
 4. comprueba el SHA-256 del ZIP contra el sidecar;
 5. valida el indice del ZIP antes de escribir el destino: exactamente tres
-   entradas planas (`mensorcad.ps1`, `mensorcad.cmd` e
+   entradas planas (`mensorcad-manager.ps1`, `mensorcad.cmd` e
    `Install-MensorCAD.ps1`), sin duplicados, sin rutas con traversal, sin
    enlaces ni puntos de reanalisis y con tamanios acotados;
 6. extrae el ZIP en una carpeta de staging propia (GUID completo), escribe el
@@ -113,7 +113,7 @@ En este orden, sin saltarse ninguno:
 7. agrega la carpeta del gestor al `PATH` del usuario una sola vez.
 
 En la ruta remota el marcador guarda el tag del release. En la ruta local guarda
-la version estable leida del `mensorcad.ps1` ya extraido.
+la version estable leida del `mensorcad-manager.ps1` ya extraido.
 
 Ningun script descargado se ejecuta durante la instalacion: no se ejecuta el
 instalador del complemento, no se ejecuta el gestor y no se ejecuta nada del
@@ -136,6 +136,25 @@ el bootstrap fuera del ZIP.
 Las carpetas de staging y de respaldo usan un GUID completo y solo existen
 mientras dura la operacion. Un destino con contenido ajeno no se toca, no se
 sobrescribe y no se borra: el bootstrap se detiene con un error.
+
+### Actualizacion desde el lanzador anterior
+
+Las instalaciones hechas antes de este cambio tienen `mensorcad.ps1` en la
+carpeta del gestor. Ese nombre ocultaba al `mensorcad.cmd` publico y hacia que
+PowerShell intentara ejecutar el script, bloqueado cuando la politica de
+ejecucion no permite scripts.
+
+Repetir el bootstrap reconoce esa carpeta por su marcador, la reemplaza completa
+y deja solo los tres nombres actuales: `mensorcad-manager.ps1` en lugar del
+`mensorcad.ps1` anterior. La migracion tiene limites estrictos:
+
+| Tema | Decision |
+|------|----------|
+| Formato anterior | El nombre `mensorcad.ps1` solo es propio cuando el marcador declara exactamente los tres nombres antiguos y el gestor nuevo no existe. |
+| Mezclas | Una instalacion actual con un `mensorcad.ps1` agregado (por ejemplo, un respaldo del usuario) o un marcador anterior con ambos scripts se rechaza sin borrar nada. |
+| Marcador | Sigue siendo obligatorio y valido. Un `mensorcad.ps1` suelto, sin marcador propio, no autoriza a borrar nada. |
+| Contenido ajeno | Cualquier archivo desconocido en la carpeta cancela la actualizacion sin borrar nada, igual que antes. |
+| Rollback | Si el `PATH` falla, vuelve la carpeta anterior completa, incluido su `mensorcad.ps1`. |
 
 ## PATH del usuario
 
@@ -241,7 +260,7 @@ pide UAC y no llama a GitHub: usa fixtures de ZIP y un registro falso. Ese
 registro falso modela el backend real: el acceso que entrega `Get-Item` es de
 solo lectura, el bootstrap abre su propio acceso de escritura y la suite exige
 que todos los accesos queden cerrados. La ruta local se prueba con un ZIP
-fixture cuyo `mensorcad.ps1` lleva la version sellada escrita como texto; la
+fixture cuyo `mensorcad-manager.ps1` lleva la version sellada escrita como texto; la
 suite verifica cero consultas al release, cero descargas y que el gestor nunca
 se ejecuta.
 

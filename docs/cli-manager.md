@@ -158,10 +158,21 @@ rechaza y sugiere `--help`.
 
 ## Lanzador CMD
 
+La entrada pública es `mensorcad.cmd`; el script interno se llama
+`mensorcad-manager.ps1`. Así, al escribir `mensorcad` en PowerShell se encuentra
+el lanzador CMD, sin intentar ejecutar primero un `mensorcad.ps1` bloqueado por
+la política de scripts del equipo.
+
+Si una instalación anterior todavía presenta ese bloqueo, `mensorcad.cmd`
+permite usar el gestor. Para migrarla, volvé a ejecutar el bootstrap actualizado:
+reemplaza la carpeta reconocida como propia y no deja el antiguo `mensorcad.ps1`.
+No borra carpetas con archivos ajenos ni requiere cambiar la política global.
+
 `mensorcad.cmd` usa `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 con `-NoProfile -ExecutionPolicy Bypass -File`, reenvía `%*` sin reinterpretar y
 termina con `exit /b %ERRORLEVEL%`, por lo que el código del gestor llega intacto
-a CMD y a PowerShell.
+a CMD y a PowerShell. `Bypass` afecta solo al proceso hijo; no modifica la
+política permanente del equipo ni anula políticas corporativas de mayor prioridad.
 
 ## Limitaciones conocidas
 

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MANAGER = ROOT / "mensorcad.ps1"
+MANAGER = ROOT / "mensorcad-manager.ps1"
 LAUNCHER = ROOT / "mensorcad.cmd"
 ENGINE = ROOT / "Install-MensorCAD.ps1"
 MANAGER_TESTS = ROOT / "tests" / "Test-Manager.ps1"
@@ -79,7 +79,7 @@ class ManagerStructureTests(unittest.TestCase):
         self.assertTrue(MANAGER.is_file(), f"falta {MANAGER}")
         self.assertTrue(
             self.raw.startswith(b"\xef\xbb\xbf"),
-            "mensorcad.ps1 debe llevar BOM UTF-8 para PowerShell 5.1",
+            "mensorcad-manager.ps1 debe llevar BOM UTF-8 para PowerShell 5.1",
         )
         self.assertTrue(self.raw.endswith(b"\n"), "falta el salto de linea final")
         self.assertNotIn(
@@ -467,7 +467,7 @@ class ManagerStructureTests(unittest.TestCase):
         self.assertTrue(self.launcher_raw.endswith(b"\r\n"), "falta el CRLF final")
         for fragmento in (
             "@echo off",
-            "%~dp0mensorcad.ps1",
+            "%~dp0mensorcad-manager.ps1",
             "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             "-NoProfile",
             "-ExecutionPolicy Bypass",
