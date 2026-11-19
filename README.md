@@ -173,7 +173,26 @@ Configura cortes paralelos o en abanico y define cómo repartir la superficie.
 
 ### Tablas de coordenadas
 
-Ajusta las columnas, el recorrido y las etiquetas de los vértices.
+Ajusta el orden de las coordenadas, el recorrido y las etiquetas de los vértices; además eliges la altura del texto de las tablas en el propio cuadro de diálogo. Las tablas nuevas calculan sus anchos según los títulos, encabezados y datos, con márgenes y alturas proporcionales para evitar cortes de palabras y filas amontonadas.
+
+**Altura del texto.** El campo «Altura del texto (unidades de dibujo)» fija el tamaño de las dos tablas; el valor predeterminado es `1.0` y no depende de `TEXTSIZE` ni del estilo de texto del dibujo. Se aceptan decimales mayores que cero: un valor vacío, negativo, cero o mal escrito se rechaza con un aviso en el mismo cuadro. Las dos tablas calculan su ancho con el mismo criterio compacto: el ancho medido de títulos, encabezados y datos más márgenes horizontales de `0.5` alturas de texto a cada lado de las celdas, sin porcentaje extra sobre el texto medido. La columna de estaciones conserva además un mínimo de cuatro alturas de texto para que el encabezado `EST` se vea en una sola línea en las dos tablas, y los rótulos de estación en negrita mantienen una holgura mínima para no recortarse; ese mínimo es solo un piso, así que más vértices o números de estación más largos siguen ampliando la columna. Si el título requiere espacio adicional, se reparte por igual entre las dos columnas de datos, sin ensanchar la columna de estaciones. Cuando se dibujan las dos tablas, el comando iguala su tamaño final: la más angosta se amplía, sin quedar por debajo de lo medido, hasta el ancho total de la otra repartiendo el espacio extra entre sus columnas de datos, y cada fila toma la altura mayor de las dos, así que las dos tablas ocupan lo mismo sin recortar texto ni reducir la altura de la fuente. Si se omite el punto de la tabla de rumbos, la tabla de coordenadas se dibuja sola con su propio ancho. La cantidad de vértices añade filas sin reducir el texto ni los márgenes.
+
+**Fuente privada.** Las tablas usan un estilo de texto propio, `MCTABLE-TABLAS`, con la fuente Arial (`arial.ttf`), altura fija 0, ancho 1 y sin oblicuidad. Antes de dibujar, el comando busca Arial en las rutas de búsqueda de AutoCAD y, si no la encuentra ahí, en la carpeta `Fonts` de Windows; cuando Arial no está disponible usa la fuente estándar de AutoCAD `txt.shx` (o `simplex.shx` si tampoco existe) y lo avisa en la línea de comandos. Si no localiza ninguna de ellas, muestra un error y aborta sin crear el estilo ni dibujar tablas, en lugar de dibujar con una fuente sustituida desconocida. El estilo se crea con el nombre de fuente sin ruta; si `MCTABLE-TABLAS` ya existe con otra fuente u otra definición se crea una variante con sufijo en vez de redefinirlo, y si la creación falla el comando aborta con el mismo aviso. Se mantienen la altura elegida, los márgenes proporcionales y los anchos dinámicos en las dos tablas. El estilo se aplica solo a las tablas nuevas: no cambia el estilo de texto actual ni el estilo de tabla del dibujo, ni modifica las tablas ya creadas. Para probar una actualización del script, vuelve a cargar `MC-TABLE.lsp` con `APPLOAD` y genera tablas nuevas con `MCTABLE`.
+
+**Símbolos y numeración.** El bloque «Apariencia de Vértices» incorpora las mismas opciones que MCVERTEX, aplicadas de forma independiente en MCTABLE (no necesita cargar `MC-VERTEX.lsp`): «Radio», «Mostrar etiquetas», «Prefijo etiquetas», «Número inicial», «Vértices a omitir entre puntos» y la lista «Símbolo del vértice» con su vista previa y el campo «Fuente» de las etiquetas.
+
+| Opción | Predeterminado | Efecto |
+| --- | --- | --- |
+| Radio | `1.0` | Tamaño del símbolo y de la etiqueta; se exige un número positivo. |
+| Mostrar etiquetas | Activado | Sin etiquetas se mantienen los símbolos y las tablas completas. |
+| Prefijo etiquetas | `E` | Prefijo del texto `E-<estación>`. |
+| Número inicial | `1` | Primera estación de las etiquetas y de la columna EST de las dos tablas; entero entre 1 y 2147483647. |
+| Vértices a omitir entre puntos | `0` | Solo filtra etiquetas: con 5 o más vértices deja `omitir` vértices sin etiqueta entre dos etiquetas. |
+| Símbolo del vértice | Círculo sin marca central | Símbolo en todos los vértices, con la misma lista de 20 estilos y la misma vista previa que MCVERTEX. |
+
+**Numeración y omisión.** Las etiquetas y las dos tablas comparten la numeración: con siete vértices, inicio `5` y omisión `2` se dibujan siete símbolos, las etiquetas `E-5`, `E-8` y `E-11`, y las filas EST de ambas tablas van de `5` a `11`. Las filas de las tablas nunca se omiten y los símbolos se dibujan en todos los vértices, aunque la omisión o «Mostrar etiquetas» dejen vértices sin texto. El estilo «sin marca central» no dibuja ningún símbolo y se rechaza si las etiquetas están desactivadas. Las etiquetas siguen evitando los símbolos de los vértices sin etiqueta y los bordes del polígono.
+
+**Validación y dibujo.** El radio debe ser positivo y el número inicial y la omisión deben ser enteros decimales estrictos (mismo criterio que MCVERTEX: no se acepta texto sobrante ni decimales). Si un valor no sirve, el cuadro sigue abierto con el aviso y el foco en el campo; las entradas escritas, incluidas las inválidas, se conservan al reabrir el cuadro para elegir el origen. Como todas las filas de las tablas llevan estación, la numeración se valida con el último vértice completo antes de crear etiquetas o tablas: `inicio` más el último índice no puede superar 2147483647. Los símbolos y las etiquetas solo se dibujan en polilíneas horizontales con normal `+Z`; en otros casos las tablas se construyen igual. La fuente elegida en «Fuente» se usa para medir y dibujar las etiquetas sin cambiar el estilo de texto del dibujo.
 
 <img src="docs/images/Tabla-de-coordenadas.png" width="660" alt="Ventana de MCTABLE para preparar tablas de coordenadas" loading="lazy">
 
@@ -186,6 +205,8 @@ Elige entre recorrer un contorno o indicar pares de puntos manualmente.
 ### Símbolos de vértices
 
 Elige el símbolo, su tamaño y la numeración que vas a usar.
+
+**Omisión de etiquetas.** «Vértices a omitir entre puntos» afecta solo a las etiquetas: el símbolo elegido se genera en todos los vértices conservados tras aplicar la tolerancia, incluso con «Mostrar etiquetas» desactivado. La omisión se aplica desde cinco vértices conservados; con omisión `2` e inicio `1`, las etiquetas son `E-1`, `E-4`, `E-7…`, sin renumerar los demás vértices. Las etiquetas también evitan los símbolos de los vértices sin etiqueta.
 
 <img src="docs/images/Etiqueta-de-vertice.png" width="660" alt="Ventana de MCVERTEX con símbolos y etiquetas de vértices" loading="lazy">
 

@@ -39,21 +39,44 @@
       (write-line "  }" f)
       (write-line "" f)
       (write-line "  : boxed_column {" f)
+      (write-line "    label = \"Apariencia de las Tablas\";" f)
+      (write-line "    key = \"grp_tablas\";" f)
+      (write-line "    : row {" f)
+      (write-line "      : text { label = \"Altura del texto (unidades de dibujo):\"; }" f)
+      (write-line "      : edit_box { key = \"eb_altura_tabla\"; value = \"1.0\"; width = 8; edit_width = 6; }" f)
+      (write-line "    }" f)
+      (write-line "    : text { key = \"txt_altura_error\"; label = \"\"; width = 46; }" f)
+      (write-line "  }" f)
+      (write-line "" f)
+      (write-line "  : boxed_column {" f)
       (write-line "    label = \"Apariencia de Vértices\";" f)
       (write-line "    : row {" f)
-      (write-line "      : text { label = \"Prefijo:\"; }" f)
-      (write-line "      : edit_box { key = \"txt_prefijo_tag\"; value = \"E\"; width = 6; edit_width = 4; }" f)
       (write-line "      : text { label = \"Radio:\"; }" f)
       (write-line "      : edit_box { key = \"txt_radio_vertice\"; value = \"1.0\"; width = 8; edit_width = 6; }" f)
+      (write-line "      : toggle { key = \"ck_etiquetas\"; label = \"Mostrar etiquetas\"; value = \"1\"; }" f)
       (write-line "    }" f)
       (write-line "    : row {" f)
+      (write-line "      : text { label = \"Prefijo etiquetas:\"; }" f)
+      (write-line "      : edit_box { key = \"txt_prefijo_tag\"; value = \"E\"; width = 8; edit_width = 6; }" f)
       (write-line "      : text { label = \"Fuente:\"; }" f)
-      (write-line "      : edit_box { key = \"txt_fuente_tag\"; value = \"Standard\"; width = 24; edit_width = 16; }" f)
+      (write-line "      : edit_box { key = \"txt_fuente_tag\"; value = \"Standard\"; width = 18; edit_width = 12; }" f)
+      (write-line "    }" f)
+      (write-line "    : edit_box { key = \"txt_inicio\"; label = \"Número inicial:\"; value = \"1\"; edit_width = 12; }" f)
+      (write-line "    : edit_box { key = \"txt_omitir\"; label = \"Vértices a omitir entre puntos:\"; value = \"0\"; edit_width = 12; }" f)
+      (write-line "    : text { label = \"La omisión afecta solo a las etiquetas; las tablas no cambian.\"; }" f)
+      (write-line "    : text { key = \"txt_vertice_error\"; label = \"\"; width = 46; }" f)
+      (write-line "  }" f)
+      (write-line "" f)
+      (write-line "  : boxed_column {" f)
+      (write-line "    label = \"Símbolo del vértice\";" f)
+      (write-line "    : row {" f)
+      (write-line "      : popup_list { key = \"pl_simbolo\"; label = \"Tipo:\"; edit_width = 30; }" f)
+      (write-line "      : image { key = \"preview_simbolo\"; width = 10; height = 4; fixed_width = true; fixed_height = true; color = -2; }" f)
       (write-line "    }" f)
       (write-line "  }" f)
       (write-line "" f)
       (write-line "  : boxed_column {" f)
-      (write-line "    label = \"Vértice inicial (E-1)\";" f)
+      (write-line "    label = \"Origen de la numeración\";" f)
       (write-line "    : row {" f)
       (write-line "      : text { key = \"txt_orig\"; label = \"Sin seleccionar\"; width = 32; }" f)
       (write-line "      : button { key = \"btn_orig\"; label = \"Seleccionar...\"; width = 14; fixed_width = true; }" f)
@@ -198,6 +221,139 @@
   )
   (reverse pts)
 )
+
+;; ============================================================
+;; SECCIÓN 3b: ENTRADA NUMÉRICA, SÍMBOLOS E ÍNDICES DE ETIQUETA
+;; ============================================================
+
+;; Convierte TXT en un real positivo o devuelve nil. Acepta un signo
+;; opcional, dígitos y un único punto decimal; rechaza texto sobrante,
+;; exponentes, comas y valores <= 0. Evita el silencio de atof ante
+;; entradas como "1abc". Mismo criterio que MC-VERTEX, sin depender de él.
+(defun MCTABLE:parsear-positivo (txt / s len i c punto digitos valido val)
+  (setq s (if txt (vl-string-trim " \t" txt) "")
+        len (strlen s)
+        i 1
+        punto nil
+        digitos 0
+        valido T)
+  ;; Signo opcional inicial (el signo negativo se rechaza por valor <= 0).
+  (if (and (>= len 1)
+           (member (substr s 1 1) '("+" "-")))
+    (setq i 2))
+  (while (and (<= i len) valido)
+    (setq c (substr s i 1))
+    (cond
+      ((and (>= (ascii c) 48) (<= (ascii c) 57))
+       (setq digitos (1+ digitos)))
+      ((and (= c ".") (not punto))
+       (setq punto T))
+      (T (setq valido nil)))
+    (setq i (1+ i)))
+  (if (or (not valido) (zerop digitos))
+    nil
+    (progn
+      (setq val (atof s))
+      (if (> val 0.0) val nil))))
+
+;; Entero decimal estricto en el rango de AutoLISP; no trunca decimales
+;; ni acepta el texto sobrante que atoi ignoraría. MINIMO permite 0 o 1.
+(defun MCTABLE:parsear-entero (txt minimo / s i valido val)
+  (setq s (if txt (vl-string-trim " \t" txt) "")
+        i 1 valido (> (strlen s) 0))
+  (while (and valido (<= i (strlen s)))
+    (if (not (member (substr s i 1) '("0" "1" "2" "3" "4" "5" "6" "7" "8" "9")))
+      (setq valido nil))
+    (setq i (1+ i)))
+  (if valido
+    (progn
+      (setq val (atof s))
+      (if (and (>= val minimo) (<= val 2147483647.0)) (fix val) nil))
+    nil))
+
+;; Las 20 combinaciones de DDPTYPE del catálogo de MC-VERTEX, reproducidas
+;; de forma independiente en el espacio de nombres MCTABLE. No hay
+;; dependencia de MC-VERTEX ni cambios en PDMODE/PDSIZE.
+(defun MCTABLE:lista-modos ()
+  '(0 1 2 3 4 32 33 34 35 36 64 65 66 67 68 96 97 98 99 100))
+
+;; Índice del símbolo por defecto: modo 33 = círculo sin marca central, el
+;; mismo círculo liso que MCTABLE ya dibujaba. La lista compartida coloca el
+;; modo 33 en el índice 6 (el índice 7 corresponde al modo 34, círculo + cruz).
+(defun MCTABLE:modo-inicial () 6)
+
+;; Nombres legibles en el mismo orden que MCTABLE:lista-modos.
+(defun MCTABLE:nombres-modos ( / nombres outer base)
+  (setq nombres nil)
+  (foreach outer '("" "Círculo + " "Cuadrado + " "Círculo y cuadrado + ")
+    (foreach base '("Punto" "Sin marca central" "Cruz +" "Cruz X" "Trazo vertical")
+      (setq nombres (cons (strcat outer base) nombres))))
+  (reverse nombres))
+
+;; Radio máximo real del símbolo: base conservadora para las colisiones de
+;; etiquetas. Cuadrado o cruz X alcanzan sqrt(2)*radio en sus esquinas; el
+;; punto solo es un SOLID diminuto; el estilo invisible no deja huella.
+(defun MCTABLE:radio-envolvente (modo radio / base outer rb ro)
+  (setq base (rem modo 32)
+        outer (- modo base)
+        rb (cond ((= base 0) (* radio 0.08 (sqrt 2.0)))
+                 ((= base 1) 0.0)
+                 ((= base 3) (* radio (sqrt 2.0)))
+                 (T radio))
+        ro (cond ((= outer 0) 0.0)
+                 ((member outer '(64 96)) (* radio (sqrt 2.0)))
+                 (T radio)))
+  (max rb ro))
+
+;; Previsualización DCL del símbolo elegido en el popup (índice de texto).
+(defun MCTABLE:preview (index / modo base outer w h cx cy r i ang x y px py)
+  (setq modo (nth (atoi (if index index "0")) (MCTABLE:lista-modos)))
+  (if (null modo) (setq modo 33))
+  (setq base (rem modo 32)
+        outer (- modo base)
+        w (dimx_tile "preview_simbolo")
+        h (dimy_tile "preview_simbolo")
+        cx (fix (/ w 2))
+        cy (fix (/ h 2))
+        r (fix (/ (min w h) 3)))
+  (start_image "preview_simbolo")
+  (fill_image 0 0 w h -2)
+  (cond
+    ((= base 0) (fill_image (1- cx) (1- cy) 3 3 7))
+    ((= base 2)
+     (vector_image (- cx r) cy (+ cx r) cy 7)
+     (vector_image cx (- cy r) cx (+ cy r) 7))
+    ((= base 3)
+     (vector_image (- cx r) (- cy r) (+ cx r) (+ cy r) 7)
+     (vector_image (+ cx r) (- cy r) (- cx r) (+ cy r) 7))
+    ((= base 4) (vector_image cx cy cx (- cy r) 7)))
+  (if (member outer '(32 96))
+    (progn
+      (setq i 0
+            px (+ cx r)
+            py cy)
+      (repeat 32
+        (setq i (1+ i)
+              ang (* 2.0 pi (/ i 32.0))
+              x (+ cx (fix (* r (cos ang))))
+              y (+ cy (fix (* r (sin ang)))))
+        (vector_image px py x y 7)
+        (setq px x py y))))
+  (if (member outer '(64 96))
+    (progn
+      (vector_image (- cx r) (- cy r) (+ cx r) (- cy r) 7)
+      (vector_image (+ cx r) (- cy r) (+ cx r) (+ cy r) 7)
+      (vector_image (+ cx r) (+ cy r) (- cx r) (+ cy r) 7)
+      (vector_image (- cx r) (+ cy r) (- cx r) (- cy r) 7)))
+  (end_image))
+
+;; Devuelve índices de etiquetas, no una geometría simplificada: los
+;; símbolos, las tablas y las colisiones usan todos los vértices.
+(defun MCTABLE:indices-anotacion (n omitir / i salto indices)
+  (setq i 0 salto (if (>= n 5) (+ 1.0 omitir) 1) indices nil)
+  (while (< i n)
+    (setq indices (cons (fix i) indices) i (+ i salto)))
+  (reverse indices))
 
 ;; ============================================================
 ;; SECCIÓN 4: COLOCACIÓN DE ETIQUETAS DE VÉRTICES
@@ -494,22 +650,93 @@
       (setq label-created (cons nuevo label-created))
       nuevo)))
 
+;; --- Símbolos de vértice ---
+;; Equivalentes locales a DDPTYPE con entidades LINE, CIRCLE y un SOLID
+;; diminuto; nunca se crean entidades POINT ni se tocan PDMODE/PDSIZE.
+
+(defun MCTABLE:desplazar (p dx dy)
+  (list (+ (car p) dx) (+ (cadr p) dy) (caddr p)))
+
+(defun MCTABLE:simbolo-linea (a b layer-name)
+  (MCTABLE:label-create
+    (list '(0 . "LINE") (cons 8 layer-name) (cons 10 a) (cons 11 b)
+          '(210 0.0 0.0 1.0))))
+
+(defun MCTABLE:simbolo-circulo (p r layer-name)
+  (MCTABLE:label-create
+    (list '(0 . "CIRCLE") (cons 8 layer-name) (cons 10 p) (cons 40 r)
+          '(210 0.0 0.0 1.0))))
+
+;; Marca puntual: SOLID diminuto, como el estilo «Punto» de DDPTYPE.
+(defun MCTABLE:simbolo-punto (p r layer-name / dot)
+  (setq dot (* r 0.08))
+  (MCTABLE:label-create
+    (list '(0 . "SOLID") (cons 8 layer-name)
+          (cons 10 (MCTABLE:desplazar p (- dot) (- dot)))
+          (cons 11 (MCTABLE:desplazar p dot (- dot)))
+          (cons 12 (MCTABLE:desplazar p (- dot) dot))
+          (cons 13 (MCTABLE:desplazar p dot dot))
+          '(210 0.0 0.0 1.0))))
+
+;; Símbolo completo (marca central y/o envolvente) en P con radio R.
+;; Devuelve T solo si todas sus entidades se crearon; el estilo invisible
+;; no crea ninguna y también devuelve T.
+(defun MCTABLE:simbolo (p modo r layer-name / base outer a b c d ok)
+  (setq base (rem modo 32)
+        outer (- modo base)
+        a (MCTABLE:desplazar p (- r) (- r))
+        b (MCTABLE:desplazar p r (- r))
+        c (MCTABLE:desplazar p r r)
+        d (MCTABLE:desplazar p (- r) r)
+        ok T)
+  (cond
+    ((= base 0) (setq ok (MCTABLE:simbolo-punto p r layer-name)))
+    ((= base 1) nil)
+    ((= base 2)
+     (setq ok (and (MCTABLE:simbolo-linea (MCTABLE:desplazar p (- r) 0.0)
+                                         (MCTABLE:desplazar p r 0.0) layer-name)
+                   (MCTABLE:simbolo-linea (MCTABLE:desplazar p 0.0 (- r))
+                                         (MCTABLE:desplazar p 0.0 r) layer-name))))
+    ((= base 3)
+     (setq ok (and (MCTABLE:simbolo-linea a c layer-name)
+                   (MCTABLE:simbolo-linea b d layer-name))))
+    ((= base 4)
+     (setq ok (MCTABLE:simbolo-linea p (MCTABLE:desplazar p 0.0 r) layer-name))))
+  (if (member outer '(32 96))
+    (setq ok (and ok (MCTABLE:simbolo-circulo p r layer-name))))
+  (if (member outer '(64 96))
+    (setq ok (and ok
+                  (MCTABLE:simbolo-linea a b layer-name)
+                  (MCTABLE:simbolo-linea b c layer-name)
+                  (MCTABLE:simbolo-linea c d layer-name)
+                  (MCTABLE:simbolo-linea d a layer-name))))
+  (if ok T nil))
+
+;; Dibuja el símbolo en TODOS los vértices y, opcionalmente, la etiqueta
+;; exterior segura. La omisión solo filtra etiquetas; las tablas y los
+;; símbolos conservan todos los vértices. Si un entmake falla, se revierten
+;; todas las entidades creadas en esta llamada (símbolos y etiquetas).
 (defun MCTABLE:label-vertices (vlist layer-name prefijo radio fuente borde
-                             / n i v ang u nor th gap claro paso ja jb a0 b0 a b
-                               ins rect texto caja x1 y1 x2 y2 rot proy ef hallado fallo e)
+                               inicio omitir modo etiquetar
+                             / n i indices v ang u nor th gap claro paso env
+                               ja jb a0 b0 a b ins rect texto caja x1 y1 x2 y2 rot proy
+                               ef hallado fallo e)
   (setq n (length vlist) i 0 fallo nil label-created nil
+        indices (MCTABLE:indices-anotacion n omitir)
+        ;; Envolvente máxima del símbolo para colisiones conservadoras.
+        env (MCTABLE:radio-envolvente modo radio)
         th (* radio 0.9) gap (* radio 0.35) claro (* radio 0.35)
         paso (* radio 0.5))
   (while (and (< i n) (not fallo))
-    (setq v (nth i vlist)
-          texto (strcat prefijo "-" (itoa (1+ i))))
-    (if (not (MCTABLE:label-create
-               (list '(0 . "CIRCLE") (cons 8 layer-name)
-                     (cons 10 v) (cons 40 radio) '(210 0.0 0.0 1.0))))
+    (setq v (nth i vlist))
+    ;; El símbolo va en todos los vértices: la omisión solo filtra etiquetas.
+    (if (not (MCTABLE:simbolo v modo radio layer-name))
       (setq fallo T))
-    (if (and (not fallo) (>= n 2))
+    (if (and (not fallo) etiquetar (member i indices) (>= n 2))
       (progn
-        (setq ang (MCTABLE:label-angulo v (nth (rem (1+ i) n) vlist))
+        ;; El número corresponde al vértice completo, no al orden de etiquetas.
+        (setq texto (strcat prefijo "-" (itoa (+ inicio i)))
+              ang (MCTABLE:label-angulo v (nth (rem (1+ i) n) vlist))
               u (list (cos ang) (sin ang))
               nor (MCTABLE:label-normal-exterior ang T borde)
               caja (MCTABLE:label-medir-texto texto th fuente))
@@ -521,7 +748,7 @@
                   x2 (nth 2 caja) y2 (nth 3 caja)
                   rot (car (MCTABLE:label-normalizar-angulo ang))
                   proy (MCTABLE:label-proyecciones-caja rot u nor x1 y1 x2 y2)
-                  a0 (- (+ radio gap) (car proy))
+                  a0 (- (+ env gap) (car proy))
                   b0 (- gap (cadr proy))
                   jb 0 hallado nil)
             ;; Mismo orden de búsqueda 8x8: exterior mínimo, luego salida.
@@ -533,7 +760,7 @@
                                 (+ (cadr v) (* a (cadr u)) (* b (cadr nor)))
                                 (caddr v))
                       rect (MCTABLE:label-recto-candidato ins rot x1 y1 x2 y2))
-                (if (MCTABLE:label-etiqueta-valida rect borde nil vlist radio gap claro T)
+                (if (MCTABLE:label-etiqueta-valida rect borde nil vlist env gap claro T)
                   (setq hallado T))
                 (setq ja (1+ ja)))
               (setq jb (1+ jb)))
@@ -549,11 +776,13 @@
                                  (cons 50 rot) '(72 . 0) '(73 . 0) '(210 0.0 0.0 1.0))))
                   (setq fallo T))))))))
     (setq i (1+ i)))
-  (if (< n 2)
+  (if (and etiquetar (< n 2))
     (princ "\nMCTABLE: un solo vértice; no hay dirección definida y se omite la etiqueta."))
   (if fallo
     (foreach e label-created (MCTABLE:label-delete e))
-    (princ (strcat "\n  " (itoa n) " vértices procesados (círculo + etiqueta exterior segura).")))
+    (princ (strcat "\n  " (itoa n) " vértices procesados; "
+                   (itoa (if (and etiquetar (>= n 2)) (length indices) 0))
+                   " etiquetas exteriores seguras.")))
   (setq label-created nil)
   (not fallo))
 
@@ -561,11 +790,289 @@
 ;; SECCIÓN 5: CREACIÓN DE TABLAS CON PROTECCIÓN ACTIVEX
 ;; ============================================================
 
+;; --- Altura y estilo de texto de las tablas (independientes del usuario) ---
+
+;; Solo dígitos y un punto decimal: sin signos, comas ni exponentes.
+;; Devuelve la altura numérica o nil; nunca acepta un prefijo numérico.
+(defun MCTABLE:altura-tabla-valida (texto / limpio n i c punto digitos valido valor)
+  (setq limpio  (vl-string-trim " \t" (if texto texto ""))
+        n       (strlen limpio)
+        i       1
+        punto   nil
+        digitos 0
+        valido  (> n 0))
+  (while (and valido (<= i n))
+    (setq c (ascii (substr limpio i 1)))
+    (cond
+      ((= c 46) (if punto (setq valido nil) (setq punto T)))
+      ((and (>= c 48) (<= c 57)) (setq digitos (1+ digitos)))
+      (T (setq valido nil)))
+    (setq i (1+ i)))
+  (if (or (not valido) (zerop digitos))
+    nil
+    (progn
+      (setq valor (atof limpio))
+      (if (> valor 0.0) valor nil))))
+
+;; Un estilo sirve solo si su fuente es la elegida y tiene altura fija 0, ancho 1,
+;; sin oblicuidad y sin las marcas de texto vertical (DXF 70) ni invertido/hacia
+;; atrás (DXF 71).
+(defun MCTABLE:table-style-compatible (ed esperada / fuente grande fijo ancho
+                                       oblicuo flags gen)
+  (if ed
+    (progn
+      (setq fuente  (if (assoc 3 ed) (strcase (cdr (assoc 3 ed)) T) nil)
+            grande  (if (assoc 4 ed) (cdr (assoc 4 ed)) "")
+            fijo    (if (assoc 40 ed) (cdr (assoc 40 ed)) 0.0)
+            ancho   (if (assoc 41 ed) (cdr (assoc 41 ed)) 1.0)
+            oblicuo (if (assoc 50 ed) (cdr (assoc 50 ed)) 0.0)
+            flags   (if (assoc 70 ed) (cdr (assoc 70 ed)) 0)
+            gen     (if (assoc 71 ed) (cdr (assoc 71 ed)) 0))
+      (and (equal fuente (strcase esperada T))
+           (equal grande "")
+           (equal fijo 0.0)
+           (equal ancho 1.0)
+           (equal oblicuo 0.0)
+           (zerop (logand 6 flags))
+           (zerop (logand 6 gen))))))
+
+;; Crea una sola vez, o reutiliza, el estilo privado de las tablas. Si el nombre
+;; ya existe con otra definición se prueba un sufijo nuevo en vez de redefinirlo.
+(defun MCTABLE:table-style ( / base nombre n estilo fuente dir ruta fallo)
+  (setq base   "MCTABLE-TABLAS"
+        n      0
+        estilo nil
+        fuente nil
+        fallo  nil)
+  ;; Elección determinista de fuente: Arial si se localiza (rutas de AutoCAD o
+  ;; carpeta Fonts de Windows) y, si no, la fuente estándar de AutoCAD. El
+  ;; nombre se guarda sin ruta para que el dibujo no dependa de otra máquina.
+  (setq ruta (findfile "arial.ttf"))
+  (if (null ruta)
+    (progn
+      (setq dir (getenv "WINDIR"))
+      (if (null dir) (setq dir (getenv "SystemRoot")))
+      (if dir
+        (setq ruta (findfile (strcat dir "\\Fonts\\arial.ttf"))))))
+  (cond
+    (ruta (setq fuente "arial.ttf"))
+    ((findfile "txt.shx") (setq fuente "txt.shx"))
+    ((findfile "simplex.shx") (setq fuente "simplex.shx")))
+  (cond
+    ((null fuente)
+     (princ (strcat "\nMCTABLE: error: no se encontró ninguna fuente admitida"
+                    " (Arial, txt.shx, simplex.shx)."
+                    "\nMCTABLE: no se creó el estilo de texto ni se dibujó ninguna tabla."))
+     nil)
+    (T
+     ;; Aviso explícito cuando se usa el respaldo estándar en lugar de Arial.
+     (if (/= fuente "arial.ttf")
+       (princ (strcat "\nMCTABLE: aviso: no se encontró Arial (arial.ttf);"
+                      " las tablas usarán la fuente " fuente ".")))
+     ;; Bucle acotado: solo prueba nombres con sufijo mientras el anterior existe
+     ;; con otra definición. Un fallo de creación termina el bucle de inmediato.
+     (while (and (null estilo) (not fallo) (< n 100))
+       (setq nombre (if (zerop n) base (strcat base "-" (itoa n))))
+       (cond
+         ((null (tblsearch "STYLE" nombre))
+          (setq estilo
+            (if (entmake
+                  (list '(0 . "STYLE")
+                        '(100 . "AcDbSymbolTableRecord")
+                        '(100 . "AcDbTextStyleTableRecord")
+                        (cons 2 nombre)
+                        '(70 . 0)
+                        '(40 . 0.0)
+                        '(41 . 1.0)
+                        '(50 . 0.0)
+                        '(71 . 0)
+                        '(42 . 2.5)
+                        (cons 3 fuente)
+                        '(4 . "")))
+              (tblsearch "STYLE" nombre)
+              nil))
+          ;; Un fallo de creación, o un registro creado que no cumple el
+          ;; predicado, termina el bucle: no se reintenta crear ni se sufija.
+          (if (or (null estilo)
+                  (not (MCTABLE:table-style-compatible estilo fuente)))
+            (setq fallo T
+                  estilo nil)))
+         ((MCTABLE:table-style-compatible (tblsearch "STYLE" nombre) fuente)
+          (setq estilo (tblsearch "STYLE" nombre)))
+         (T (setq n (1+ n)))))
+     (cond
+       ((and (not fallo) estilo
+             (MCTABLE:table-style-compatible estilo fuente))
+        (cdr (assoc 2 estilo)))
+       (fallo
+        (princ (strcat "\nMCTABLE: error: no se pudo crear el estilo privado de las tablas ("
+                       base ")."
+                       "\nMCTABLE: no se dibujó ninguna tabla."))
+        nil)
+       (T
+        (princ (strcat "\nMCTABLE: error: no hay un nombre libre y compatible para el estilo privado "
+                       base "."
+                       "\nMCTABLE: no se dibujó ninguna tabla."))
+        nil)))))
+
+;; Medir texto visible, no los códigos de formato de TABLE/MTEXT.
+(defun MCTABLE:table-text-box (texto altura fuente)
+  (setq texto (vl-string-subst "" "{\\b " texto)
+        texto (vl-string-subst "" "}" texto)
+        texto (vl-string-subst (chr 176) "%%d" texto))
+  (MCTABLE:label-medir-texto texto altura fuente))
+
+;; Los rótulos de estación se escriben en negrita con el código «{\b N}».
+;; La medición descarta ese código, así que se detecta aquí para dejar una
+;; holgura pequeña solo en esas celdas y que la negrita no recorte el glifo.
+(defun MCTABLE:table-texto-negrita (texto)
+  (and texto (vl-string-search "{\\b " texto)))
+
+;; El texto y la geometría usan la misma escala, sin modificar TABLESTYLE.
+;; La altura y el estilo llegan explícitos: aquí no se leen TEXTSIZE ni TEXTSTYLE.
+;; Se mide cada celda para conservar títulos, encabezados y datos en una línea.
+;; Las dos tablas usan el mismo criterio compacto: ancho medido más los márgenes,
+;; sin porcentajes extra sobre el texto. La única excepción es un mínimo fijo en
+;; la columna de estaciones: la caja de tinta medida queda más ajustada que el
+;; ancho real de ajuste de la tabla nativa, y sin ese mínimo el encabezado «EST»
+;; se parte en dos líneas. MCTABLE:equalize-tables iguala después el tamaño final
+;; de ambas.
+(defun MCTABLE:format-table (tbl rows alto fuente / margen-h margen-v
+                            widths title-width r c altura caja ancho alto-caja
+                            row-heights row-height extra result texto negrita)
+  (setq margen-h (* alto 0.5)
+        margen-v (* alto 0.5)
+        ;; Mínimo de la columna de estaciones: cuatro alturas de texto cubren
+        ;; los tres caracteres de «EST» más el margen horizontal de cada lado
+        ;; en las fuentes privadas admitidas. Es un piso, no un tope: los datos
+        ;; medidos y la holgura de la negrita siguen ampliándola.
+        widths (list (* 4.0 alto) 0.0 0.0)
+        ;; El número de vértices solo añade filas; nunca comprime el formato.
+        row-heights nil
+        title-width 0.0)
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+         ;; 7 incluye título, encabezados y datos; las alturas se fijan por celda.
+         (vla-SetTextStyle tbl 7 fuente)
+         (vla-SetTextHeight tbl 7 alto)
+         (vla-put-HorzCellMargin tbl margen-h)
+         (vla-put-VertCellMargin tbl margen-v)
+         (setq r 0)
+         (while (< r rows)
+           (setq c 0
+                 altura (if (= r 0) (* alto 1.25) alto)
+                 row-height (* altura 2.2))
+           (while (< c (if (= r 0) 1 3))
+             (vla-SetCellTextHeight tbl r c altura)
+             (vla-SetCellAlignment tbl r c 5)
+             (setq texto (vla-GetText tbl r c)
+                   caja (MCTABLE:table-text-box texto altura fuente)
+                   ;; Ancho medido más márgenes, sin inflarlo. La única holgura
+                   ;; es la de los rótulos en negrita, cuya medición es más fina.
+                   negrita (if (MCTABLE:table-texto-negrita texto) 1.08 1.0)
+                   ancho (+ (* negrita (- (nth 2 caja) (nth 0 caja))) (* 2.0 margen-h))
+                   alto-caja (+ (* 1.2 (- (nth 3 caja) (nth 1 caja))) (* 2.0 margen-v))
+                   row-height (max row-height alto-caja))
+             (if (= r 0)
+               (setq title-width ancho)
+               (setq widths
+                 (list (if (= c 0) (max (car widths) ancho) (car widths))
+                       (if (= c 1) (max (cadr widths) ancho) (cadr widths))
+                       (if (= c 2) (max (caddr widths) ancho) (caddr widths)))))
+             (setq c (1+ c)))
+           (setq row-heights (cons row-height row-heights)
+                 r (1+ r)))
+         ;; Si el título requiere más espacio, ensanchar las columnas de datos,
+         ;; no la columna de estaciones. No partir palabras ni reducir el texto.
+         (setq extra (max 0.0 (- title-width (apply '+ widths)))
+               widths (list (car widths)
+                            (+ (cadr widths) (/ extra 2.0))
+                            (+ (caddr widths) (/ extra 2.0)))
+               c 0)
+         (foreach ancho widths
+           (vla-SetColumnWidth tbl c ancho)
+           (setq c (1+ c)))
+         (setq r 0)
+         (foreach row-height (reverse row-heights)
+           (vla-SetRowHeight tbl r row-height)
+           (setq r (1+ r))))
+      nil))
+  (if (vl-catch-all-error-p result)
+    (progn
+      (princ (strcat "\nMCTABLE: no se pudo ajustar la tabla: "
+                     (vl-catch-all-error-message result)))
+      (exit)))
+  tbl)
+
+;; Ancho total de una tabla ya dibujada: suma de sus columnas.
+(defun MCTABLE:table-total-width (tbl / c total)
+  (setq c 0
+        total 0.0)
+  (while (< c (vla-get-Columns tbl))
+    (setq total (+ total (vla-GetColumnWidth tbl c))
+          c (1+ c)))
+  total)
+
+;; Iguala el tamaño de las dos tablas ya dibujadas: mismo ancho total y la misma
+;; altura en cada fila correspondiente. Solo se amplía la tabla más angosta y las
+;; filas más bajas, nunca se reduce lo medido, así que no se recorta el texto.
+;; El ancho extra va a las columnas de datos (1 y 2); la columna de estaciones
+;; conserva su ancho medido.
+(defun MCTABLE:equalize-tables (tbl-a tbl-b / total-a total-b delta destino
+                               extra-a extra-b filas r alto-a alto-b alto-ambas
+                               result)
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+         (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-a :vlax-true))
+         (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-b :vlax-true))
+         (setq total-a (MCTABLE:table-total-width tbl-a)
+               total-b (MCTABLE:table-total-width tbl-b))
+         ;; Ancho: se amplía la más angosta hasta el ancho de la otra.
+         (if (< total-a total-b)
+           (setq destino tbl-a delta (- total-b total-a))
+           (setq destino tbl-b delta (- total-a total-b)))
+         (if (> delta 1e-6)
+           (progn
+             (setq extra-a (/ delta 2.0)
+                   extra-b (- delta extra-a))
+             (vla-SetColumnWidth destino 1
+               (+ (vla-GetColumnWidth destino 1) extra-a))
+             (vla-SetColumnWidth destino 2
+               (+ (vla-GetColumnWidth destino 2) extra-b))))
+         ;; Alturas: cada fila toma la mayor de las dos, sin bajar ninguna.
+         (setq filas (min (vla-get-Rows tbl-a) (vla-get-Rows tbl-b))
+               r 0)
+         (while (< r filas)
+           (setq alto-a (vla-GetRowHeight tbl-a r)
+                 alto-b (vla-GetRowHeight tbl-b r)
+                 alto-ambas (max alto-a alto-b))
+           (if (> (- alto-ambas (min alto-a alto-b)) 1e-6)
+             (progn
+               (vla-SetRowHeight tbl-a r alto-ambas)
+               (vla-SetRowHeight tbl-b r alto-ambas)))
+           (setq r (1+ r)))
+         (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-a :vlax-false))
+         (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-b :vlax-false))
+         (vla-Update tbl-a)
+         (vla-Update tbl-b))
+      nil)
+  )
+  (if (vl-catch-all-error-p result)
+    (progn
+      ;; Las dos tablas ya están dibujadas: solo se avisa, no se borra ninguna.
+      (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-a :vlax-false))
+      (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-b :vlax-false))
+      (princ (strcat "\nMCTABLE: aviso: no se pudieron igualar las tablas: "
+                     (vl-catch-all-error-message result)))))
+  )
+
 ;; 5.1: Tabla de Coordenadas
-(defun MCTABLE:create-table (ins-pt vlist decimals xy-order title-str /
-                             tbl-obj rows cols row-idx v xval yval
+(defun MCTABLE:create-table (ins-pt vlist decimals xy-order title-str alto fuente inicio /
+                             tbl-obj rows cols row-idx idx v xval yval
                              col1-hdr col2-hdr doc space cell-align
-                             actual-rows expected-rows row-height i)
+                             row-height)
   (if xy-order
     (setq col1-hdr "ESTE (X)"   col2-hdr "NORTE (Y)")
     (setq col1-hdr "NORTE (Y)"  col2-hdr "ESTE (X)")
@@ -576,12 +1083,13 @@
         doc   (vla-get-ActiveDocument (vlax-get-acad-object))
         space (vla-get-ModelSpace doc)
         cell-align 5
-        row-height (* (getvar "TEXTSIZE") 2.2) 
+        row-height (* alto 2.2)
   )
 
   (setq tbl-obj
-    (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* (getvar "TEXTSIZE") 8.0))
+    (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* alto 8.0))
   )
+  (setq table-pending tbl-obj)
 
   (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-true))
 
@@ -596,10 +1104,12 @@
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 1 cell-align))
   (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj 1 2 cell-align))
 
-  (setq row-idx 2)
+  (setq row-idx 2
+        idx 0)
   (foreach v vlist
     (setq xval (car v) yval (cadr v))
-    (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 0 (itoa (- row-idx 1))))
+    ;; La columna EST de la tabla usa la misma numeración que las etiquetas.
+    (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 0 (itoa (+ inicio idx))))
     (if xy-order
       (progn
         (vl-catch-all-apply 'vla-SetText (list tbl-obj row-idx 1 (rtos xval 2 decimals)))
@@ -613,29 +1123,20 @@
     (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj row-idx 0 cell-align))
     (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj row-idx 1 cell-align))
     (vl-catch-all-apply 'vla-SetCellAlignment (list tbl-obj row-idx 2 cell-align))
-    (setq row-idx (1+ row-idx))
+    (setq row-idx (1+ row-idx)
+          idx (1+ idx))
   )
 
-  (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 0 (* (getvar "TEXTSIZE") 5.0)))
-  (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 1 (* (getvar "TEXTSIZE") 16.0)))
-  (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 2 (* (getvar "TEXTSIZE") 16.0)))
-
-  (setq i 0)
-  (while (< i rows)
-    (if (= i 0)
-      (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i (* row-height 1.5)))
-      (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i row-height))
-    )
-    (setq i (1+ i))
-  )
+  (MCTABLE:format-table tbl-obj rows alto fuente)
 
   (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-false))
   (vla-Update tbl-obj)
+  (setq table-pending nil)
   tbl-obj
 )
 
 ;; 5.2: Tabla de Rumbos y Distancias
-(defun MCTABLE:create-bearing-table (ins-pt vlist decimals title-str /
+(defun MCTABLE:create-bearing-table (ins-pt vlist decimals title-str alto fuente inicio /
                                      tbl-obj rows cols row-idx i n p1 p2
                                      doc space cell-align row-height
                                      est-lbl rumbo-lbl dist-lbl)
@@ -645,12 +1146,13 @@
         doc           (vla-get-ActiveDocument (vlax-get-acad-object))
         space         (vla-get-ModelSpace doc)
         cell-align    5
-        row-height    (* (getvar "TEXTSIZE") 2.2) 
+        row-height    (* alto 2.2)
   )
 
   (setq tbl-obj
-    (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* (getvar "TEXTSIZE") 8.0))
+    (vla-AddTable space (vlax-3d-point ins-pt) rows cols row-height (* alto 8.0))
   )
+  (setq table-pending tbl-obj)
 
   (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-true))
 
@@ -669,7 +1171,7 @@
   (while (< i n)
     (setq p1        (nth i vlist)
           p2        (if (= i (1- n)) (nth 0 vlist) (nth (1+ i) vlist))
-          est-lbl   (strcat "{\\b " (itoa (1+ i)) "}") 
+          est-lbl   (strcat "{\\b " (itoa (+ inicio i)) "}")
           rumbo-lbl (MCTABLE:get-bearing p1 p2)
           dist-lbl  (rtos (MCTABLE:distance-2d p1 p2) 2 decimals)
           row-idx   (+ i 2)
@@ -686,23 +1188,116 @@
     (setq i (1+ i))
   )
 
-  (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 0 (* (getvar "TEXTSIZE") 5.0)))
-  (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 1 (* (getvar "TEXTSIZE") 18.0)))
-  (vl-catch-all-apply 'vla-SetColumnWidth (list tbl-obj 2 (* (getvar "TEXTSIZE") 14.0)))
-
-  (setq i 0)
-  (while (< i rows)
-    (if (= i 0)
-      (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i (* row-height 1.5)))
-      (vl-catch-all-apply 'vla-SetRowHeight (list tbl-obj i row-height))
-    )
-    (setq i (1+ i))
-  )
+  (MCTABLE:format-table tbl-obj rows alto fuente)
 
   (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list tbl-obj :vlax-false))
   (vla-Update tbl-obj)
+  (setq table-pending nil)
   tbl-obj
 )
+
+;; Guarda lo escrito en el diálogo, incluidas las entradas inválidas: se
+;; conservan las cadenas crudas de radio, inicio y omisión para reponerlas
+;; al reabrir el cuadro tras elegir el origen.
+(defun MCTABLE:guardar-apariencia ()
+  (setq radio-raw  (get_tile "txt_radio_vertice")
+        inicio-raw (get_tile "txt_inicio")
+        omitir-raw (get_tile "txt_omitir")
+        tag-prefix (get_tile "txt_prefijo_tag")
+        tag-font   (get_tile "txt_fuente_tag")
+        label-on   (= (get_tile "ck_etiquetas") "1")
+        symbol-idx (atoi (get_tile "pl_simbolo")))
+  (if (or (< symbol-idx 0) (>= symbol-idx (length (MCTABLE:lista-modos))))
+    (setq symbol-idx (MCTABLE:modo-inicial)))
+  (princ))
+
+;; Repone todos los controles desde el estado del comando. El popup del
+;; símbolo conserva el índice elegido y actualiza la previsualización.
+(defun MCTABLE:cargar-dialogo ()
+  (set_tile "rb_ccw"  (if opt-cw "0" "1"))
+  (set_tile "rb_cw"   (if opt-cw "1" "0"))
+  (set_tile "rb_xy"   (if opt-yx "0" "1"))
+  (set_tile "rb_yx"   (if opt-yx "1" "0"))
+  (set_tile "eb_dec"  (itoa decimals))
+  (set_tile "txt_radio_vertice" radio-raw)
+  (set_tile "txt_inicio"        inicio-raw)
+  (set_tile "txt_omitir"        omitir-raw)
+  (set_tile "txt_prefijo_tag"   tag-prefix)
+  (set_tile "txt_fuente_tag"    tag-font)
+  (set_tile "ck_etiquetas"      (if label-on "1" "0"))
+  ;; Se repone la altura escrita, aunque no se haya aceptado el cuadro.
+  (set_tile "eb_altura_tabla"   altura-tile)
+  (set_tile "txt_altura_error"  "")
+  (set_tile "txt_vertice_error" "")
+  (start_list "pl_simbolo")
+  (mapcar 'add_list (MCTABLE:nombres-modos))
+  (end_list)
+  (set_tile "pl_simbolo" (itoa symbol-idx))
+  (MCTABLE:preview (itoa symbol-idx))
+  (princ))
+
+;; Aceptar valida altura, radio, inicio y omisión: si algo no sirve, el
+;; cuadro sigue abierto con el foco en el campo inválido y sin perder texto.
+(defun MCTABLE:aceptar-dialogo (/ error-foco error-texto)
+  (MCTABLE:guardar-apariencia)
+  (setq decimals (atoi (get_tile "eb_dec")))
+  (if (or (< decimals 0) (> decimals 8))
+    (progn (set_tile "eb_dec" "2") (setq decimals 2)))
+  (setq altura-tabla (MCTABLE:altura-tabla-valida (get_tile "eb_altura_tabla"))
+        circle-rad   (MCTABLE:parsear-positivo radio-raw)
+        inicio       (MCTABLE:parsear-entero inicio-raw 1)
+        omitir       (MCTABLE:parsear-entero omitir-raw 0)
+        symbol-mode  (nth symbol-idx (MCTABLE:lista-modos)))
+  (setq error-foco  nil
+        error-texto "")
+  (cond
+    ((null altura-tabla)
+     (setq error-texto "Altura inválida: escriba un número mayor que cero (ejemplo 1.0)."
+           error-foco "eb_altura_tabla"))
+    ((null circle-rad)
+     (setq error-texto "Radio inválido: escriba un número positivo (ejemplo 1.0)."
+           error-foco "txt_radio_vertice"))
+    ((null inicio)
+     (setq error-texto "Número inicial inválido: entero entre 1 y 2147483647."
+           error-foco "txt_inicio"))
+    ((null omitir)
+     (setq error-texto "Vértices a omitir inválidos: entero entre 0 y 2147483647."
+           error-foco "txt_omitir")))
+  (cond
+    (error-foco
+     (set_tile "txt_altura_error"  (if (= error-foco "eb_altura_tabla") error-texto ""))
+     (set_tile "txt_vertice_error" (if (= error-foco "eb_altura_tabla") "" error-texto))
+     (mode_tile error-foco 2))
+    ;; El estilo invisible solo produce etiquetas: sin ellas no habría
+    ;; ninguna salida que crear, porque ese estilo no dibuja símbolos.
+    ((and (= symbol-mode 1) (not label-on))
+     (alert (strcat "El símbolo invisible no genera símbolos de vértice.\n"
+                    "Active las etiquetas o elija otro símbolo.")))
+    (T
+     (set_tile "txt_altura_error" "")
+     (set_tile "txt_vertice_error" "")
+     (setq altura-tile (get_tile "eb_altura_tabla"))
+     (done_dialog 1))))
+
+;; Acciones del diálogo, compartidas por la apertura inicial y las reaperturas.
+;; Las expresiones escriben las variables locales de C:MCTABLE (ámbito dinámico).
+(defun MCTABLE:dialog-actions ()
+  (action_tile "rb_ccw"   "(setq opt-cw nil)")
+  (action_tile "rb_cw"    "(setq opt-cw T)")
+  (action_tile "rb_xy"    "(setq opt-yx nil)")
+  (action_tile "rb_yx"    "(setq opt-yx T)")
+  (action_tile "eb_dec"   "(setq decimals (atoi (get_tile \"eb_dec\")))(if (or (< decimals 0)(> decimals 8))(progn (set_tile \"eb_dec\" \"2\")(setq decimals 2)))")
+  (action_tile "txt_prefijo_tag"   "(setq tag-prefix (get_tile \"txt_prefijo_tag\"))")
+  (action_tile "txt_radio_vertice" "(setq radio-raw (get_tile \"txt_radio_vertice\"))")
+  (action_tile "txt_fuente_tag"    "(setq tag-font (get_tile \"txt_fuente_tag\"))")
+  (action_tile "pl_simbolo" "(MCTABLE:preview $value)")
+  ;; Guardar lo escrito —incluidas entradas inválidas— antes de salir a
+  ;; elegir el origen: al volver se reponen también las opciones nuevas.
+  (action_tile "eb_altura_tabla"   "(setq altura-tile (get_tile \"eb_altura_tabla\"))")
+  (action_tile "btn_orig" "(MCTABLE:guardar-apariencia)(setq altura-tile (get_tile \"eb_altura_tabla\"))(done_dialog 2)")
+  (action_tile "accept" "(MCTABLE:aceptar-dialogo)")
+  (action_tile "cancel"   "(done_dialog 0)")
+  (princ))
 
 ;; ============================================================
 ;; SECCIÓN 6: FUNCIÓN PRINCIPAL - COMANDO MCTABLE
@@ -714,7 +1309,11 @@
   opt-cw opt-yx decimals origin-idx ordered-verts
   ins-pt ins-pt2 lyr-etiq click-pt dlg-result start-pt
   lyr-data lyr-ent lyr-ed
-  tag-prefix circle-rad tag-font label-verts label-border label-created e
+  tag-prefix circle-rad tag-font label-verts label-border label-created e table-pending
+  radio-raw inicio-raw omitir-raw label-on inicio omitir
+  symbol-idx symbol-mode
+  tbl-coord tbl-rumbo
+  altura-tabla altura-tile estilo-tabla
 )
 
   (defun *error* (msg)
@@ -723,6 +1322,10 @@
          (foreach e label-created
            (vl-catch-all-apply 'MCTABLE:label-delete (list e)))
          (setq label-created nil)
+         ;; Solo retirar la tabla nueva que todavía no terminó de formatearse.
+         (if table-pending
+           (vl-catch-all-apply 'vla-Delete (list table-pending)))
+         (setq table-pending nil)
          (if old-osmode   (setvar "OSMODE"   old-osmode))
          (if old-cmdecho  (setvar "CMDECHO"  old-cmdecho))
          (if old-blipmode (setvar "BLIPMODE" old-blipmode))
@@ -787,7 +1390,20 @@
         click-pt   nil
         tag-prefix "E"
         circle-rad 1.0
+        ;; Cadenas crudas del cuadro: conservan incluso las entradas inválidas.
+        radio-raw  "1.0"
+        label-on   T
+        inicio     1
+        inicio-raw "1"
+        omitir     0
+        omitir-raw "0"
+        ;; 6 -> modo 33: círculo sin marca central (predeterminado).
+        symbol-idx (MCTABLE:modo-inicial)
+        symbol-mode 33
         tag-font   "Standard"
+        ;; Altura de texto de las tablas: predeterminado fijo, nunca TEXTSIZE.
+        altura-tabla 1.0
+        altura-tile  "1.0"
   )
 
   (setq dcl-file (vl-filename-mktemp "mctbl" nil ".dcl"))
@@ -800,27 +1416,12 @@
     (progn (unload_dialog dcl-id) (if (findfile dcl-file) (vl-file-delete dcl-file)) (exit))
   )
 
-  (set_tile "rb_ccw"  "0")
-  (set_tile "rb_cw"   "1")
-  (set_tile "eb_dec"  "2")
-  (set_tile "txt_prefijo_tag"   "E")
-  (set_tile "txt_radio_vertice" "1.0")
-  (set_tile "txt_fuente_tag"    "Standard")
+  (MCTABLE:cargar-dialogo)
   (set_tile "txt_orig"
     (strcat "Vértice 1: (" (rtos (car (car vertices)) 2 2) ", " (rtos (cadr (car vertices)) 2 2) ")")
   )
 
-  (action_tile "rb_ccw"   "(setq opt-cw nil)")
-  (action_tile "rb_cw"    "(setq opt-cw T)")
-  (action_tile "rb_xy"    "(setq opt-yx nil)")
-  (action_tile "rb_yx"    "(setq opt-yx T)")
-  (action_tile "eb_dec"   "(setq decimals (atoi (get_tile \"eb_dec\")))(if (or (< decimals 0)(> decimals 8))(progn (set_tile \"eb_dec\" \"2\")(setq decimals 2)))")
-  (action_tile "txt_prefijo_tag"   "(setq tag-prefix (get_tile \"txt_prefijo_tag\"))")
-  (action_tile "txt_radio_vertice" "(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(progn (set_tile \"txt_radio_vertice\" \"1.0\")(setq circle-rad 1.0)))")
-  (action_tile "txt_fuente_tag"    "(setq tag-font (get_tile \"txt_fuente_tag\"))")
-  (action_tile "btn_orig" "(done_dialog 2)")
-  (action_tile "accept"   "(setq decimals (atoi (get_tile \"eb_dec\")))(setq tag-prefix (get_tile \"txt_prefijo_tag\"))(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(setq circle-rad 1.0))(setq tag-font (get_tile \"txt_fuente_tag\"))(done_dialog 1)")
-  (action_tile "cancel"   "(done_dialog 0)")
+  (MCTABLE:dialog-actions)
 
   (setq dlg-result 0)
   (while (= (setq dlg-result (start_dialog)) 2)
@@ -830,12 +1431,9 @@
     (if (not (new_dialog "mctable_dlg" dcl-id))
       (setq dlg-result 0)
       (progn
-        (if opt-cw (set_tile "rb_cw" "1") (set_tile "rb_ccw" "1"))
-        (if opt-yx (set_tile "rb_yx" "1") (set_tile "rb_xy" "1"))
-        (set_tile "eb_dec" (itoa decimals))
-        (set_tile "txt_prefijo_tag"   tag-prefix)
-        (set_tile "txt_radio_vertice" (rtos circle-rad 2 2))
-        (set_tile "txt_fuente_tag"    tag-font)
+        ;; Se reponen todos los controles desde el estado crudo del comando:
+        ;; las opciones nuevas y la previsualización conservan su valor.
+        (MCTABLE:cargar-dialogo)
         (if click-pt
           (progn
             (setq origin-idx (MCTABLE:closest-vertex (list (car click-pt) (cadr click-pt)) vertices))
@@ -845,17 +1443,7 @@
           )
           (set_tile "txt_orig" "Vértice 1 (Predeterminado)")
         )
-        (action_tile "rb_ccw"   "(setq opt-cw nil)")
-        (action_tile "rb_cw"    "(setq opt-cw T)")
-        (action_tile "rb_xy"    "(setq opt-yx nil)")
-        (action_tile "rb_yx"    "(setq opt-yx T)")
-        (action_tile "eb_dec"   "(setq decimals (atoi (get_tile \"eb_dec\")))(if (or (< decimals 0)(> decimals 8))(progn (set_tile \"eb_dec\" \"2\")(setq decimals 2)))")
-        (action_tile "txt_prefijo_tag"   "(setq tag-prefix (get_tile \"txt_prefijo_tag\"))")
-        (action_tile "txt_radio_vertice" "(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(progn (set_tile \"txt_radio_vertice\" \"1.0\")(setq circle-rad 1.0)))")
-        (action_tile "txt_fuente_tag"    "(setq tag-font (get_tile \"txt_fuente_tag\"))")
-        (action_tile "btn_orig" "(done_dialog 2)")
-        (action_tile "accept"   "(setq decimals (atoi (get_tile \"eb_dec\")))(setq tag-prefix (get_tile \"txt_prefijo_tag\"))(setq circle-rad (atof (get_tile \"txt_radio_vertice\")))(if (<= circle-rad 0.0)(setq circle-rad 1.0))(setq tag-font (get_tile \"txt_fuente_tag\"))(done_dialog 1)")
-        (action_tile "cancel"   "(done_dialog 0)")
+        (MCTABLE:dialog-actions)
       )
     )
   )
@@ -867,6 +1455,31 @@
   (if (/= dlg-result 1)
     (progn
       (princ "\nComando MCTABLE cancelado por el usuario.")
+      (setvar "OSMODE" old-osmode) (setvar "CMDECHO" old-cmdecho) (setvar "BLIPMODE" old-blipmode)
+      (exit)
+    )
+  )
+
+  ;; TODAS las filas de las tablas llevan número de estación: se valida el
+  ;; desbordamiento con el último vértice completo (las omisiones solo
+  ;; afectan a las etiquetas) antes de crear etiquetas o tablas.
+  (if (> (+ (float inicio) (float (1- (length vertices)))) 2147483647.0)
+    (progn
+      (alert (strcat "La numeración de las tablas excede 2147483647.\n"
+                     "Reduzca el número inicial."))
+      (princ "\nMCTABLE: numeración fuera de rango; no se dibujó nada.")
+      (setvar "OSMODE" old-osmode) (setvar "CMDECHO" old-cmdecho) (setvar "BLIPMODE" old-blipmode)
+      (exit)
+    )
+  )
+
+  ;; Estilo privado de las tablas: se resuelve antes de dibujar, para que un
+  ;; fallo de recurso no deje anotaciones a medias.
+  (setq estilo-tabla (MCTABLE:table-style))
+  (if (null estilo-tabla)
+    (progn
+      (princ "\nMCTABLE: no se pudo crear el estilo privado de las tablas (Arial).")
+      (princ "\nNo se dibujó nada.")
       (setvar "OSMODE" old-osmode) (setvar "CMDECHO" old-cmdecho) (setvar "BLIPMODE" old-blipmode)
       (exit)
     )
@@ -905,29 +1518,34 @@
     )
   )
 
-  (princ "\nDibujando numeración de vértices...")
+  (princ "\nDibujando símbolos y numeración de vértices...")
   (setq label-verts (MCTABLE:label-wcs ent ordered-verts)
         label-border (MCTABLE:label-wcs ent
                        (MCTABLE:reverse-if-needed (MCTABLE:get-vertices ent) (not opt-cw))))
   (if label-verts
-    (if (not (MCTABLE:label-vertices label-verts lyr-etiq tag-prefix circle-rad tag-font label-border))
+    (if (not (MCTABLE:label-vertices label-verts lyr-etiq tag-prefix circle-rad tag-font label-border
+                                     inicio omitir symbol-mode label-on))
       (progn
         (princ "\nMCTABLE: falló la creación de anotaciones; se revirtieron las creadas.")
         (exit)))
-    (princ "\nMCTABLE: etiquetas omitidas; se requiere una polilínea horizontal con normal +Z."))
+    (princ "\nMCTABLE: símbolos y etiquetas omitidos; se requiere una polilínea horizontal con normal +Z."))
 
   (setvar "OSMODE" 0)
   (setq ins-pt (getpoint "\nIndique el punto de inserción para la TABLA DE COORDENADAS: "))
   (if ins-pt
     (progn
       (princ "\nConstruyendo tabla de coordenadas...")
-      (MCTABLE:create-table
-        (list (car ins-pt) (cadr ins-pt) (if (caddr ins-pt) (caddr ins-pt) 0.0))
-        ordered-verts
-        decimals
-        (not opt-yx)
-        "COORDENADAS GEORREFERENCIADAS"
-      )
+      (setq tbl-coord
+        (MCTABLE:create-table
+          (list (car ins-pt) (cadr ins-pt) (if (caddr ins-pt) (caddr ins-pt) 0.0))
+          ordered-verts
+          decimals
+          (not opt-yx)
+          "COORDENADAS GEORREFERENCIADAS"
+          altura-tabla
+          estilo-tabla
+          inicio
+        ))
       (princ "\nTabla de coordenadas dibujada.")
     )
     (progn
@@ -941,12 +1559,21 @@
   (if ins-pt2
     (progn
       (princ "\nConstruyendo tabla de rumbos y distancias...")
-      (MCTABLE:create-bearing-table
-        (list (car ins-pt2) (cadr ins-pt2) (if (caddr ins-pt2) (caddr ins-pt2) 0.0))
-        ordered-verts
-        decimals
-        "CUADRO DE RUMBOS Y DISTANCIAS"
-      )
+      (setq tbl-rumbo
+        (MCTABLE:create-bearing-table
+          (list (car ins-pt2) (cadr ins-pt2) (if (caddr ins-pt2) (caddr ins-pt2) 0.0))
+          ordered-verts
+          decimals
+          "CUADRO DE RUMBOS Y DISTANCIAS"
+          altura-tabla
+          estilo-tabla
+          inicio
+        ))
+      ;; Con las dos tablas dibujadas se iguala su tamaño final: mismo ancho
+      ;; total y la misma altura por fila. Con una sola tabla no hay nada que
+      ;; igualar y el proceso parcial no se altera.
+      (if (and tbl-coord tbl-rumbo)
+        (MCTABLE:equalize-tables tbl-coord tbl-rumbo))
     )
     (princ "\nNo se indicó punto para el cuadro de rumbos. Proceso parcial.")
   )

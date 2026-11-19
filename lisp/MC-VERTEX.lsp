@@ -89,6 +89,7 @@
           "    }"
           "    : edit_box { key = \"eb_inicio\"; label = \"Número inicial:\"; value = \"1\"; edit_width = 12; }"
           "    : edit_box { key = \"eb_omitir\"; label = \"Vértices a omitir entre puntos:\"; value = \"0\"; edit_width = 12; }"
+          "    : text { label = \"La omisión afecta solo a las etiquetas, no a los símbolos.\"; }"
           "  }"
           "  : boxed_column {"
           "    label = \"Símbolo del vértice\";"
@@ -254,8 +255,8 @@
       (if (and (>= val minimo) (<= val 2147483647.0)) (fix val) nil))
     nil))
 
-;; Devuelve índices, no una geometría simplificada: las direcciones y
-;; las colisiones siempre se calculan con el recorrido completo.
+;; Devuelve índices de etiquetas, no una geometría simplificada: los
+;; símbolos, las direcciones y las colisiones usan todos los vértices.
 (defun mcvertex:indices-anotacion (n omitir / i salto indices)
   (setq i 0 salto (if (>= n 5) (+ 1.0 omitir) 1) indices nil)
   (while (< i n)
@@ -1013,8 +1014,9 @@
                           ins rect texto caja x1 y1 x2 y2 rot proy mU mN hay-pol
                           ef hallado antes nuevo fallo env)
   (setq n (length verts)
+        i 0
         indices (mcvertex:indices-anotacion n omitir)
-        centros (mapcar '(lambda (idx) (nth idx verts)) indices)
+        centros verts
         fallo nil
         ;; Envolvente máxima del símbolo para colisiones conservadoras.
         env (mcvertex:radio-envolvente simbolo radio)
@@ -1028,9 +1030,9 @@
         na 8
         nb 8
         hay-pol (and (not abierto) (>= (length borde) 3)))
-  (while (and indices (not fallo))
-    ;; La omisión solo controla la visibilidad, no el número del vértice.
-    (setq i (car indices) numero (+ inicio i) v (nth i verts))
+  (while (and (< i n) (not fallo))
+    ;; Cada vértice conserva su símbolo; la omisión solo filtra etiquetas.
+    (setq v (nth i verts))
 
     ;; Símbolo en la coordenada exacta del vértice (WCS, extrusión +Z).
     (if (not (mcvertex:simbolo v simbolo radio))
@@ -1038,9 +1040,11 @@
 
     ;; Etiqueta opcional. Con un único vértice no hay dirección de salida
     ;; definida: se omite la etiqueta (el símbolo ya quedó dibujado).
-    (if (and etiquetar (not fallo) (>= n 2))
+    (if (and etiquetar indices (= i (car indices)) (not fallo) (>= n 2))
       (progn
-        (setq texto (strcat prefijo "-" (itoa numero)))
+        ;; La numeración corresponde al vértice, no al orden de etiquetas.
+        (setq numero (+ inicio i)
+              texto (strcat prefijo "-" (itoa numero)))
         (setq ang (mcvertex:angulo-salida verts i cerrada))
         ;; Casi cierre abierto: el nuevo último vértice conserva su salida
         ;; hacia el extremo original descartado, no hacia el tramo previo.
@@ -1108,7 +1112,9 @@
                   (setq fallo T)
                   (setq *mcvertex-creadas* (cons nuevo *mcvertex-creadas*)))))))))
 
-    (setq indices (cdr indices)))
+    (if (and indices (= i (car indices)))
+      (setq indices (cdr indices)))
+    (setq i (1+ i)))
 
   (if (and etiquetar (< n 2))
     (princ (strcat "\nMCVERTEX: un solo vértice tras la tolerancia; "
@@ -1400,7 +1406,8 @@
                        "se usa envolvente virtual para el exterior y la fuente sigue abierta.")))
       (setq indices (mcvertex:indices-anotacion (length listo) omitir)
             simbolo (nth simbolo-idx (mcvertex:lista-modos)))
-      (princ (strcat "\nMCVERTEX: " (itoa (length indices)) " puntos seleccionados para anotar."
+      (princ (strcat "\nMCVERTEX: símbolos en " (itoa (length listo)) " vértices; "
+                     (itoa (if etiquetar (length indices) 0)) " etiquetas seleccionadas."
                      " Número inicial: " (itoa inicio) "."))
       (if (and (= simbolo 1) (< (length listo) 2))
         ;; Estilo invisible: el único resultado posible es la etiqueta. Con
